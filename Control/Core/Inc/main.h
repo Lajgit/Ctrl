@@ -69,18 +69,23 @@ void Error_Handler(void);
 #define Lock_Valve_GPIO_Port GPIOC
 #define HoolleInput_Pin GPIO_PIN_0
 #define HoolleInput_GPIO_Port GPIOC
-#define HoolleOutput_Pin GPIO_PIN_1
-#define HoolleOutput_GPIO_Port GPIOC
-#define HoolleOutput_EXTI_IRQn EXTI1_IRQn
-#define CardFeedback_Pin GPIO_PIN_2
-#define CardFeedback_GPIO_Port GPIOC
-#define CardFeedback_EXTI_IRQn EXTI2_IRQn
-#define CoinInput_Pin GPIO_PIN_3
-#define CoinInput_GPIO_Port GPIOC
+
+/* 吐珠电机光眼反馈：PD3，对应 PE9/PE11 电机通道。 */
+#define HoolleOutput_Pin GPIO_PIN_3
+#define HoolleOutput_GPIO_Port GPIOD
+#define HoolleOutput_EXTI_IRQn EXTI3_IRQn
+
+/* 存珠电机光眼反馈：PD4，对应 PE13/PE14 电机通道。 */
+#define CardFeedback_Pin GPIO_PIN_4
+#define CardFeedback_GPIO_Port GPIOD
+#define CardFeedback_EXTI_IRQn EXTI4_IRQn
+
+/* 投币器脉冲输入：PE15。 */
+#define CoinInput_Pin GPIO_PIN_15
+#define CoinInput_GPIO_Port GPIOE
+
 #define J1_Pin GPIO_PIN_1
 #define J1_GPIO_Port GPIOA
-#define BillPulse_Pin GPIO_PIN_1
-#define BillPulse_GPIO_Port GPIOA
 #define J2_Pin GPIO_PIN_2
 #define J2_GPIO_Port GPIOA
 #define J3_Pin GPIO_PIN_3
@@ -101,10 +106,13 @@ void Error_Handler(void);
 #define CardOutput_GPIO_Port GPIOE
 #define HoolleMotor_B_Pin GPIO_PIN_11
 #define HoolleMotor_B_GPIO_Port GPIOE
+
+/* 存珠电机驱动：TIM1_CH3/CH4，MCU 引脚为 PE13/PE14。 */
 #define BeadMotor2_B_Pin GPIO_PIN_13
 #define BeadMotor2_B_GPIO_Port GPIOE
 #define BeadMotor2_A_Pin GPIO_PIN_14
 #define BeadMotor2_A_GPIO_Port GPIOE
+
 #define SPI2_CS_Pin GPIO_PIN_12
 #define SPI2_CS_GPIO_Port GPIOB
 #define SPI2_OE_Pin GPIO_PIN_14
@@ -141,10 +149,13 @@ void Error_Handler(void);
 #define Switch10_GPIO_Port GPIOD
 #define Switch9_Pin GPIO_PIN_2
 #define Switch9_GPIO_Port GPIOD
+
+/* PD3/PD4 已用于吐珠、存珠光眼反馈，以下旧名称仅保留工程兼容。 */
 #define Switch8_Pin GPIO_PIN_3
 #define Switch8_GPIO_Port GPIOD
 #define Switch7_Pin GPIO_PIN_4
 #define Switch7_GPIO_Port GPIOD
+
 #define Switch6_Pin GPIO_PIN_5
 #define Switch6_GPIO_Port GPIOD
 #define Switch5_Pin GPIO_PIN_6
