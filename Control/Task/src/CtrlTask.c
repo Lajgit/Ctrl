@@ -24,23 +24,23 @@ static void Purchase_Save(void)
     FlashTask_RequestSave();
 }
 
-static uint32_t Purchase_BillTypeToYuan(uint8_t bill_type)
+static uint32_t Purchase_BillTypeToFen(uint8_t bill_type)
 {
     /* 人民币版本：0x40~0x45 分别为 1、5、10、20、50、100 元。 */
     switch (bill_type)
     {
     case 0x40U:
-        return 1U;
-    case 0x41U:
-        return 5U;
-    case 0x42U:
-        return 10U;
-    case 0x43U:
-        return 20U;
-    case 0x44U:
-        return 50U;
-    case 0x45U:
         return 100U;
+    case 0x41U:
+        return 500U;
+    case 0x42U:
+        return 1000U;
+    case 0x43U:
+        return 2000U;
+    case 0x44U:
+        return 5000U;
+    case 0x45U:
+        return 10000U;
     default:
         return 0U;
     }
@@ -50,13 +50,13 @@ static void Purchase_ApplyCreditToPending(void)
 {
     uint32_t new_beads;
 
-    if (Setting.BeadPriceYuan == 0U)
+    if (Setting.BeadPriceFen == 0U)
     {
         return;
     }
 
-    new_beads = Setting.PurchaseCreditYuan / Setting.BeadPriceYuan;
-    Setting.PurchaseCreditYuan %= Setting.BeadPriceYuan;
+    new_beads = Setting.PurchaseCreditFen / Setting.BeadPriceFen;
+    Setting.PurchaseCreditFen %= Setting.BeadPriceFen;
 
     /* 实际金额范围很小；仍做饱和保护，避免异常累计导致 32 位回绕。 */
     if (new_beads > (0xFFFFFFFFUL - Setting.PendingBeads))
@@ -69,21 +69,21 @@ static void Purchase_ApplyCreditToPending(void)
     }
 }
 
-static void Purchase_AddPayment(uint32_t amount_yuan)
+static void Purchase_AddPayment(uint32_t amount_fen)
 {
-    if ((amount_yuan == 0U) || (Setting.BeadPriceYuan == 0U))
+    if ((amount_fen == 0U) || (Setting.BeadPriceFen == 0U))
     {
         return;
     }
 
-    /* 先累计金额，再按安卓设置的单颗价格换算为待吐珠数量。 */
-    if (amount_yuan > (0xFFFFFFFFUL - Setting.PurchaseCreditYuan))
+    /* 先按“分”累计金额，再按安卓设置的单颗价格换算为待吐珠数量。 */
+    if (amount_fen > (0xFFFFFFFFUL - Setting.PurchaseCreditFen))
     {
-        Setting.PurchaseCreditYuan = 0xFFFFFFFFUL;
+        Setting.PurchaseCreditFen = 0xFFFFFFFFUL;
     }
     else
     {
-        Setting.PurchaseCreditYuan += amount_yuan;
+        Setting.PurchaseCreditFen += amount_fen;
     }
 
     Purchase_ApplyCreditToPending();
@@ -311,10 +311,28 @@ void Device_StopAllImmediately(void)
 
 void Purchase_Init(void)
 {
+    uint32_t pending_before;
+    uint32_t credit_before;
+
     PurchaseNoBead = (Setting.PurchaseFlags & PURCHASE_FLAG_NO_BEAD) != 0U;
     PurchaseLowStockNotified = Setting.BeadStock <= PURCHASE_LOW_STOCK_THRESHOLD;
     PurchaseResumeWaiting = false;
     PurchasePriceSetResult = PURCHASE_PRICE_SET_OK;
+
+    /*
+     * 上电时重新按“分”归一化余额。
+     * 这同时用于把旧版元单位记录迁移后可能形成的可购买金额转成欠吐数量。
+     */
+    pending_before = Setting.PendingBeads;
+    credit_before = Setting.PurchaseCreditFen;
+    Purchase_ApplyCreditToPending();
+    if ((pending_before != Setting.PendingBeads) ||
+        (credit_before != Setting.PurchaseCreditFen))
+    {
+        Purchase_Save();
+        EventGroupSetBits(&Mesg_event, MesgEvent_PurchasePendingStatus);
+        EventGroupSetBits(&Mesg_event, MesgEvent_PurchaseCreditStatus);
+    }
 
     if (PurchaseNoBead == true)
     {
@@ -331,25 +349,25 @@ void Purchase_Init(void)
 
 void Purchase_AddCoinPayment(void)
 {
-    /* 硬币机只能投入 1 元，每个有效脉冲计入 1 元。 */
-    Purchase_AddPayment(1U);
+    /* 硬币机只能投入 1 元，每个有效脉冲计入 100 分。 */
+    Purchase_AddPayment(100U);
 }
 
 void Purchase_AddBillPayment(uint8_t bill_type)
 {
-    uint32_t amount_yuan = Purchase_BillTypeToYuan(bill_type);
+    uint32_t amount_fen = Purchase_BillTypeToFen(bill_type);
 
     /* 当前仅实现人民币 0x40~0x45；其他类型仍上报安卓，但不换算吐珠。 */
-    if (amount_yuan > 0U)
+    if (amount_fen > 0U)
     {
-        Purchase_AddPayment(amount_yuan);
+        Purchase_AddPayment(amount_fen);
     }
 }
 
-void Purchase_SetBeadPrice(uint32_t price_yuan)
+void Purchase_SetBeadPrice(uint32_t price_fen)
 {
-    if ((price_yuan < PURCHASE_MIN_PRICE_YUAN) ||
-        (price_yuan > PURCHASE_MAX_PRICE_YUAN))
+    if ((price_fen < PURCHASE_MIN_PRICE_FEN) ||
+        (price_fen > PURCHASE_MAX_PRICE_FEN))
     {
         PurchasePriceSetResult = PURCHASE_PRICE_SET_INVALID;
         EventGroupSetBits(&Mesg_event, MesgEvent_BeadPriceStatus);
@@ -357,7 +375,7 @@ void Purchase_SetBeadPrice(uint32_t price_yuan)
     }
 
     /* 新价格立即应用于当前尚未换算成珠子的累计余额。 */
-    Setting.BeadPriceYuan = price_yuan;
+    Setting.BeadPriceFen = price_fen;
     PurchasePriceSetResult = PURCHASE_PRICE_SET_OK;
     Purchase_ApplyCreditToPending();
     Purchase_Save();
@@ -484,9 +502,9 @@ void Purchase_Task(void)
     Purchase_TryStartDispense();
 }
 
-uint32_t Purchase_GetBeadPrice(void)
+uint32_t Purchase_GetBeadPriceFen(void)
 {
-    return Setting.BeadPriceYuan;
+    return Setting.BeadPriceFen;
 }
 
 uint32_t Purchase_GetBeadStock(void)
@@ -499,9 +517,9 @@ uint32_t Purchase_GetPendingBeads(void)
     return Setting.PendingBeads;
 }
 
-uint32_t Purchase_GetCreditYuan(void)
+uint32_t Purchase_GetCreditFen(void)
 {
-    return Setting.PurchaseCreditYuan;
+    return Setting.PurchaseCreditFen;
 }
 
 uint8_t Purchase_GetPriceSetResult(void)
