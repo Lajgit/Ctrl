@@ -199,35 +199,37 @@ void SysTick_Handler(void)
 /* STM32F4xx Peripheral Interrupt Handlers                                    */
 /* Add here the Interrupt Handlers for the used peripherals.                  */
 /* For the available peripheral interrupt handler names,                      */
-/* please refer to the startup file (startup_stm32f4xx.s).                    */
+/* please refer to the startup file (startup_stm32f407xx.s).                  */
 /******************************************************************************/
 
 /**
-  * @brief This function handles EXTI line1 interrupt.
+  * @brief This function handles EXTI line3 interrupt.
   */
-void EXTI1_IRQHandler(void)
+void EXTI3_IRQHandler(void)
 {
-  /* USER CODE BEGIN EXTI1_IRQn 0 */
+  /* USER CODE BEGIN EXTI3_IRQn 0 */
 
-  /* USER CODE END EXTI1_IRQn 0 */
+  /* USER CODE END EXTI3_IRQn 0 */
+  /* PD3：吐珠电机光眼反馈。 */
   HAL_GPIO_EXTI_IRQHandler(HoolleOutput_Pin);
-  /* USER CODE BEGIN EXTI1_IRQn 1 */
+  /* USER CODE BEGIN EXTI3_IRQn 1 */
 
-  /* USER CODE END EXTI1_IRQn 1 */
+  /* USER CODE END EXTI3_IRQn 1 */
 }
 
 /**
-  * @brief This function handles EXTI line2 interrupt.
+  * @brief This function handles EXTI line4 interrupt.
   */
-void EXTI2_IRQHandler(void)
+void EXTI4_IRQHandler(void)
 {
-  /* USER CODE BEGIN EXTI2_IRQn 0 */
+  /* USER CODE BEGIN EXTI4_IRQn 0 */
 
-  /* USER CODE END EXTI2_IRQn 0 */
+  /* USER CODE END EXTI4_IRQn 0 */
+  /* PD4：存珠电机光眼反馈。 */
   HAL_GPIO_EXTI_IRQHandler(CardFeedback_Pin);
-  /* USER CODE BEGIN EXTI2_IRQn 1 */
+  /* USER CODE BEGIN EXTI4_IRQn 1 */
 
-  /* USER CODE END EXTI2_IRQn 1 */
+  /* USER CODE END EXTI4_IRQn 1 */
 }
 
 /**
