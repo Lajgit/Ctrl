@@ -81,9 +81,25 @@ static void Ctrl_Lock(Lock_t *lock, uint32_t timeout)
 
 void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num)
 {
+    if ((bead_motor == NULL) || (num == 0U))
+    {
+        return;
+    }
+
+    /* 防止多次追加数量导致 16 位剩余数量回绕。 */
+    if (num > (uint16_t)(0xFFFFU - bead_motor->remain_num))
+    {
+        return;
+    }
+
     bead_motor->remain_num += num;
 
-    if (bead_motor->remain_num != 0U)
+    /*
+     * 电机运行期间的新命令只追加数量，不重置超时和反转重试状态。
+     * 仅在空闲或刚停止时启动新的动作。
+     */
+    if ((bead_motor->motor.state == DEVICE_STATE_IDLE) ||
+        (bead_motor->motor.state == DEVICE_STATE_STOP))
     {
         bead_motor->retry_count = 0U;
         bead_motor->motor.ResetRuntime(&bead_motor->motor);
@@ -93,6 +109,11 @@ void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num)
 
 void BeadMotor_Feedback(BeadMotor_t *bead_motor)
 {
+    if (bead_motor == NULL)
+    {
+        return;
+    }
+
     bead_motor->motor.ResetRuntime(&bead_motor->motor);
     bead_motor->retry_count = 0U;
 
@@ -110,8 +131,12 @@ void BeadMotor_Feedback(BeadMotor_t *bead_motor)
 
 void Device_Init(void)
 {
+    /* 电机1：PE9/PE11 驱动，PD3 光眼反馈，用于吐珠。 */
     Device_Motor_Init(&BeadMotor1.motor, &htim1, TIM_CHANNEL_1, &htim1, TIM_CHANNEL_2);
+
+    /* 电机2：PE13/PE14 驱动，PD4 光眼反馈，用于存珠。 */
     Device_Motor_Init(&BeadMotor2.motor, &htim1, TIM_CHANNEL_3, &htim1, TIM_CHANNEL_4);
+
     Device_Switch_Init(&Lock.sw, Lock_Valve_GPIO_Port, Lock_Valve_Pin, GPIO_PIN_SET);
 
     BeadMotor1.remain_num = 0U;
@@ -138,6 +163,7 @@ void Device_StopAllImmediately(void)
 
 void CtrlTask(void)
 {
+    /* 吐珠电机控制。 */
     Ctrl_BeadMotor(&BeadMotor1,
                    BeadMotor_Speed,
                    BeadMotor_Dir,
@@ -146,6 +172,7 @@ void CtrlTask(void)
                    BeadMotorRetry_Times,
                    MesgEvent_BeadMotor1Timeout);
 
+    /* 存珠电机控制。 */
     Ctrl_BeadMotor(&BeadMotor2,
                    BeadMotor_Speed,
                    BeadMotor_Dir,
