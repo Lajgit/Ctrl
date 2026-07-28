@@ -63,8 +63,9 @@ void InterruptTask_Process(void)
 
     if (process_motor1 == true)
     {
-        /* PD3：吐珠电机光眼反馈。 */
+        /* PD3：吐珠电机光眼确认一颗后，电机剩余量、库存和欠吐量同步减一。 */
         BeadMotor_Feedback(&BeadMotor1);
+        Purchase_OnBeadDispensed();
         EventGroupSetBits(&Mesg_event, MesgEvent_BeadMotor1Feedback);
         EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
     }
