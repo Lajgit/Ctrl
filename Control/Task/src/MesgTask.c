@@ -90,6 +90,86 @@ void Mesg_Task(void)
         EventGroupClearBits(&Mesg_event, MesgEvent_BillCurrencyMode);
     }
 
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadPriceStatus))
+    {
+        /* Data1:Data4 为单颗价格（元），ExpandCode 为设置结果。 */
+        Comm_SendMesg_FillData(&Tx1,
+                               Board_to_Android,
+                               BeadPriceStatus,
+                               Purchase_GetBeadPrice(),
+                               Purchase_GetPriceSetResult());
+        EventGroupClearBits(&Mesg_event, MesgEvent_BeadPriceStatus);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadStockStatus))
+    {
+        /* 每成功吐出一颗后同步最新库存。 */
+        Comm_SendMesg_FillData(&Tx1,
+                               Board_to_Android,
+                               BeadStockStatus,
+                               Purchase_GetBeadStock(),
+                               0x00U);
+        EventGroupClearBits(&Mesg_event, MesgEvent_BeadStockStatus);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_PurchasePendingStatus))
+    {
+        /* 已收款但尚未吐出的珠子数量。 */
+        Comm_SendMesg_FillData(&Tx1,
+                               Board_to_Android,
+                               PurchasePendingStatus,
+                               Purchase_GetPendingBeads(),
+                               0x00U);
+        EventGroupClearBits(&Mesg_event, MesgEvent_PurchasePendingStatus);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_PurchaseCreditStatus))
+    {
+        /* 尚不足一颗珠子的累计人民币余额，单位：元。 */
+        Comm_SendMesg_FillData(&Tx1,
+                               Board_to_Android,
+                               PurchaseCreditStatus,
+                               Purchase_GetCreditYuan(),
+                               0x00U);
+        EventGroupClearBits(&Mesg_event, MesgEvent_PurchaseCreditStatus);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadLowStock))
+    {
+        /* 库存首次降到 3000 或以下，要求安卓确认接收。 */
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          BeadLowStock,
+                                          Purchase_GetBeadStock(),
+                                          0x00U,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_BeadLowStock);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadEmpty))
+    {
+        /* 无珠时 Data1:Data4 保存仍需补吐的珠子数量。 */
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          BeadEmpty,
+                                          Purchase_GetPendingBeads(),
+                                          0x00U,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_BeadEmpty);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadRefilled))
+    {
+        /* K1 补珠确认后上报新库存，安卓据此恢复购买界面。 */
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          BeadRefilled,
+                                          Purchase_GetBeadStock(),
+                                          0x00U,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_BeadRefilled);
+    }
+
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_RemainingBead))
     {
         Comm_SendMesg_FillData(&Tx1, Board_to_Android, RemainingBead, MakeRemainData(), 0x00U);
