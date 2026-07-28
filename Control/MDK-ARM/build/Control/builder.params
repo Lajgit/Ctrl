@@ -7,7 +7,7 @@
     "buildMode": "fast|multhread",
     "showRepathOnLog": true,
     "threadNum": 12,
-    "rootDir": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
+    "rootDir": "e:\\GOUZHU\\Control\\MDK-ARM",
     "dumpPath": "build\\Control",
     "outDir": "build\\Control",
     "ram": 131072,
@@ -109,21 +109,21 @@
         "linker": {
             "output-format": "elf",
             "link-scatter": [
-                "e:/单片机项目/ChatGPT单片机项目/购珠机/Control/MDK-ARM/build/Control/Control.sct"
+                "e:/GOUZHU/Control/MDK-ARM/build/Control/Control.sct"
             ]
         }
     },
     "env": {
         "KEIL_OUTPUT_DIR": "Control",
-        "workspaceFolder": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
+        "workspaceFolder": "e:\\GOUZHU\\Control\\MDK-ARM",
         "workspaceFolderBasename": "MDK-ARM",
-        "OutDir": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM\\build\\Control",
+        "OutDir": "e:\\GOUZHU\\Control\\MDK-ARM\\build\\Control",
         "OutDirRoot": "build",
         "OutDirBase": "build\\Control",
         "ProjectName": "Control",
         "ConfigName": "Control",
-        "ProjectRoot": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
-        "ExecutableName": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM\\build\\Control\\Control",
+        "ProjectRoot": "e:\\GOUZHU\\Control\\MDK-ARM",
+        "ExecutableName": "e:\\GOUZHU\\Control\\MDK-ARM\\build\\Control\\Control",
         "ChipPackDir": "",
         "ChipName": "",
         "SYS_Platform": "win32",
