@@ -1,5 +1,6 @@
 #include "KeyTask.h"
 #include "MesgTask.h"
+#include "CtrlTask.h"
 #include "port_key.h"
 #include "usart.h"
 
@@ -78,7 +79,13 @@ extern Tx_HandleTypeDef Tx1;
 
 static void Encoder_ShortCallback(uint16_t id)
 {
-    /* id: 0=CCW, 1=CW, 2=DOWN */
+    /* id: 0=CCW, 1=CW, 2=DOWN；K1 编码器按键对应 DOWN。 */
+    if (id == 2U)
+    {
+        /* K1 表示已补充珠子：恢复库存、启用纸钞机，并延时处理欠吐珠子。 */
+        Purchase_Refill();
+    }
+
     Comm_SendMesg_FillData(&Tx1, Board_to_Android, Encoder, (uint32_t)id + 1U, 0x00U);
 }
 
@@ -136,6 +143,13 @@ static void PulseInput_Scan(PulseInput_t *input)
         else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
         {
             EventGroupSetBits(&Mesg_event, input->event);
+
+            if (input->event == MesgEvent_CoinInput)
+            {
+                /* 硬币机每个有效脉冲固定计为人民币 1 元，由固件计算吐珠数量。 */
+                Purchase_AddCoinPayment();
+            }
+
             input->state = PULSE_IDLE;
         }
         break;
@@ -211,6 +225,19 @@ static void BillAcceptor_ReportStatus(uint8_t status)
     }
 }
 
+static void BillAcceptor_CompletePayment(uint8_t bill_type, uint8_t complete_status)
+{
+    BillAcceptor_LastType = bill_type;
+    BillAcceptor_LastStatus = complete_status;
+    EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
+
+    /* 当前先实现人民币版本，0x40~0x45 的金额由控制板直接换算吐珠。 */
+    if (BillAcceptor_CurrencyMode == BILL_CURRENCY_RMB)
+    {
+        Purchase_AddBillPayment(bill_type);
+    }
+}
+
 static void BillAcceptor_HandleByte(uint8_t data)
 {
     /* 先处理正在等待的多字节序列。 */
@@ -221,7 +248,7 @@ static void BillAcceptor_HandleByte(uint8_t data)
             BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
             BillAcceptor_SetRxState(BILL_RX_IDLE);
 
-            /* 纸钞机重启后恢复安卓要求的禁用状态。 */
+            /* 纸钞机重启后恢复固件要求的禁用状态。 */
             if (BillEnableState == false)
             {
                 BillAcceptor_StartStateCommand(ICT_CMD_DISABLE);
@@ -260,10 +287,8 @@ static void BillAcceptor_HandleByte(uint8_t data)
     {
         if (BillAcceptor_IsDenomination(data))
         {
-            /* 0x83 后的币种已经堆叠，按已收钞上报并保留 0x83 状态。 */
-            BillAcceptor_LastType = data;
-            BillAcceptor_LastStatus = ICT_RESP_JAM_STACKING;
-            EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
+            /* 0x83 后的币种已经堆叠，按已收钞和已付款处理。 */
+            BillAcceptor_CompletePayment(data, ICT_RESP_JAM_STACKING);
             BillEscrowType = 0U;
             BillAcceptor_SetRxState(BILL_RX_IDLE);
             return;
@@ -287,9 +312,7 @@ static void BillAcceptor_HandleByte(uint8_t data)
         /* 只有已取得币种码时才确认正常收钞，避免沿用上一次币种。 */
         if (BillAcceptor_IsDenomination(BillEscrowType))
         {
-            BillAcceptor_LastType = BillEscrowType;
-            BillAcceptor_LastStatus = ICT_RESP_STACKING;
-            EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
+            BillAcceptor_CompletePayment(BillEscrowType, ICT_RESP_STACKING);
         }
         BillEscrowType = 0U;
         break;
@@ -325,7 +348,7 @@ static void BillAcceptor_Init(void)
     BillStateCommandPending = false;
     HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
 
-    /* 量产纸钞机仅使用 USART3 TTL，默认上电启用。 */
+    /* 量产纸钞机仅使用 USART3 TTL，默认上电启用；无珠状态会在 Purchase_Init 中重新禁用。 */
     BillAcceptor_StartStateCommand(ICT_CMD_ENABLE);
 }
 
