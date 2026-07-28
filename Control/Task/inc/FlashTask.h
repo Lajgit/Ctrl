@@ -20,8 +20,8 @@ typedef struct
     uint32_t LightBelt_Lightness;
     uint32_t Ctrl_Lightness;
 
-    /* 安卓设置的单颗珠子价格，单位：人民币元。 */
-    uint32_t BeadPriceYuan;
+    /* 安卓设置的单颗珠子价格，单位：人民币分；1 表示 0.01 元。 */
+    uint32_t BeadPriceFen;
 
     /* 当前珠子库存，每成功吐出一颗减一。 */
     uint32_t BeadStock;
@@ -29,8 +29,8 @@ typedef struct
     /* 已收款但尚未成功吐出的珠子数量，掉电后继续保留。 */
     uint32_t PendingBeads;
 
-    /* 尚不足以购买一颗珠子的累计余额，单位：人民币元。 */
-    uint32_t PurchaseCreditYuan;
+    /* 尚不足以购买一颗珠子的累计余额，单位：人民币分。 */
+    uint32_t PurchaseCreditFen;
 
     /* 购买状态标志，当前使用 PURCHASE_FLAG_NO_BEAD。 */
     uint32_t PurchaseFlags;
