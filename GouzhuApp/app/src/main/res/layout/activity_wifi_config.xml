@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page_background"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:paddingStart="72dp"
+    android:paddingTop="90dp"
+    android:paddingEnd="72dp"
+    android:paddingBottom="48dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/wifi_config_title"
+        android:textColor="@color/text_primary"
+        android:textSize="34sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center"
+        android:text="@string/wifi_config_hint"
+        android:textColor="@color/text_secondary"
+        android:textSize="18sp" />
+
+    <EditText
+        android:id="@+id/input_wifi_ssid"
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:layout_marginTop="46dp"
+        android:background="@drawable/bg_input"
+        android:hint="@string/wifi_ssid_hint"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:singleLine="true"
+        android:textColor="@color/text_primary"
+        android:textColorHint="@color/text_hint"
+        android:textSize="19sp" />
+
+    <EditText
+        android:id="@+id/input_wifi_password"
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:layout_marginTop="18dp"
+        android:background="@drawable/bg_input"
+        android:hint="@string/wifi_password_hint"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:singleLine="true"
+        android:textColor="@color/text_primary"
+        android:textColorHint="@color/text_hint"
+        android:textSize="19sp" />
+
+    <TextView
+        android:id="@+id/text_wifi_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:gravity="center"
+        android:minHeight="54dp"
+        android:text="@string/wifi_config_ready"
+        android:textColor="@color/text_secondary"
+        android:textSize="17sp" />
+
+    <Button
+        android:id="@+id/button_connect_wifi"
+        style="@style/Widget.Gouzhu.PrimaryButton"
+        android:layout_width="match_parent"
+        android:layout_marginTop="18dp"
+        android:text="@string/connect_wifi" />
+
+    <Button
+        android:id="@+id/button_clear_wifi"
+        style="@style/Widget.Gouzhu.SecondaryButton"
+        android:layout_width="match_parent"
+        android:layout_marginTop="16dp"
+        android:text="@string/clear_wifi" />
+</LinearLayout>

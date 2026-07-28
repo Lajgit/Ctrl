@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
+    <color name="white">#FFFFFF</color>
+    <color name="page_background">#F5F7FB</color>
+    <color name="header_primary">#2563EB</color>
+    <color name="header_secondary">#38BDF8</color>
+    <color name="header_subtitle">#EAF4FF</color>
+    <color name="text_primary">#172033</color>
+    <color name="text_secondary">#5E6A7D</color>
+    <color name="text_hint">#98A2B3</color>
+    <color name="card_background">#FFFFFF</color>
+    <color name="card_border">#D9E2F1</color>
+    <color name="selected_background">#EAF2FF</color>
+    <color name="status_background">#FFFFFF</color>
+    <color name="button_secondary">#E8EEF8</color>
+    <color name="button_secondary_text">#31415C</color>
 </resources>

@@ -1,19 +1,206 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/main"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context=".MainActivity">
+    android:background="@color/page_background"
+    android:fillViewport="true"
+    android:overScrollMode="never">
 
-    <TextView
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Hello World!"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingStart="36dp"
+        android:paddingTop="34dp"
+        android:paddingEnd="36dp"
+        android:paddingBottom="28dp">
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:background="@drawable/bg_header"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="32dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/header_title"
+                    android:textColor="@color/white"
+                    android:textSize="38sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:text="@string/header_subtitle"
+                    android:textColor="@color/header_subtitle"
+                    android:textSize="22sp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="120dp"
+                android:background="@drawable/bg_header_badge"
+                android:gravity="center"
+                android:text="珠"
+                android:textColor="@color/header_primary"
+                android:textSize="54sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/package_section_title"
+            android:textColor="@color/text_primary"
+            android:textSize="25sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="7dp"
+            android:text="@string/package_section_hint"
+            android:textColor="@color/text_secondary"
+            android:textSize="17sp" />
+
+        <GridLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:columnCount="3"
+            android:rowCount="2">
+
+            <Button
+                android:id="@+id/button_package_1"
+                style="@style/Widget.Gouzhu.PackageButton"
+                android:text="1珠\n1元" />
+
+            <Button
+                android:id="@+id/button_package_5"
+                style="@style/Widget.Gouzhu.PackageButton"
+                android:text="5珠\n5元" />
+
+            <Button
+                android:id="@+id/button_package_10"
+                style="@style/Widget.Gouzhu.PackageButton"
+                android:text="10珠\n10元" />
+
+            <Button
+                android:id="@+id/button_package_20"
+                style="@style/Widget.Gouzhu.PackageButton"
+                android:text="20珠\n20元" />
+
+            <Button
+                android:id="@+id/button_package_50"
+                style="@style/Widget.Gouzhu.PackageButton"
+                android:text="50珠\n50元" />
+
+            <Button
+                android:id="@+id/button_package_100"
+                style="@style/Widget.Gouzhu.PackageButton"
+                android:text="100珠\n100元" />
+        </GridLayout>
+
+        <TextView
+            android:id="@+id/text_selected_package"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_selected_package"
+            android:gravity="center"
+            android:padding="16dp"
+            android:text="@string/package_not_selected"
+            android:textColor="@color/header_primary"
+            android:textSize="19sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/device_section_title"
+            android:textColor="@color/text_primary"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_status_panel"
+            android:orientation="vertical"
+            android:padding="22dp">
+
+            <TextView
+                android:id="@+id/text_network_status"
+                style="@style/Widget.Gouzhu.StatusText"
+                android:text="@string/network_waiting" />
+
+            <TextView
+                android:id="@+id/text_mqtt_status"
+                style="@style/Widget.Gouzhu.StatusText"
+                android:text="@string/mqtt_waiting" />
+
+            <TextView
+                android:id="@+id/text_board_status"
+                style="@style/Widget.Gouzhu.StatusText"
+                android:text="@string/board_waiting" />
+
+            <TextView
+                android:id="@+id/text_stock_status"
+                style="@style/Widget.Gouzhu.StatusText"
+                android:text="@string/stock_unknown" />
+
+            <TextView
+                android:id="@+id/text_latest_event"
+                style="@style/Widget.Gouzhu.StatusText"
+                android:text="@string/latest_event_waiting" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/button_wifi_settings"
+                style="@style/Widget.Gouzhu.ActionButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:text="@string/wifi_settings" />
+
+            <Space
+                android:layout_width="16dp"
+                android:layout_height="1dp" />
+
+            <Button
+                android:id="@+id/button_refresh_status"
+                style="@style/Widget.Gouzhu.ActionButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:text="@string/refresh_status" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/text_device_info"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:gravity="center"
+            android:textColor="@color/text_hint"
+            android:textSize="13sp" />
+    </LinearLayout>
+</ScrollView>

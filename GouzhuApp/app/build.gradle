@@ -2,6 +2,9 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+def appVersionName = "1.0.0"
+def appVersionCode = 1
+
 android {
     namespace 'com.gouzhu'
     compileSdk {
@@ -14,8 +17,8 @@ android {
         applicationId "com.gouzhu"
         minSdk 33
         targetSdk 36
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersionCode
+        versionName appVersionName
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -26,9 +29,18 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.outputs.forEach { output ->
+            output.outputFileName.set("GouzhuApp_V${appVersionName}.apk")
+        }
     }
 }
 
@@ -37,6 +49,12 @@ dependencies {
     implementation libs.appcompat
     implementation libs.constraintlayout
     implementation libs.material
+
+    // 移植 OTA_XLH3566 所需的网络、注册激活和 MQTT 依赖。
+    implementation 'com.squareup.okhttp3:okhttp:4.10.0'
+    implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
+    implementation 'com.google.code.gson:gson:2.10.1'
+
     testImplementation libs.junit
     androidTestImplementation libs.espresso.core
     androidTestImplementation libs.ext.junit
