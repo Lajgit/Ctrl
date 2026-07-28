@@ -19,8 +19,13 @@
 #define PURCHASE_DEFAULT_STOCK 10000U
 #define PURCHASE_LOW_STOCK_THRESHOLD 3000U
 #define PURCHASE_REFILL_DELAY 10000U
-#define PURCHASE_MIN_PRICE_YUAN 1U
-#define PURCHASE_MAX_PRICE_YUAN 10000U
+
+/*
+ * 金额统一使用“分”保存和通信，避免 MCU 与安卓使用浮点数。
+ * 1 表示 0.01 元，10000 表示 100.00 元。
+ */
+#define PURCHASE_MIN_PRICE_FEN 1U
+#define PURCHASE_MAX_PRICE_FEN 10000U
 
 /* 安卓设置价格结果，放在 BeadPriceStatus 的 ExpandCode。 */
 #define PURCHASE_PRICE_SET_OK 0x00U
@@ -48,17 +53,17 @@ void Device_StopAllImmediately(void);
 void Purchase_Init(void);
 void Purchase_AddCoinPayment(void);
 void Purchase_AddBillPayment(uint8_t bill_type);
-void Purchase_SetBeadPrice(uint32_t price_yuan);
+void Purchase_SetBeadPrice(uint32_t price_fen);
 void Purchase_RequestStatus(void);
 void Purchase_OnBeadDispensed(void);
 void Purchase_OnDispenseTimeout(void);
 void Purchase_Refill(void);
 void Purchase_PauseDispense(void);
 void Purchase_Task(void);
-uint32_t Purchase_GetBeadPrice(void);
+uint32_t Purchase_GetBeadPriceFen(void);
 uint32_t Purchase_GetBeadStock(void);
 uint32_t Purchase_GetPendingBeads(void);
-uint32_t Purchase_GetCreditYuan(void);
+uint32_t Purchase_GetCreditFen(void);
 uint8_t Purchase_GetPriceSetResult(void);
 
 void CtrlTask(void);

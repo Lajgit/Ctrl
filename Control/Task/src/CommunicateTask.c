@@ -181,7 +181,7 @@ static void USART1_Deal(void *rx_mesg)
                 break;
 
             case BeadPriceSet:
-                /* Data1:Data4 为单颗珠子价格，单位：人民币元。 */
+                /* Data1:Data4 为单颗珠子价格，单位：人民币分。 */
                 Purchase_SetBeadPrice(USART_GetData32(mesg));
                 break;
 
