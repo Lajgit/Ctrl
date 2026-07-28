@@ -37,6 +37,17 @@ void MainTaskInit(void)
     Communicate_Init();
     KeyAll_Init();
     Purchase_Init();
+
+    /* 上电后主动同步购买状态，避免安卓界面与控制板掉电状态不一致。 */
+    Purchase_RequestStatus();
+    if (Purchase_GetBeadStock() == 0U)
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
+    }
+    else if (Purchase_GetBeadStock() <= PURCHASE_LOW_STOCK_THRESHOLD)
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_BeadLowStock);
+    }
 }
 
 void MainTask(void)
