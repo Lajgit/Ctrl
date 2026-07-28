@@ -55,6 +55,7 @@ void Purchase_OnDispenseTimeout(void);
 void Purchase_Refill(void);
 void Purchase_PauseDispense(void);
 void Purchase_Task(void);
+bool Purchase_IsNoBead(void);
 uint32_t Purchase_GetBeadPrice(void);
 uint32_t Purchase_GetBeadStock(void);
 uint32_t Purchase_GetPendingBeads(void);
