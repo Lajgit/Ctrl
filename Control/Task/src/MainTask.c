@@ -2,6 +2,7 @@
 #include "CtrlTask.h"
 #include "MesgTask.h"
 #include "KeyTask.h"
+#include "InterruptTask.h"
 #include "CommunicateTask.h"
 #include "gpio.h"
 #include "iwdg.h"
@@ -39,6 +40,10 @@ void MainTask(void)
     HAL_IWDG_Refresh(&hiwdg);
 
     Key_Task();
+    HAL_IWDG_Refresh(&hiwdg);
+
+    /* 在主循环上下文处理 PD3 吐珠、PD4 存珠光眼反馈。 */
+    InterruptTask_Process();
     HAL_IWDG_Refresh(&hiwdg);
 
     CtrlTask();
