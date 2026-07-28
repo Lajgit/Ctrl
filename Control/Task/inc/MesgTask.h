@@ -19,21 +19,21 @@
 
 /* 主板发给安卓的功能码 */
 #define VersionRequest 0x00U
-#define BeadMotor1Feedback 0x01U
+#define BeadMotor1Feedback 0x01U   /* 吐珠电机 PD3 光眼反馈 */
 #define CoinInput 0x02U
-#define BeadMotor2Feedback 0x03U
+#define BeadMotor2Feedback 0x03U   /* 存珠电机 PD4 光眼反馈 */
 #define BillAccepted 0x04U
 #define RemainingBead 0x05U
-#define BeadMotor1Timeout 0x07U
-#define BeadMotor2Timeout 0x08U
+#define BeadMotor1Timeout 0x07U    /* 吐珠电机超时 */
+#define BeadMotor2Timeout 0x08U    /* 存珠电机超时 */
 #define AlreadyUnlock 0x0DU
 #define Encoder 0x0FU
 #define BillStatus 0x12U
 #define BillCurrencyModeStatus 0x13U
 
 /* 安卓发给主板的功能码 */
-#define BeadMotor1Output 0x01U
-#define BeadMotor2Output 0x02U
+#define BeadMotor1Output 0x01U     /* 启动吐珠电机 */
+#define BeadMotor2Output 0x02U     /* 启动存珠电机 */
 #define Unlock 0x10U
 #define BillCurrencyModeSet 0x19U
 #define BillEnable 0x1AU
@@ -61,7 +61,8 @@
 #define MesgEvent_BillCurrencyMode (1u << 10)
 
 #define ResendTrigger_Time 1000U
-#define MesgDeal_Time 250U
+/* 覆盖安卓 1 秒重发和最多 3 次重发，防止同一 ID 重复执行电机命令。 */
+#define MesgDeal_Time 5000U
 #define Max_Resend_Times 3U
 
 void Mesg_Task(void);
