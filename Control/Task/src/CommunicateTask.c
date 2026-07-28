@@ -106,6 +106,14 @@ static uint16_t USART_GetData16(Mesg_TypeDef *mesg)
     return ((uint16_t)mesg->Data3 << 8U) | mesg->Data4;
 }
 
+static uint32_t USART_GetData32(Mesg_TypeDef *mesg)
+{
+    return ((uint32_t)mesg->Data1 << 24U) |
+           ((uint32_t)mesg->Data2 << 16U) |
+           ((uint32_t)mesg->Data3 << 8U) |
+           (uint32_t)mesg->Data4;
+}
+
 static void USART1_Deal(void *rx_mesg)
 {
     uint32_t data;
@@ -157,16 +165,24 @@ static void USART1_Deal(void *rx_mesg)
                 BillAcceptor_Reset();
                 break;
 
+            case BeadPriceSet:
+                /* Data1:Data4 为单颗珠子价格，单位：人民币元。 */
+                Purchase_SetBeadPrice(USART_GetData32(mesg));
+                break;
+
+            case PurchaseStatusRequest:
+                /* 返回价格、库存、欠吐数量和不足一颗的累计余额。 */
+                Purchase_RequestStatus();
+                break;
+
             case BoardRestart:
-                data = ((uint32_t)mesg->Data1 << 24U) |
-                       ((uint32_t)mesg->Data2 << 16U) |
-                       ((uint32_t)mesg->Data3 << 8U) |
-                       (uint32_t)mesg->Data4;
+                data = USART_GetData32(mesg);
                 Board_SystemRestart(data == OTA_REQUEST_MAGIC);
                 break;
 
             case StopAllDevice:
                 Device_StopAllImmediately();
+                Purchase_PauseDispense();
                 EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
                 break;
 
