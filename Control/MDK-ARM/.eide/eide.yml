@@ -1,5 +1,5 @@
 version: "4.1"
-name: PanTao_2
+name: Control
 type: ARM
 deviceName: null
 packDir: null
@@ -97,7 +97,7 @@ outDir: build
 miscInfo:
   uid: 16bed98e30596149d13fa935cebe8d51
 targets:
-  PanTao_2:
+  Control:
     cppPreprocessAttrs:
       defineList:
         - USE_HAL_DRIVER
@@ -233,7 +233,7 @@ targets:
         address: "0x0800C000"
         bin: ""
         elFile: None
-        optionBytes: .eide/pantao_2.st.option.bytes.ini
+        optionBytes: .eide/control.st.option.bytes.ini
         otherCmds: ""
         proType: SWD
         resetMode: default
@@ -250,7 +250,7 @@ targets:
       pyOCD:
         baseAddr: "0x08000000"
         bin: ""
-        config: .eide/pantao_2.pyocd.yaml
+        config: .eide/Control.pyocd.yaml
         otherCmds: ""
         speed: 4M
         targetName: cortex_m

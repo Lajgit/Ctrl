@@ -1,6 +1,6 @@
 {
-    "name": "PanTao_2",
-    "target": "PanTao_2",
+    "name": "Control",
+    "target": "Control",
     "toolchain": "AC5",
     "toolchainLocation": "E:\\Keil5\\ARM\\ARMCC",
     "toolchainCfgFile": "c:\\Users\\Administrator\\.vscode\\extensions\\cl.eide-3.27.2\\res\\data\\models/arm.v5.model.json",
@@ -8,8 +8,8 @@
     "showRepathOnLog": true,
     "threadNum": 12,
     "rootDir": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
-    "dumpPath": "build\\PanTao_2",
-    "outDir": "build\\PanTao_2",
+    "dumpPath": "build\\Control",
+    "outDir": "build\\Control",
     "ram": 131072,
     "rom": 606208,
     "incDirs": [
@@ -109,21 +109,21 @@
         "linker": {
             "output-format": "elf",
             "link-scatter": [
-                "e:/单片机项目/ChatGPT单片机项目/购珠机/Control/MDK-ARM/build/PanTao_2/PanTao_2.sct"
+                "e:/单片机项目/ChatGPT单片机项目/购珠机/Control/MDK-ARM/build/Control/Control.sct"
             ]
         }
     },
     "env": {
-        "KEIL_OUTPUT_DIR": "PanTao_2",
+        "KEIL_OUTPUT_DIR": "Control",
         "workspaceFolder": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
         "workspaceFolderBasename": "MDK-ARM",
-        "OutDir": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM\\build\\PanTao_2",
+        "OutDir": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM\\build\\Control",
         "OutDirRoot": "build",
-        "OutDirBase": "build\\PanTao_2",
-        "ProjectName": "PanTao_2",
-        "ConfigName": "PanTao_2",
+        "OutDirBase": "build\\Control",
+        "ProjectName": "Control",
+        "ConfigName": "Control",
         "ProjectRoot": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
-        "ExecutableName": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM\\build\\PanTao_2\\PanTao_2",
+        "ExecutableName": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM\\build\\Control\\Control",
         "ChipPackDir": "",
         "ChipName": "",
         "SYS_Platform": "win32",

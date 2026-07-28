@@ -1,24 +1,24 @@
 {
     "configurations": [
         {
-            "name": "PanTao_2",
+            "name": "Control",
             "includePath": [
-                "e:\\1_Project\\Project\\PanTao_2\\Core\\Inc",
-                "e:\\1_Project\\Project\\PanTao_2\\Drivers\\STM32F4xx_HAL_Driver\\Inc",
-                "e:\\1_Project\\Project\\PanTao_2\\Drivers\\STM32F4xx_HAL_Driver\\Inc\\Legacy",
-                "e:\\1_Project\\Project\\PanTao_2\\Drivers\\CMSIS\\Device\\ST\\STM32F4xx\\Include",
-                "e:\\1_Project\\Project\\PanTao_2\\Drivers\\CMSIS\\Include",
-                "e:\\1_Project\\Project\\PanTao_2\\Lib\\inc",
-                "e:\\1_Project\\Project\\PanTao_2\\Port\\inc",
-                "e:\\1_Project\\Project\\PanTao_2\\Task\\inc",
+                "e:\\1_Project\\Project\\Control\\Core\\Inc",
+                "e:\\1_Project\\Project\\Control\\Drivers\\STM32F4xx_HAL_Driver\\Inc",
+                "e:\\1_Project\\Project\\Control\\Drivers\\STM32F4xx_HAL_Driver\\Inc\\Legacy",
+                "e:\\1_Project\\Project\\Control\\Drivers\\CMSIS\\Device\\ST\\STM32F4xx\\Include",
+                "e:\\1_Project\\Project\\Control\\Drivers\\CMSIS\\Include",
+                "e:\\1_Project\\Project\\Control\\Lib\\inc",
+                "e:\\1_Project\\Project\\Control\\Port\\inc",
+                "e:\\1_Project\\Project\\Control\\Task\\inc",
                 "D:\\keil5\\ARM\\ARMCC\\include",
                 "D:\\keil5\\ARM\\ARMCC\\include\\rw",
-                "e:\\1_Project\\Project\\PanTao_2\\MDK-ARM",
-                "e:\\1_Project\\Project\\PanTao_2\\Core\\Src",
-                "e:\\1_Project\\Project\\PanTao_2\\Drivers\\STM32F4xx_HAL_Driver\\Src",
-                "e:\\1_Project\\Project\\PanTao_2\\Lib\\src",
-                "e:\\1_Project\\Project\\PanTao_2\\Port\\src",
-                "e:\\1_Project\\Project\\PanTao_2\\Task\\src"
+                "e:\\1_Project\\Project\\Control\\MDK-ARM",
+                "e:\\1_Project\\Project\\Control\\Core\\Src",
+                "e:\\1_Project\\Project\\Control\\Drivers\\STM32F4xx_HAL_Driver\\Src",
+                "e:\\1_Project\\Project\\Control\\Lib\\src",
+                "e:\\1_Project\\Project\\Control\\Port\\src",
+                "e:\\1_Project\\Project\\Control\\Task\\src"
             ],
             "defines": [
                 "USE_HAL_DRIVER",

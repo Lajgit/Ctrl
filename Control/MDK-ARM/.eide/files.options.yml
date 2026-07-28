@@ -15,7 +15,7 @@
 
 version: "2.1"
 options:
-    PanTao_2:
+    Control:
         files: {}
         virtualPathFiles:
             <virtual_root>/Application/User/Core/iwdg.c: ""

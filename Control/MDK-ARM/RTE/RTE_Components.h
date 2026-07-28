@@ -3,8 +3,8 @@
  * Auto generated Run-Time-Environment Component Configuration File
  *      *** Do not modify ! ***
  *
- * Project: 'PanTao_2' 
- * Target:  'PanTao_2' 
+ * Project: 'Control' 
+ * Target:  'Control' 
  */
 
 #ifndef RTE_COMPONENTS_H
