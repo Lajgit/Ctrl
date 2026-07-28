@@ -92,11 +92,11 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadPriceStatus))
     {
-        /* Data1:Data4 为单颗价格（元），ExpandCode 为设置结果。 */
+        /* Data1:Data4 为单颗价格（分），ExpandCode 为设置结果。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                BeadPriceStatus,
-                               Purchase_GetBeadPrice(),
+                               Purchase_GetBeadPriceFen(),
                                Purchase_GetPriceSetResult());
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadPriceStatus);
     }
@@ -125,11 +125,11 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_PurchaseCreditStatus))
     {
-        /* 尚不足一颗珠子的累计人民币余额，单位：元。 */
+        /* 尚不足一颗珠子的累计人民币余额，单位：分。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                PurchaseCreditStatus,
-                               Purchase_GetCreditYuan(),
+                               Purchase_GetCreditFen(),
                                0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_PurchaseCreditStatus);
     }
