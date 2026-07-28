@@ -1,24 +1,24 @@
 {
     "configurations": [
         {
-            "name": "Bootloader_PanTao_2",
+            "name": "Bootloader_Control",
             "includePath": [
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Core\\Inc",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\FATFS\\Target",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\FATFS\\App",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Drivers\\STM32F4xx_HAL_Driver\\Inc",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Drivers\\STM32F4xx_HAL_Driver\\Inc\\Legacy",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Middlewares\\Third_Party\\FatFs\\src",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Drivers\\CMSIS\\Device\\ST\\STM32F4xx\\Include",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Drivers\\CMSIS\\Include",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\App\\Inc",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Core\\Inc",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\FATFS\\Target",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\FATFS\\App",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Drivers\\STM32F4xx_HAL_Driver\\Inc",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Drivers\\STM32F4xx_HAL_Driver\\Inc\\Legacy",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Middlewares\\Third_Party\\FatFs\\src",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Drivers\\CMSIS\\Device\\ST\\STM32F4xx\\Include",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Drivers\\CMSIS\\Include",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\App\\Inc",
                 "D:\\keil5\\ARM\\ARMCC\\include",
                 "D:\\keil5\\ARM\\ARMCC\\include\\rw",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\MDK-ARM",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Core\\Src",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Drivers\\STM32F4xx_HAL_Driver\\Src",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\Middlewares\\Third_Party\\FatFs\\src\\option",
-                "e:\\1_Project\\Bootloader\\Bootloader_PanTao_2\\App\\Src"
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\MDK-ARM",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Core\\Src",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Drivers\\STM32F4xx_HAL_Driver\\Src",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\Middlewares\\Third_Party\\FatFs\\src\\option",
+                "e:\\1_Project\\Bootloader\\Bootloader_Control\\App\\Src"
             ],
             "defines": [
                 "USE_HAL_DRIVER",

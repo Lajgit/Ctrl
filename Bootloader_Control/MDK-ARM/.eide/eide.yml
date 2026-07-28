@@ -1,5 +1,5 @@
 version: "4.1"
-name: Bootloader_PanTao_2
+name: Bootloader_Control
 type: ARM
 deviceName: null
 packDir: null
@@ -94,7 +94,7 @@ outDir: build
 miscInfo:
   uid: 35335d3760850d1d416d84a0bf25693d
 targets:
-  Bootloader_PanTao_2:
+  Bootloader_Control:
     cppPreprocessAttrs:
       defineList:
         - USE_HAL_DRIVER
@@ -110,7 +110,7 @@ targets:
         - ../Drivers/CMSIS/Include
         - ../App/Inc
         - .cmsis/include
-        - RTE/_Bootloader_PanTao_2
+        - RTE/_Bootloader_Control
       libList: []
     excludeList: []
     settings:
@@ -232,7 +232,7 @@ targets:
         address: "0x8000000"
         bin: ""
         elFile: None
-        optionBytes: .eide/bootloader_pantao_2.st.option.bytes.ini
+        optionBytes: .eide/bootloader_control.st.option.bytes.ini
         otherCmds: ""
         proType: SWD
         resetMode: default

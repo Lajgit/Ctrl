@@ -15,6 +15,6 @@
 
 version: "2.1"
 options:
-    Bootloader_PanTao_2:
+    Bootloader_Control:
         files: {}
         virtualPathFiles: {}
