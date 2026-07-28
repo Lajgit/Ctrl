@@ -2,6 +2,7 @@
 #include "CtrlTask.h"
 #include "MesgTask.h"
 #include "KeyTask.h"
+#include "FlashTask.h"
 #include "InterruptTask.h"
 #include "CommunicateTask.h"
 #include "gpio.h"
@@ -29,9 +30,13 @@ void MainTaskInit(void)
 {
     EventGroupCreate(&Mesg_event);
     EventGroupCreate(&Event);
+
+    /* 先恢复价格、库存、余额和欠吐数量，再初始化购买相关外设。 */
+    FlashTask_Init();
     Device_Init();
-    KeyAll_Init();
     Communicate_Init();
+    KeyAll_Init();
+    Purchase_Init();
 }
 
 void MainTask(void)
@@ -46,10 +51,16 @@ void MainTask(void)
     InterruptTask_Process();
     HAL_IWDG_Refresh(&hiwdg);
 
+    /* 根据纸币、硬币、补珠延时和掉电恢复状态安排吐珠。 */
+    Purchase_Task();
     CtrlTask();
     HAL_IWDG_Refresh(&hiwdg);
 
     Mesg_Task();
+    HAL_IWDG_Refresh(&hiwdg);
+
+    /* 将最新价格、库存、余额和欠吐数量追加保存到 Sector 2。 */
+    FlashTask();
     HAL_IWDG_Refresh(&hiwdg);
 
     System_Task();
