@@ -51,16 +51,23 @@ void MainTask(void)
     InterruptTask_Process();
     HAL_IWDG_Refresh(&hiwdg);
 
+    /*
+     * 在启动下一次吐珠动作前，先保存本轮收款和光眼扣减结果，
+     * 尽量缩短“已经收款但尚未写入 Flash”的时间窗口。
+     */
+    FlashTask();
+    HAL_IWDG_Refresh(&hiwdg);
+
     /* 根据纸币、硬币、补珠延时和掉电恢复状态安排吐珠。 */
     Purchase_Task();
     CtrlTask();
     HAL_IWDG_Refresh(&hiwdg);
 
-    Mesg_Task();
+    /* 超时判定可能新增无珠状态和欠吐数量，再立即保存一次。 */
+    FlashTask();
     HAL_IWDG_Refresh(&hiwdg);
 
-    /* 将最新价格、库存、余额和欠吐数量追加保存到 Sector 2。 */
-    FlashTask();
+    Mesg_Task();
     HAL_IWDG_Refresh(&hiwdg);
 
     System_Task();
