@@ -11,6 +11,14 @@ typedef enum
     PULSE_HIGH_FILTER,
 } PulseState_t;
 
+typedef enum
+{
+    BILL_RX_IDLE = 0,
+    BILL_RX_WAIT_POWER_ON_2,
+    BILL_RX_WAIT_ESCROW_VALUE,
+    BILL_RX_WAIT_JAM_VALUE,
+} BillRxState_t;
+
 typedef struct
 {
     GPIO_TypeDef *gpio;
@@ -28,12 +36,18 @@ static uint8_t BillRxQueue[32];
 static volatile uint8_t BillRxHead = 0U;
 static volatile uint8_t BillRxTail = 0U;
 static uint8_t BillEscrowType = 0U;
-static bool BillWaitPowerAck = false;
-static bool BillWaitEscrowValue = false;
 static bool BillEnableState = true;
+static BillRxState_t BillRxState = BILL_RX_IDLE;
+static uint32_t BillRxStateTick = 0U;
 static uint32_t BillPollTick = 0U;
-static uint32_t BillEnableTick = 0U;
 static uint8_t BillLastReportStatus = 0xFFU;
+
+/* 启用、禁用命令只做有限次数重试，不再每秒永久发送。 */
+static bool BillStateCommandPending = false;
+static uint8_t BillStateCommand = 0U;
+static uint8_t BillExpectedStatus = 0U;
+static uint8_t BillStateCommandRetryCount = 0U;
+static uint32_t BillStateCommandTick = 0U;
 
 uint8_t BillAcceptor_RxByte;
 uint8_t BillAcceptor_LastType = 0U;
@@ -44,7 +58,6 @@ extern Event_Handle_t Mesg_event;
 extern Tx_HandleTypeDef Tx1;
 
 #define ICT_CMD_ACCEPT 0x02U
-#define ICT_CMD_REJECT 0x0FU
 #define ICT_CMD_POLL 0x0CU
 #define ICT_CMD_ENABLE 0x3EU
 #define ICT_CMD_DISABLE 0x5EU
@@ -54,11 +67,14 @@ extern Tx_HandleTypeDef Tx1;
 #define ICT_RESP_ESCROW 0x81U
 #define ICT_RESP_STACKING 0x10U
 #define ICT_RESP_REJECT 0x11U
+#define ICT_RESP_JAM_STACKING 0x83U
 #define ICT_DENOM_UNKNOWN 0x3FU
 #define ICT_DENOM_MIN 0x40U
 #define ICT_DENOM_MAX 0x4FU
 #define ICT_POLL_INTERVAL 150U
-#define ICT_ENABLE_REPEAT_TIME 1000U
+#define ICT_SEQUENCE_TIMEOUT 100U
+#define ICT_STATE_COMMAND_RETRY_TIME 1000U
+#define ICT_STATE_COMMAND_MAX_RETRY 3U
 
 static void Encoder_ShortCallback(uint16_t id)
 {
@@ -147,6 +163,22 @@ static void BillAcceptor_SendCommand(uint8_t cmd)
     HAL_UART_Transmit(&huart3, &cmd, 1U, 20U);
 }
 
+static void BillAcceptor_SetRxState(BillRxState_t state)
+{
+    BillRxState = state;
+    BillRxStateTick = HAL_GetTick();
+}
+
+static void BillAcceptor_StartStateCommand(uint8_t cmd)
+{
+    BillStateCommand = cmd;
+    BillExpectedStatus = cmd;
+    BillStateCommandRetryCount = 0U;
+    BillStateCommandTick = HAL_GetTick();
+    BillStateCommandPending = true;
+    BillAcceptor_SendCommand(cmd);
+}
+
 static bool BillAcceptor_IsDenomination(uint8_t data)
 {
     return (data == ICT_DENOM_UNKNOWN) ||
@@ -166,6 +198,12 @@ static void BillAcceptor_ReportStatus(uint8_t status)
 {
     BillAcceptor_LastStatus = status;
 
+    if ((BillStateCommandPending == true) &&
+        (status == BillExpectedStatus))
+    {
+        BillStateCommandPending = false;
+    }
+
     if (status != BillLastReportStatus)
     {
         BillLastReportStatus = status;
@@ -175,20 +213,36 @@ static void BillAcceptor_ReportStatus(uint8_t status)
 
 static void BillAcceptor_HandleByte(uint8_t data)
 {
-    if (BillWaitPowerAck == true)
+    /* 先处理正在等待的多字节序列。 */
+    if (BillRxState == BILL_RX_WAIT_POWER_ON_2)
     {
-        BillWaitPowerAck = false;
         if (data == ICT_RESP_POWER_ON_2)
         {
             BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
+            BillAcceptor_SetRxState(BILL_RX_IDLE);
+
+            /* 纸钞机重启后恢复安卓要求的禁用状态。 */
+            if (BillEnableState == false)
+            {
+                BillAcceptor_StartStateCommand(ICT_CMD_DISABLE);
+            }
             return;
         }
-    }
 
-    if (BillWaitEscrowValue == true)
+        if (data == ICT_RESP_POWER_ON_1)
+        {
+            BillRxStateTick = HAL_GetTick();
+            return;
+        }
+
+        BillAcceptor_SetRxState(BILL_RX_IDLE);
+    }
+    else if (BillRxState == BILL_RX_WAIT_ESCROW_VALUE)
     {
+        /* ICT106 文档序列中可能夹带 0x8F，等待币种码时忽略。 */
         if (data == ICT_RESP_POWER_ON_2)
         {
+            BillRxStateTick = HAL_GetTick();
             return;
         }
 
@@ -196,29 +250,58 @@ static void BillAcceptor_HandleByte(uint8_t data)
         {
             BillEscrowType = data;
             BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
-            BillWaitEscrowValue = false;
+            BillAcceptor_SetRxState(BILL_RX_IDLE);
             return;
         }
+
+        BillAcceptor_SetRxState(BILL_RX_IDLE);
+    }
+    else if (BillRxState == BILL_RX_WAIT_JAM_VALUE)
+    {
+        if (BillAcceptor_IsDenomination(data))
+        {
+            /* 0x83 后的币种已经堆叠，按已收钞上报并保留 0x83 状态。 */
+            BillAcceptor_LastType = data;
+            BillAcceptor_LastStatus = ICT_RESP_JAM_STACKING;
+            EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
+            BillEscrowType = 0U;
+            BillAcceptor_SetRxState(BILL_RX_IDLE);
+            return;
+        }
+
+        BillAcceptor_SetRxState(BILL_RX_IDLE);
     }
 
     switch (data)
     {
     case ICT_RESP_POWER_ON_1:
-        BillWaitPowerAck = true;
+        BillAcceptor_SetRxState(BILL_RX_WAIT_POWER_ON_2);
         break;
 
     case ICT_RESP_ESCROW:
-        BillWaitEscrowValue = true;
+        BillEscrowType = 0U;
+        BillAcceptor_SetRxState(BILL_RX_WAIT_ESCROW_VALUE);
         break;
 
     case ICT_RESP_STACKING:
-        BillAcceptor_LastType = BillEscrowType;
-        BillAcceptor_LastStatus = ICT_RESP_STACKING;
-        EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
+        /* 只有已取得币种码时才确认正常收钞，避免沿用上一次币种。 */
+        if (BillAcceptor_IsDenomination(BillEscrowType))
+        {
+            BillAcceptor_LastType = BillEscrowType;
+            BillAcceptor_LastStatus = ICT_RESP_STACKING;
+            EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
+        }
+        BillEscrowType = 0U;
         break;
 
     case ICT_RESP_REJECT:
+        BillEscrowType = 0U;
         BillAcceptor_ReportStatus(ICT_RESP_REJECT);
+        break;
+
+    case ICT_RESP_JAM_STACKING:
+        BillEscrowType = 0U;
+        BillAcceptor_SetRxState(BILL_RX_WAIT_JAM_VALUE);
         break;
 
     default:
@@ -235,14 +318,15 @@ static void BillAcceptor_Init(void)
     BillRxHead = 0U;
     BillRxTail = 0U;
     BillEscrowType = 0U;
-    BillWaitPowerAck = false;
-    BillWaitEscrowValue = false;
     BillEnableState = true;
+    BillRxState = BILL_RX_IDLE;
     BillLastReportStatus = 0xFFU;
     BillPollTick = HAL_GetTick();
-    BillEnableTick = HAL_GetTick();
+    BillStateCommandPending = false;
     HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
-    BillAcceptor_SendCommand(ICT_CMD_ENABLE);
+
+    /* 量产纸钞机仅使用 USART3 TTL，默认上电启用。 */
+    BillAcceptor_StartStateCommand(ICT_CMD_ENABLE);
 }
 
 static void BillAcceptor_Task(void)
@@ -255,17 +339,35 @@ static void BillAcceptor_Task(void)
         BillAcceptor_HandleByte(data);
     }
 
-    if ((BillEnableState == true) &&
+    /* ICT106 最大响应时间为 50 ms，100 ms 未完成则放弃当前多字节序列。 */
+    if ((BillRxState != BILL_RX_IDLE) &&
+        (now - BillRxStateTick >= ICT_SEQUENCE_TIMEOUT))
+    {
+        BillEscrowType = 0U;
+        BillAcceptor_SetRxState(BILL_RX_IDLE);
+    }
+
+    /* 等待多字节序列期间不插入 0x0C；启用或禁用状态均继续轮询。 */
+    if ((BillRxState == BILL_RX_IDLE) &&
         (now - BillPollTick >= ICT_POLL_INTERVAL))
     {
         BillAcceptor_SendCommand(ICT_CMD_POLL);
         BillPollTick = now;
     }
 
-    if (now - BillEnableTick >= ICT_ENABLE_REPEAT_TIME)
+    if ((BillStateCommandPending == true) &&
+        (now - BillStateCommandTick >= ICT_STATE_COMMAND_RETRY_TIME))
     {
-        BillAcceptor_SendCommand(BillEnableState ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
-        BillEnableTick = now;
+        if (BillStateCommandRetryCount < ICT_STATE_COMMAND_MAX_RETRY)
+        {
+            BillStateCommandRetryCount++;
+            BillStateCommandTick = now;
+            BillAcceptor_SendCommand(BillStateCommand);
+        }
+        else
+        {
+            BillStateCommandPending = false;
+        }
     }
 }
 
@@ -299,11 +401,15 @@ void BillAcceptor_SetCurrencyMode(uint8_t mode)
 void BillAcceptor_SetEnable(bool enable)
 {
     BillEnableState = enable;
-    BillAcceptor_SendCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
+    BillAcceptor_StartStateCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
 }
 
 void BillAcceptor_Reset(void)
 {
+    BillEscrowType = 0U;
+    BillAcceptor_LastType = 0U;
+    BillStateCommandPending = false;
+    BillAcceptor_SetRxState(BILL_RX_IDLE);
     BillAcceptor_SendCommand(ICT_CMD_RESET);
 }
 

@@ -13,6 +13,7 @@ extern uint8_t BillAcceptor_CurrencyMode;
 
 static uint32_t MakeRemainData(void)
 {
+    /* Data1:Data2 为吐珠剩余数量，Data3:Data4 为存珠剩余数量。 */
     return ((uint32_t)BeadMotor1.remain_num << 16U) |
            (uint32_t)BeadMotor2.remain_num;
 }
@@ -39,12 +40,14 @@ void Mesg_Task(void)
 {
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor1Feedback))
     {
+        /* PD3：吐珠电机光眼反馈。 */
         Comm_SendMesg_FillData(&Tx1, Board_to_Android, BeadMotor1Feedback, 1U, 0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadMotor1Feedback);
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor2Feedback))
     {
+        /* PD4：存珠电机光眼反馈。 */
         Comm_SendMesg_FillData(&Tx1, Board_to_Android, BeadMotor2Feedback, 1U, 0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadMotor2Feedback);
     }
@@ -78,11 +81,12 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BillCurrencyMode))
     {
+        /* 币种模式只放在 Data4，ExpandCode 保持 0。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                BillCurrencyModeStatus,
                                BillAcceptor_CurrencyMode,
-                               BillAcceptor_CurrencyMode);
+                               0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_BillCurrencyMode);
     }
 

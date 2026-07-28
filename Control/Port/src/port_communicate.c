@@ -31,7 +31,8 @@ void Communicate_Tx_Init(Tx_HandleTypeDef *Handle, Tx_InitTypeDef Tx_Init)
     Handle->TxBuf = Tx_Init.TxBuf;
     Handle->TxBuf_Size = Tx_Init.TxBuf_Size;
     Handle->Transimit = Communicate_Tx_Transmit;
-    Handle->huart->gState = HAL_UART_STATE_READY;
+
+    /* UART gState 由 HAL_UART_Init/Transmit/IRQ 维护，不在业务层强制改写。 */
 }
 
 /*

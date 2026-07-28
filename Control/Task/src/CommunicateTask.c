@@ -113,6 +113,7 @@ static void USART1_Deal(void *rx_mesg)
 
     if (mesg->Code1 == Android_to_Board)
     {
+        /* 合法帧先原样应答；相同 ID 在去重窗口内不重复执行业务。 */
         USART_RequestMesg(&Tx1, mesg);
 
         if (List_IsExistID(&DealList, mesg->ID) == false)
@@ -124,11 +125,13 @@ static void USART1_Deal(void *rx_mesg)
                 break;
 
             case BeadMotor1Output:
+                /* 电机1：PE9/PE11，PD3 光眼，用于吐珠。 */
                 BeadMotor_Output(&BeadMotor1, USART_GetData16(mesg));
                 EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
                 break;
 
             case BeadMotor2Output:
+                /* 电机2：PE13/PE14，PD4 光眼，用于存珠。 */
                 BeadMotor_Output(&BeadMotor2, USART_GetData16(mesg));
                 EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
                 break;
@@ -308,8 +311,11 @@ void Resend_Task(void)
     ListNode_t *current = ResendList.Head;
     uint32_t current_time = HAL_GetTick();
 
-    for (uint8_t i = 0U; i < ResendList.NodeCount; i++)
+    /* 删除当前节点前先保存 next，避免删除后跳过后续节点。 */
+    while (current != NULL)
     {
+        ListNode_t *next = current->Next;
+
         if (current_time - current->Value > ResendTrigger_Time)
         {
             USART_ReSendMesg(&Tx1, &(MesgTable[current->ID]));
@@ -321,7 +327,7 @@ void Resend_Task(void)
             }
         }
 
-        current = current->Next;
+        current = next;
     }
 }
 
@@ -330,14 +336,17 @@ void MesgDeal_Task(void)
     ListNode_t *current = DealList.Head;
     uint32_t current_time = HAL_GetTick();
 
-    for (uint8_t i = 0U; i < DealList.NodeCount; i++)
+    /* 去重节点到期后安全删除，不受 NodeCount 动态变化影响。 */
+    while (current != NULL)
     {
+        ListNode_t *next = current->Next;
+
         if (current_time - current->Value > MesgDeal_Time)
         {
             List_DeleteNode(&DealList, current->ID);
         }
 
-        current = current->Next;
+        current = next;
     }
 }
 

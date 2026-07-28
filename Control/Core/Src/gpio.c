@@ -84,17 +84,23 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : HoolleInput_Pin CoinInput_Pin Button3_Pin Button2_Pin */
-  GPIO_InitStruct.Pin = HoolleInput_Pin|CoinInput_Pin|Button3_Pin|Button2_Pin;
+  /*Configure GPIO pins : HoolleInput_Pin Button3_Pin Button2_Pin */
+  GPIO_InitStruct.Pin = HoolleInput_Pin|Button3_Pin|Button2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : HoolleOutput_Pin CardFeedback_Pin */
+  /* 投币器脉冲输入：PE15。 */
+  GPIO_InitStruct.Pin = CoinInput_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(CoinInput_GPIO_Port, &GPIO_InitStruct);
+
+  /* 两路电机光眼反馈：PD3 为吐珠，PD4 为存珠。 */
   GPIO_InitStruct.Pin = HoolleOutput_Pin|CardFeedback_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI1_CS_Pin SPI3_OE_Pin */
   GPIO_InitStruct.Pin = SPI1_CS_Pin|SPI3_OE_Pin;
@@ -102,12 +108,6 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : BillPulse_Pin */
-  GPIO_InitStruct.Pin = BillPulse_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(BillPulse_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : Hole1_Pin Hole2_Pin Switch3_Pin Switch2_Pin
                            Switch1_Pin Switch0_Pin */
@@ -137,14 +137,11 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : Button4_Pin Button5_Pin Button6_Pin SettingButton_Pin
-                           KeyBoard3_Pin KeyBoard2_Pin KeyBoard1_Pin Switch11_Pin
-                           Switch10_Pin Switch9_Pin Switch8_Pin Switch7_Pin
-                           Switch6_Pin Switch5_Pin Switch4_Pin */
+  /* PD3/PD4 已改作两路光眼反馈，不再按旧 Switch8/Switch7 初始化。 */
   GPIO_InitStruct.Pin = Button4_Pin|Button5_Pin|Button6_Pin|SettingButton_Pin
                           |KeyBoard3_Pin|KeyBoard2_Pin|KeyBoard1_Pin|Switch11_Pin
-                          |Switch10_Pin|Switch9_Pin|Switch8_Pin|Switch7_Pin
-                          |Switch6_Pin|Switch5_Pin|Switch4_Pin;
+                          |Switch10_Pin|Switch9_Pin|Switch6_Pin|Switch5_Pin
+                          |Switch4_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
@@ -156,11 +153,11 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(Button1_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI1_IRQn, 2, 0);
-  HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+  HAL_NVIC_SetPriority(EXTI3_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
 
-  HAL_NVIC_SetPriority(EXTI2_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI2_IRQn);
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 
 }
 
