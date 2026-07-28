@@ -7,7 +7,7 @@
     "buildMode": "fast|multhread",
     "showRepathOnLog": true,
     "threadNum": 12,
-    "rootDir": "e:\\单片机项目\\ChatGPT单片机项目\\蟠桃联网版\\PanTao_2\\MDK-ARM",
+    "rootDir": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
     "dumpPath": "build\\PanTao_2",
     "outDir": "build\\PanTao_2",
     "ram": 131072,
@@ -109,21 +109,21 @@
         "linker": {
             "output-format": "elf",
             "link-scatter": [
-                "e:/单片机项目/ChatGPT单片机项目/蟠桃联网版/PanTao_2/MDK-ARM/build/PanTao_2/PanTao_2.sct"
+                "e:/单片机项目/ChatGPT单片机项目/购珠机/Control/MDK-ARM/build/PanTao_2/PanTao_2.sct"
             ]
         }
     },
     "env": {
         "KEIL_OUTPUT_DIR": "PanTao_2",
-        "workspaceFolder": "e:\\单片机项目\\ChatGPT单片机项目\\蟠桃联网版\\PanTao_2\\MDK-ARM",
+        "workspaceFolder": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
         "workspaceFolderBasename": "MDK-ARM",
-        "OutDir": "e:\\单片机项目\\ChatGPT单片机项目\\蟠桃联网版\\PanTao_2\\MDK-ARM\\build\\PanTao_2",
+        "OutDir": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM\\build\\PanTao_2",
         "OutDirRoot": "build",
         "OutDirBase": "build\\PanTao_2",
         "ProjectName": "PanTao_2",
         "ConfigName": "PanTao_2",
-        "ProjectRoot": "e:\\单片机项目\\ChatGPT单片机项目\\蟠桃联网版\\PanTao_2\\MDK-ARM",
-        "ExecutableName": "e:\\单片机项目\\ChatGPT单片机项目\\蟠桃联网版\\PanTao_2\\MDK-ARM\\build\\PanTao_2\\PanTao_2",
+        "ProjectRoot": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM",
+        "ExecutableName": "e:\\单片机项目\\ChatGPT单片机项目\\购珠机\\Control\\MDK-ARM\\build\\PanTao_2\\PanTao_2",
         "ChipPackDir": "",
         "ChipName": "",
         "SYS_Platform": "win32",

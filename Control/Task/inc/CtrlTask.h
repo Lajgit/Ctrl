@@ -4,37 +4,28 @@
 #include "main.h"
 #include "port_device.h"
 
-#define HoolleMotorTimeout_time 3000
-#define CardMotorTimeout_time 5000
-#define HoolleMotorReverse_Time 300
-#define HoolleMotorRetry_Times 3
-#define ValveTimeout_time 800
-
-#define HoolleMotor_Speed 85
-#define HoolleMotor_Dir 1
+#define BeadMotorTimeout_time 3000U
+#define BeadMotorReverse_Time 300U
+#define BeadMotorRetry_Times 3U
+#define BeadMotor_Speed 85U
+#define BeadMotor_Dir 1U
+#define LockOpen_Time 800U
 
 typedef struct
 {
-    uint16_t Hoolle_num;
-    uint8_t RetryCount;
-    motor_t Motor;
-} Motor_Hoolle;
+    uint16_t remain_num;
+    uint8_t retry_count;
+    motor_t motor;
+} BeadMotor_t;
 
 typedef struct
 {
-    uint16_t Card_num;
-    uint8_t RetryCount;
-    switch_t Switch;
-} Motor_Card;
-
-typedef struct
-{
-    switch_t Switch;
-} Switch_Valve;
+    switch_t sw;
+} Lock_t;
 
 void Device_Init(void);
-void Hoolle_Output(Motor_Hoolle *Motor, uint16_t num);
-void Card_Output(Motor_Card *Switch, uint16_t num);
+void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num);
+void BeadMotor_Feedback(BeadMotor_t *bead_motor);
 void Device_StopAllImmediately(void);
 void CtrlTask(void);
 

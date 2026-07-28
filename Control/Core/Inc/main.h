@@ -79,6 +79,8 @@ void Error_Handler(void);
 #define CoinInput_GPIO_Port GPIOC
 #define J1_Pin GPIO_PIN_1
 #define J1_GPIO_Port GPIOA
+#define BillPulse_Pin GPIO_PIN_1
+#define BillPulse_GPIO_Port GPIOA
 #define J2_Pin GPIO_PIN_2
 #define J2_GPIO_Port GPIOA
 #define J3_Pin GPIO_PIN_3
@@ -99,6 +101,10 @@ void Error_Handler(void);
 #define CardOutput_GPIO_Port GPIOE
 #define HoolleMotor_B_Pin GPIO_PIN_11
 #define HoolleMotor_B_GPIO_Port GPIOE
+#define BeadMotor2_B_Pin GPIO_PIN_13
+#define BeadMotor2_B_GPIO_Port GPIOE
+#define BeadMotor2_A_Pin GPIO_PIN_14
+#define BeadMotor2_A_GPIO_Port GPIOE
 #define SPI2_CS_Pin GPIO_PIN_12
 #define SPI2_CS_GPIO_Port GPIOB
 #define SPI2_OE_Pin GPIO_PIN_14

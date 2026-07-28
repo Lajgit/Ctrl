@@ -849,9 +849,9 @@ erwork --depend=pantao_2\startup_stm32f407xx.d -opantao_2\startup_stm32f407xx.o
 ARM Macro Assembler    Page 14 
 
 
- -IE:\单片机项目\ChatGPT单片机项目\蟠桃联网版\PanTao_2\MDK-ARM\RTE -IE:\Keil5\A
-RM\PACK\ARM\CMSIS\4.2.0\CMSIS\Include --predefine="__UVISION_VERSION SETA 514" 
---predefine="_RTE_ SETA 1" --list=startup_stm32f407xx.lst startup_stm32f407xx.s
+ -IE:\单片机项目\ChatGPT单片机项目\购珠机\Control\MDK-ARM\RTE -IE:\Keil5\ARM\PA
+CK\ARM\CMSIS\4.2.0\CMSIS\Include --predefine="__UVISION_VERSION SETA 514" --pre
+define="_RTE_ SETA 1" --list=startup_stm32f407xx.lst startup_stm32f407xx.s
 
 
 

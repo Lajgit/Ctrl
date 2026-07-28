@@ -1,290 +1,360 @@
 #include "KeyTask.h"
-#include "port_key.h"
 #include "MesgTask.h"
-#include "MainTask.h"
-#include "LightTask.h"
-#include "CtrlTask.h"
-#include "port_digitaltube.h"
-
-static GPIO_TypeDef *Hole_GPIOPort[] = {Hole1_GPIO_Port, Hole2_GPIO_Port, Hole3_GPIO_Port,
-                                        Hole4_GPIO_Port};
-static uint16_t Hole_Pin[] = {Hole1_Pin, Hole2_Pin, Hole3_Pin, Hole4_Pin};
-
-static GPIO_TypeDef *Button_GPIOPort[] = {KeyBoard1_GPIO_Port, KeyBoard2_GPIO_Port, KeyBoard3_GPIO_Port};
-static uint16_t Button_Pin[] = {KeyBoard1_Pin, KeyBoard2_Pin, KeyBoard3_Pin};
-
-static GPIO_TypeDef *Switch_GPIOPort[] = {Switch0_GPIO_Port, Switch1_GPIO_Port, Switch2_GPIO_Port, Switch3_GPIO_Port, Switch4_GPIO_Port,
-                                          Switch5_GPIO_Port, Switch6_GPIO_Port, Switch7_GPIO_Port, Switch8_GPIO_Port, Switch9_GPIO_Port,
-                                          Switch10_GPIO_Port, Switch11_GPIO_Port};
-static uint16_t Switch_Pin[] = {Switch0_Pin, Switch1_Pin, Switch2_Pin, Switch3_Pin, Switch4_Pin, Switch5_Pin, Switch6_Pin,
-                                Switch7_Pin, Switch8_Pin, Switch9_Pin, Switch10_Pin, Switch11_Pin};
-
-static Key_HandleTypeDef Hole[4];
-static Key_HandleTypeDef *Hole_list[4];
-// static Key_HandleTypeDef Key[5];
-// static Key_HandleTypeDef *Key_list[5];
-static Key_HandleTypeDef Key[4];
-static Key_HandleTypeDef *Key_list[4];
-static Key_HandleTypeDef Switch[12];
-static Key_HandleTypeDef *Switch_list[12];
-uint8_t KeyState[4] = {0};
-
-extern Event_Handle_t Mesg_event;
-extern ListHandle_t ResendList, DealList;
-extern servo_t Servo;
-extern Scene_t Scene;
-extern Light_Handle_t *HoleLightList[4];
-extern Motor_Hoolle Motor_Hoolle1;
-extern Motor_Card Card;
-extern Tx_HandleTypeDef Tx1;
-extern Rx_HandleTypeDef Rx1;
-extern uint32_t ValveRestartTime;
-extern DigitalTube_t DigitalTube;
-
-Event_Handle_t Key_event;
-
-
-#define COIN_INPUT_DEBOUNCE_TIME 10U
+#include "port_key.h"
+#include "usart.h"
 
 typedef enum
 {
-    COIN_INPUT_IDLE = 0,
-    COIN_INPUT_LOW_FILTER,
-    COIN_INPUT_WAIT_RELEASE,
-    COIN_INPUT_HIGH_FILTER,
-} CoinInput_State_t;
+    PULSE_IDLE = 0,
+    PULSE_LOW_FILTER,
+    PULSE_WAIT_RELEASE,
+    PULSE_HIGH_FILTER,
+} PulseState_t;
 
-static CoinInput_State_t CoinInputState = COIN_INPUT_IDLE;
-static uint32_t CoinInputTick = 0;
-
-/*
- * ----------微动初始化----------
- */
-static void Switch_ShortCallback(uint16_t id)
+typedef struct
 {
-    if (id >= 12)
-        return;
-    // Comm_SendMesg_FillData(&Tx1, Board_to_Android, ChannelRequest, id, 0x00);
-    Comm_SendMesg_FillData_withResend(&Tx1, Board_to_Android, ChannelRequest, id, 0x00, &ResendList);
+    GPIO_TypeDef *gpio;
+    uint16_t pin;
+    PulseState_t state;
+    uint32_t tick;
+    event_bits_t event;
+} PulseInput_t;
+
+static Key_HandleTypeDef EncoderKey[3];
+static Key_HandleTypeDef *EncoderKeyList[3];
+
+static PulseInput_t CoinPulse;
+static uint8_t BillRxQueue[32];
+static volatile uint8_t BillRxHead = 0U;
+static volatile uint8_t BillRxTail = 0U;
+static uint8_t BillEscrowType = 0U;
+static bool BillWaitPowerAck = false;
+static bool BillWaitEscrowValue = false;
+static bool BillEnableState = true;
+static uint32_t BillPollTick = 0U;
+static uint32_t BillEnableTick = 0U;
+static uint8_t BillLastReportStatus = 0xFFU;
+
+uint8_t BillAcceptor_RxByte;
+uint8_t BillAcceptor_LastType = 0U;
+uint8_t BillAcceptor_LastStatus = 0U;
+uint8_t BillAcceptor_CurrencyMode = BILL_CURRENCY_RMB;
+
+extern Event_Handle_t Mesg_event;
+extern Tx_HandleTypeDef Tx1;
+
+#define ICT_CMD_ACCEPT 0x02U
+#define ICT_CMD_REJECT 0x0FU
+#define ICT_CMD_POLL 0x0CU
+#define ICT_CMD_ENABLE 0x3EU
+#define ICT_CMD_DISABLE 0x5EU
+#define ICT_CMD_RESET 0x30U
+#define ICT_RESP_POWER_ON_1 0x80U
+#define ICT_RESP_POWER_ON_2 0x8FU
+#define ICT_RESP_ESCROW 0x81U
+#define ICT_RESP_STACKING 0x10U
+#define ICT_RESP_REJECT 0x11U
+#define ICT_DENOM_UNKNOWN 0x3FU
+#define ICT_DENOM_MIN 0x40U
+#define ICT_DENOM_MAX 0x4FU
+#define ICT_POLL_INTERVAL 150U
+#define ICT_ENABLE_REPEAT_TIME 1000U
+
+static void Encoder_ShortCallback(uint16_t id)
+{
+    /* id: 0=CCW, 1=CW, 2=DOWN */
+    Comm_SendMesg_FillData(&Tx1, Board_to_Android, Encoder, (uint32_t)id + 1U, 0x00U);
 }
 
-static void Switch_ReleaseCallback(uint16_t id)
+static void PulseInput_Init(PulseInput_t *input,
+                            GPIO_TypeDef *gpio,
+                            uint16_t pin,
+                            event_bits_t event)
 {
+    input->gpio = gpio;
+    input->pin = pin;
+    input->state = PULSE_IDLE;
+    input->tick = HAL_GetTick();
+    input->event = event;
 }
 
-static void Switch_Init(void)
+static void PulseInput_Scan(PulseInput_t *input)
 {
-    for (int i = 0; i < 12; i++)
+    GPIO_PinState pin_state = HAL_GPIO_ReadPin(input->gpio, input->pin);
+    uint32_t current_tick = HAL_GetTick();
+
+    switch (input->state)
     {
-        Key_Init(&Switch[i], i, Switch_GPIOPort[i], Switch_Pin[i], KEY_DEBOUNCE_TIME, KEY_LONG_PRESS_TIME, 1, Switch_ShortCallback, NULL, Switch_ReleaseCallback, GPIO_PIN_SET);
-        Switch_list[i] = &Switch[i];
-    }
-}
-
-/*
- * ----------洞口初始化----------
- */
-static void Hole_ShortCallback(uint16_t id)
-{
-    if (id >= 4)
-        return;
-    if (HoleLightList[id]->state == 0)
-    {
-        HoleLightList[id]->state = 1;
-        HoleLightList[id]->SetColor(HoleLightList[id], GREEN, 255);
-    }
-    if (KeyState[id] == 0)
-    {
-        KeyState[id] = 1;
-        EventGroupClearBits(&Key_event, Event_AllHoleSwitchTrigger);
-        // if (Scene == SCENE_PLAYING)
-        {
-            Comm_SendMesg_FillData_withResend(&Tx1, Board_to_Android, LightEye, (uint32_t)id + 1, 0x00, &ResendList);
-        }
-    }
-}
-
-static void Hole_LongCallback(uint16_t id)
-{
-}
-
-static void Hole_ReleaseCallback(uint16_t id)
-{
-    // if (id >= 4)
-    //     return;
-    // HoleLightList[id]->state = 0;
-    // HoleLightList[id]->SetColor(HoleLightList[id], NONE, 0);
-}
-
-static void Hole_Init(void)
-{
-    for (int i = 0; i < 4; i++)
-    {
-        Key_Init(&Hole[i], i, Hole_GPIOPort[i], Hole_Pin[i], KEY_DEBOUNCE_TIME, HOLE_LONG_PRESS_TIME, HOLE_LONG_TRIGGER_FREQUENCY, Hole_ShortCallback, Hole_LongCallback, Hole_ReleaseCallback, GPIO_PIN_SET);
-        Hole_list[i] = &Hole[i];
-    }
-}
-
-/*
- * ----------按键初始化----------
- */
-
-static void SettingButtonScan(void)
-{
-    for (uint8_t i = 0; i < 3; i++)
-    {
-        if (HAL_GPIO_ReadPin(Button_GPIOPort[i], Button_Pin[i]) == GPIO_PIN_SET)
-            return;
-    }
-    Comm_SendMesg_FillData(&Tx1, Board_to_Android, IntoHigherStage, 0x00, 0x00);
-}
-
-static void Key_ShortCallback(uint16_t id)
-{
-    // if (id >= 5)
-    //     return;
-    // if (id <= 2)
-    // {
-    //     Comm_SendMesg_FillData(&Tx1, Board_to_Android, SettingButton, id + 1, 0x01);
-    // }
-    // if (id == 3)
-    //     EventGroupSetBits(&Mesg_event, MesgEvent_HoolleInput);
-    // if (id == 4)
-    //     EventGroupSetBits(&Mesg_event, MesgEvent_CoinInput);
-    if (id >= 4)
-        return;
-    
-    if (id <= 2)
-    {
-        Comm_SendMesg_FillData(&Tx1, Board_to_Android,SettingButton, id + 1, 0x01);
-    }
-    
-    if (id == 3)
-        EventGroupSetBits(&Mesg_event, MesgEvent_HoolleInput);
-}
-
-static void Key_LongCallback(uint16_t id)
-{
-    if (id >= 3)
-        return;
-    if (id <= 2)
-    {
-        SettingButtonScan();
-        Comm_SendMesg_FillData(&Tx1, Board_to_Android, SettingButton, id + 1, 0x02);
-    }
-}
-
-static void Key_ReleaseCallback(uint16_t id)
-{
-}
-
-static void CoinInput_Scan(void)
-{
-    GPIO_PinState pin_state;
-    uint32_t current_tick;
-
-    pin_state = HAL_GPIO_ReadPin(CoinInput_GPIO_Port, CoinInput_Pin);
-    current_tick = HAL_GetTick();
-
-    switch (CoinInputState)
-    {
-    case COIN_INPUT_IDLE:
+    case PULSE_IDLE:
         if (pin_state == GPIO_PIN_RESET)
         {
-            CoinInputTick = current_tick;
-            CoinInputState = COIN_INPUT_LOW_FILTER;
+            input->tick = current_tick;
+            input->state = PULSE_LOW_FILTER;
         }
         break;
 
-    case COIN_INPUT_LOW_FILTER:
+    case PULSE_LOW_FILTER:
         if (pin_state == GPIO_PIN_SET)
         {
-            /* 低电平不足10ms，判定为毛刺 */
-            CoinInputState = COIN_INPUT_IDLE;
+            input->state = PULSE_IDLE;
         }
-        else if (current_tick - CoinInputTick >=
-                 COIN_INPUT_DEBOUNCE_TIME)
+        else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
         {
-            /* 低电平有效，等待投币脉冲释放 */
-            CoinInputState = COIN_INPUT_WAIT_RELEASE;
+            input->state = PULSE_WAIT_RELEASE;
         }
         break;
 
-    case COIN_INPUT_WAIT_RELEASE:
+    case PULSE_WAIT_RELEASE:
         if (pin_state == GPIO_PIN_SET)
         {
-            CoinInputTick = current_tick;
-            CoinInputState = COIN_INPUT_HIGH_FILTER;
+            input->tick = current_tick;
+            input->state = PULSE_HIGH_FILTER;
         }
         break;
 
-    case COIN_INPUT_HIGH_FILTER:
+    case PULSE_HIGH_FILTER:
         if (pin_state == GPIO_PIN_RESET)
         {
-            /* 高电平未稳定，继续等待释放 */
-            CoinInputState = COIN_INPUT_WAIT_RELEASE;
+            input->state = PULSE_WAIT_RELEASE;
         }
-        else if (current_tick - CoinInputTick >=
-                 COIN_INPUT_DEBOUNCE_TIME)
+        else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
         {
-            /* 完整有效脉冲，只上报一次投币 */
-            EventGroupSetBits(&Mesg_event, MesgEvent_CoinInput);
-            CoinInputState = COIN_INPUT_IDLE;
+            EventGroupSetBits(&Mesg_event, input->event);
+            input->state = PULSE_IDLE;
         }
         break;
 
     default:
-        CoinInputState = COIN_INPUT_IDLE;
+        input->state = PULSE_IDLE;
         break;
     }
 }
 
-static void Button_Init(void)
+static bool BillAcceptor_ReadByte(uint8_t *data)
 {
-    for (int i = 0; i < 3; i++)
+    if (BillRxHead == BillRxTail)
     {
-        Key_Init(&Key[i], i, Button_GPIOPort[i], Button_Pin[i], 15, KEY_LONG_PRESS_TIME, 1, Key_ShortCallback, Key_LongCallback, Key_ReleaseCallback, GPIO_PIN_RESET);
-        Key_list[i] = &Key[i];
+        return false;
     }
-    // 投珠光眼
-    Key_Init(&Key[3], 3, HoolleInput_GPIO_Port, HoolleInput_Pin, 1, 2000, 1, Key_ShortCallback, Key_LongCallback, Key_ReleaseCallback, GPIO_PIN_RESET);
-    Key_list[3] = &Key[3];
-    // 投币器
-    // Key_Init(&Key[4], 4, CoinInput_GPIO_Port, CoinInput_Pin, 1, 2000, 1, Key_ShortCallback, Key_LongCallback, Key_ReleaseCallback, GPIO_PIN_RESET);
-    // Key_list[4] = &Key[4];
+
+    *data = BillRxQueue[BillRxTail];
+    BillRxTail = (uint8_t)((BillRxTail + 1U) % sizeof(BillRxQueue));
+    return true;
+}
+
+static void BillAcceptor_SendCommand(uint8_t cmd)
+{
+    HAL_UART_Transmit(&huart3, &cmd, 1U, 20U);
+}
+
+static bool BillAcceptor_IsDenomination(uint8_t data)
+{
+    return (data == ICT_DENOM_UNKNOWN) ||
+           ((data >= ICT_DENOM_MIN) && (data <= ICT_DENOM_MAX));
+}
+
+static bool BillAcceptor_IsStatus(uint8_t data)
+{
+    return ((data >= 0x20U) && (data <= 0x2FU)) ||
+           (data == ICT_CMD_ENABLE) ||
+           (data == ICT_CMD_DISABLE) ||
+           (data == 0x71U) ||
+           (data == 0xA1U);
+}
+
+static void BillAcceptor_ReportStatus(uint8_t status)
+{
+    BillAcceptor_LastStatus = status;
+
+    if (status != BillLastReportStatus)
+    {
+        BillLastReportStatus = status;
+        EventGroupSetBits(&Mesg_event, MesgEvent_BillStatus);
+    }
+}
+
+static void BillAcceptor_HandleByte(uint8_t data)
+{
+    if (BillWaitPowerAck == true)
+    {
+        BillWaitPowerAck = false;
+        if (data == ICT_RESP_POWER_ON_2)
+        {
+            BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
+            return;
+        }
+    }
+
+    if (BillWaitEscrowValue == true)
+    {
+        if (data == ICT_RESP_POWER_ON_2)
+        {
+            return;
+        }
+
+        if (BillAcceptor_IsDenomination(data))
+        {
+            BillEscrowType = data;
+            BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
+            BillWaitEscrowValue = false;
+            return;
+        }
+    }
+
+    switch (data)
+    {
+    case ICT_RESP_POWER_ON_1:
+        BillWaitPowerAck = true;
+        break;
+
+    case ICT_RESP_ESCROW:
+        BillWaitEscrowValue = true;
+        break;
+
+    case ICT_RESP_STACKING:
+        BillAcceptor_LastType = BillEscrowType;
+        BillAcceptor_LastStatus = ICT_RESP_STACKING;
+        EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
+        break;
+
+    case ICT_RESP_REJECT:
+        BillAcceptor_ReportStatus(ICT_RESP_REJECT);
+        break;
+
+    default:
+        if (BillAcceptor_IsStatus(data))
+        {
+            BillAcceptor_ReportStatus(data);
+        }
+        break;
+    }
+}
+
+static void BillAcceptor_Init(void)
+{
+    BillRxHead = 0U;
+    BillRxTail = 0U;
+    BillEscrowType = 0U;
+    BillWaitPowerAck = false;
+    BillWaitEscrowValue = false;
+    BillEnableState = true;
+    BillLastReportStatus = 0xFFU;
+    BillPollTick = HAL_GetTick();
+    BillEnableTick = HAL_GetTick();
+    HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
+    BillAcceptor_SendCommand(ICT_CMD_ENABLE);
+}
+
+static void BillAcceptor_Task(void)
+{
+    uint8_t data;
+    uint32_t now = HAL_GetTick();
+
+    while (BillAcceptor_ReadByte(&data) == true)
+    {
+        BillAcceptor_HandleByte(data);
+    }
+
+    if ((BillEnableState == true) &&
+        (now - BillPollTick >= ICT_POLL_INTERVAL))
+    {
+        BillAcceptor_SendCommand(ICT_CMD_POLL);
+        BillPollTick = now;
+    }
+
+    if (now - BillEnableTick >= ICT_ENABLE_REPEAT_TIME)
+    {
+        BillAcceptor_SendCommand(BillEnableState ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
+        BillEnableTick = now;
+    }
+}
+
+void BillAcceptor_RxCpltCallback(void)
+{
+    uint8_t next_head = (uint8_t)((BillRxHead + 1U) % sizeof(BillRxQueue));
+
+    if (next_head != BillRxTail)
+    {
+        BillRxQueue[BillRxHead] = BillAcceptor_RxByte;
+        BillRxHead = next_head;
+    }
+
+    HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
+}
+
+void BillAcceptor_SetCurrencyMode(uint8_t mode)
+{
+    if (mode == BILL_CURRENCY_FOREIGN)
+    {
+        BillAcceptor_CurrencyMode = BILL_CURRENCY_FOREIGN;
+    }
+    else
+    {
+        BillAcceptor_CurrencyMode = BILL_CURRENCY_RMB;
+    }
+
+    EventGroupSetBits(&Mesg_event, MesgEvent_BillCurrencyMode);
+}
+
+void BillAcceptor_SetEnable(bool enable)
+{
+    BillEnableState = enable;
+    BillAcceptor_SendCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
+}
+
+void BillAcceptor_Reset(void)
+{
+    BillAcceptor_SendCommand(ICT_CMD_RESET);
 }
 
 void KeyAll_Init(void)
 {
-    Hole_Init();
-    Button_Init();
-    Switch_Init();
-    EventGroupClearBits(&Mesg_event, Event_SettingButtonPress);
-    EventGroupClearBits(&Key_event, Event_AllHoleSwitchTrigger);
+    Key_Init(&EncoderKey[0],
+             0U,
+             KeyBoard1_GPIO_Port,
+             KeyBoard1_Pin,
+             KEY_DEBOUNCE_TIME,
+             800U,
+             1U,
+             Encoder_ShortCallback,
+             NULL,
+             NULL,
+             GPIO_PIN_RESET);
+    EncoderKeyList[0] = &EncoderKey[0];
+
+    Key_Init(&EncoderKey[1],
+             1U,
+             KeyBoard2_GPIO_Port,
+             KeyBoard2_Pin,
+             KEY_DEBOUNCE_TIME,
+             800U,
+             1U,
+             Encoder_ShortCallback,
+             NULL,
+             NULL,
+             GPIO_PIN_RESET);
+    EncoderKeyList[1] = &EncoderKey[1];
+
+    Key_Init(&EncoderKey[2],
+             2U,
+             KeyBoard3_GPIO_Port,
+             KeyBoard3_Pin,
+             KEY_DEBOUNCE_TIME,
+             800U,
+             1U,
+             Encoder_ShortCallback,
+             NULL,
+             NULL,
+             GPIO_PIN_RESET);
+    EncoderKeyList[2] = &EncoderKey[2];
+
+    PulseInput_Init(&CoinPulse, CoinInput_GPIO_Port, CoinInput_Pin, MesgEvent_CoinInput);
+    BillAcceptor_Init();
 }
+
 void Key_Task(void)
 {
-    // SettingButtonScan();
-    if (HAL_GetTick() > 10000)
-        Key_Scan(Hole_list, 4);
-    // Key_Scan(Key_list, 5);
-    Key_Scan(Key_list, 4);
-    CoinInput_Scan();
-    Key_Scan(Switch_list, 12);
-    if (EventGroupCheckBits(&Key_event, Event_AllHoleSwitchTrigger) == false)
-    {
-        uint8_t i;
-        for (i = 0; i < 4; i++)
-        {
-            if (KeyState[i] == 0)
-                break;
-        }
-        if (i == 4)
-        {
-            Motor_Hoolle1.Motor.state = DEVICE_STATE_PAUSE;
-            Comm_SendMesg_FillData_withResend(&Tx1, Board_to_Android, LightEye, 0x00, 0xFF, &ResendList);
-            ValveRestartTime = HAL_GetTick();
-            EventGroupSetBits(&Key_event, Event_AllHoleSwitchTrigger);
-        }
-    }
+    Key_Scan(EncoderKeyList, 3U);
+    PulseInput_Scan(&CoinPulse);
+    BillAcceptor_Task();
 }

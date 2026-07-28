@@ -103,6 +103,12 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : BillPulse_Pin */
+  GPIO_InitStruct.Pin = BillPulse_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(BillPulse_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pins : Hole1_Pin Hole2_Pin Switch3_Pin Switch2_Pin
                            Switch1_Pin Switch0_Pin */
   GPIO_InitStruct.Pin = Hole1_Pin|Hole2_Pin|Switch3_Pin|Switch2_Pin
