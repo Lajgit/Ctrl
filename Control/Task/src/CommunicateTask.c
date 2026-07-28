@@ -133,9 +133,16 @@ static void USART1_Deal(void *rx_mesg)
                 break;
 
             case BeadMotor1Output:
-                /* 电机1：PE9/PE11，PD3 光眼，用于吐珠。 */
-                BeadMotor_Output(&BeadMotor1, USART_GetData16(mesg));
-                EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+                /* 无珠库存锁定时不允许安卓绕过 K1 直接重新启动吐珠。 */
+                if (Purchase_GetBeadStock() > 0U)
+                {
+                    BeadMotor_Output(&BeadMotor1, USART_GetData16(mesg));
+                    EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+                }
+                else
+                {
+                    EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
+                }
                 break;
 
             case BeadMotor2Output:
@@ -154,7 +161,15 @@ static void USART1_Deal(void *rx_mesg)
                 break;
 
             case BillEnable:
-                BillAcceptor_SetEnable(true);
+                /* 无珠后只能由 K1 补珠流程重新启用纸钞机。 */
+                if (Purchase_GetBeadStock() > 0U)
+                {
+                    BillAcceptor_SetEnable(true);
+                }
+                else
+                {
+                    EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
+                }
                 break;
 
             case BillDisable:
