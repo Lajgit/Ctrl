@@ -9,7 +9,7 @@
 
 #define VERSION_MAJOR 1U
 #define VERSION_MINOR 1U
-#define VERSION_PATCH 0U
+#define VERSION_PATCH 1U
 #define VERSION_BUILD 0U
 #define VERSION ((VERSION_MAJOR << 24) | (VERSION_MINOR << 16) | \
                  (VERSION_PATCH << 8) | VERSION_BUILD)
@@ -48,7 +48,7 @@
 #define BillEnable 0x1AU
 #define BillDisable 0x1BU
 #define BillReset 0x1CU
-#define BeadPriceSet 0x20U         /* Data1:Data4 为单颗价格，单位：元 */
+#define BeadPriceSet 0x20U         /* Data1:Data4 为单颗价格，单位：人民币分 */
 #define PurchaseStatusRequest 0x21U
 #define BoardRestart 0xF0U
 #define StopAllDevice 0xFFU
