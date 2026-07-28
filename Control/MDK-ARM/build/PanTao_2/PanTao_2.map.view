@@ -1,0 +1,6 @@
+tool: AC5
+fileName: 'PanTao_2.map'
+elfName: 'PanTao_2.axf'
+compilerName: 'ARM Compiler'
+compilerFullName: 'Component: ARM Compiler 5.05 update 1 (build 106)'
+compilerPath: 'E:\Keil5\ARM\ARMCC\bin\armcc.exe'

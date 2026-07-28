@@ -1,0 +1,25 @@
+# Keil 编译输出目录
+Objects/
+Listings/
+
+# 编译中间文件
+*.o
+*.d
+*.crf
+*.dep
+*.lnp
+*.map
+*.htm
+*.html
+
+# Keil 用户配置和临时文件
+*.uvguix.*
+*.uvguix
+*.scvd
+*.bak
+*.tmp
+*.log
+
+# Windows 临时文件
+Thumbs.db
+Desktop.ini
