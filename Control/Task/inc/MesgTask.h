@@ -8,7 +8,7 @@
 #define Android_USART USART1
 
 #define VERSION_MAJOR 1U
-#define VERSION_MINOR 0U
+#define VERSION_MINOR 1U
 #define VERSION_PATCH 0U
 #define VERSION_BUILD 0U
 #define VERSION ((VERSION_MAJOR << 24) | (VERSION_MINOR << 16) | \
@@ -31,6 +31,15 @@
 #define BillStatus 0x12U
 #define BillCurrencyModeStatus 0x13U
 
+/* 固件购买、库存和补珠状态。 */
+#define BeadPriceStatus 0x20U
+#define BeadStockStatus 0x21U
+#define PurchasePendingStatus 0x22U
+#define PurchaseCreditStatus 0x23U
+#define BeadLowStock 0x24U
+#define BeadEmpty 0x25U
+#define BeadRefilled 0x26U
+
 /* 安卓发给主板的功能码 */
 #define BeadMotor1Output 0x01U     /* 启动吐珠电机 */
 #define BeadMotor2Output 0x02U     /* 启动存珠电机 */
@@ -39,6 +48,8 @@
 #define BillEnable 0x1AU
 #define BillDisable 0x1BU
 #define BillReset 0x1CU
+#define BeadPriceSet 0x20U         /* Data1:Data4 为单颗价格，单位：元 */
+#define PurchaseStatusRequest 0x21U
 #define BoardRestart 0xF0U
 #define StopAllDevice 0xFFU
 
@@ -59,6 +70,13 @@
 #define MesgEvent_VersionRequest (1u << 8)
 #define MesgEvent_BillStatus (1u << 9)
 #define MesgEvent_BillCurrencyMode (1u << 10)
+#define MesgEvent_BeadPriceStatus (1u << 11)
+#define MesgEvent_BeadStockStatus (1u << 12)
+#define MesgEvent_PurchasePendingStatus (1u << 13)
+#define MesgEvent_PurchaseCreditStatus (1u << 14)
+#define MesgEvent_BeadLowStock (1u << 15)
+#define MesgEvent_BeadEmpty (1u << 16)
+#define MesgEvent_BeadRefilled (1u << 17)
 
 #define ResendTrigger_Time 1000U
 /* 覆盖安卓 1 秒重发和最多 3 次重发，防止同一 ID 重复执行电机命令。 */

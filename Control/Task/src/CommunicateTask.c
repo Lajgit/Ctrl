@@ -106,6 +106,14 @@ static uint16_t USART_GetData16(Mesg_TypeDef *mesg)
     return ((uint16_t)mesg->Data3 << 8U) | mesg->Data4;
 }
 
+static uint32_t USART_GetData32(Mesg_TypeDef *mesg)
+{
+    return ((uint32_t)mesg->Data1 << 24U) |
+           ((uint32_t)mesg->Data2 << 16U) |
+           ((uint32_t)mesg->Data3 << 8U) |
+           (uint32_t)mesg->Data4;
+}
+
 static void USART1_Deal(void *rx_mesg)
 {
     uint32_t data;
@@ -125,9 +133,16 @@ static void USART1_Deal(void *rx_mesg)
                 break;
 
             case BeadMotor1Output:
-                /* 电机1：PE9/PE11，PD3 光眼，用于吐珠。 */
-                BeadMotor_Output(&BeadMotor1, USART_GetData16(mesg));
-                EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+                /* 无珠库存锁定时不允许安卓绕过 K1 直接重新启动吐珠。 */
+                if (Purchase_GetBeadStock() > 0U)
+                {
+                    BeadMotor_Output(&BeadMotor1, USART_GetData16(mesg));
+                    EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+                }
+                else
+                {
+                    EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
+                }
                 break;
 
             case BeadMotor2Output:
@@ -146,7 +161,15 @@ static void USART1_Deal(void *rx_mesg)
                 break;
 
             case BillEnable:
-                BillAcceptor_SetEnable(true);
+                /* 无珠后只能由 K1 补珠流程重新启用纸钞机。 */
+                if (Purchase_GetBeadStock() > 0U)
+                {
+                    BillAcceptor_SetEnable(true);
+                }
+                else
+                {
+                    EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
+                }
                 break;
 
             case BillDisable:
@@ -157,16 +180,24 @@ static void USART1_Deal(void *rx_mesg)
                 BillAcceptor_Reset();
                 break;
 
+            case BeadPriceSet:
+                /* Data1:Data4 为单颗珠子价格，单位：人民币元。 */
+                Purchase_SetBeadPrice(USART_GetData32(mesg));
+                break;
+
+            case PurchaseStatusRequest:
+                /* 返回价格、库存、欠吐数量和不足一颗的累计余额。 */
+                Purchase_RequestStatus();
+                break;
+
             case BoardRestart:
-                data = ((uint32_t)mesg->Data1 << 24U) |
-                       ((uint32_t)mesg->Data2 << 16U) |
-                       ((uint32_t)mesg->Data3 << 8U) |
-                       (uint32_t)mesg->Data4;
+                data = USART_GetData32(mesg);
                 Board_SystemRestart(data == OTA_REQUEST_MAGIC);
                 break;
 
             case StopAllDevice:
                 Device_StopAllImmediately();
+                Purchase_PauseDispense();
                 EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
                 break;
 

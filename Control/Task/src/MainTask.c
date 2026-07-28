@@ -2,6 +2,7 @@
 #include "CtrlTask.h"
 #include "MesgTask.h"
 #include "KeyTask.h"
+#include "FlashTask.h"
 #include "InterruptTask.h"
 #include "CommunicateTask.h"
 #include "gpio.h"
@@ -29,9 +30,24 @@ void MainTaskInit(void)
 {
     EventGroupCreate(&Mesg_event);
     EventGroupCreate(&Event);
+
+    /* 先恢复价格、库存、余额和欠吐数量，再初始化购买相关外设。 */
+    FlashTask_Init();
     Device_Init();
-    KeyAll_Init();
     Communicate_Init();
+    KeyAll_Init();
+    Purchase_Init();
+
+    /* 上电后主动同步购买状态，避免安卓界面与控制板掉电状态不一致。 */
+    Purchase_RequestStatus();
+    if (Purchase_GetBeadStock() == 0U)
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
+    }
+    else if (Purchase_GetBeadStock() <= PURCHASE_LOW_STOCK_THRESHOLD)
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_BeadLowStock);
+    }
 }
 
 void MainTask(void)
@@ -46,7 +62,20 @@ void MainTask(void)
     InterruptTask_Process();
     HAL_IWDG_Refresh(&hiwdg);
 
+    /*
+     * 在启动下一次吐珠动作前，先保存本轮收款和光眼扣减结果，
+     * 尽量缩短“已经收款但尚未写入 Flash”的时间窗口。
+     */
+    FlashTask();
+    HAL_IWDG_Refresh(&hiwdg);
+
+    /* 根据纸币、硬币、补珠延时和掉电恢复状态安排吐珠。 */
+    Purchase_Task();
     CtrlTask();
+    HAL_IWDG_Refresh(&hiwdg);
+
+    /* 超时判定可能新增无珠状态和欠吐数量，再立即保存一次。 */
+    FlashTask();
     HAL_IWDG_Refresh(&hiwdg);
 
     Mesg_Task();
