@@ -2,11 +2,15 @@ package com.gouzhu.mqtt;
 
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
 import com.gouzhu.activation.ActivationManager;
-import com.gouzhu.serial.SerialManager;
 import com.gouzhu.upgrade.UpgradeManager;
 import com.gouzhu.util.DeviceUtil;
 
@@ -28,8 +32,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 购珠机 MQTT 管理器。
  *
- * <p>连接、自动重连、订阅和心跳逻辑移植自 OTA_XLH3566；删除了第二个主 App
- * 的守护与游戏配置分发，只保留购珠机单应用需要的升级和控制入口。</p>
+ * <p>Broker、订阅 Topic 和全部上报 Topic 只使用激活接口返回值，不在代码中
+ * 拼接临时 Topic。日志不输出密码、operationToken、取珠码或完整业务 payload。</p>
  */
 public final class MqttManager {
 
@@ -64,7 +68,7 @@ public final class MqttManager {
     /** 异步连接 MQTT。 */
     public void connect(ActivationManager.MqttCredential credential) {
         if (credential == null || !credential.isValid()) {
-            broadcastStatus("mqtt", "MQTT凭据无效");
+            broadcastStatus("mqtt", "MQTT凭证或Topic不完整");
             return;
         }
         this.credential = credential;
@@ -75,12 +79,10 @@ public final class MqttManager {
         if (!connecting.compareAndSet(false, true)) {
             return;
         }
-
         try {
             if (client != null && client.isConnected()) {
                 ensureSubscribed();
                 startHeartbeatLoop();
-                UpgradeManager.get(context).resumePendingResult();
                 return;
             }
 
@@ -105,12 +107,7 @@ public final class MqttManager {
 
             client.setCallback(new CallbackImpl());
             client.connect(options);
-            ensureSubscribed();
-            reportHeartbeat();
-            startHeartbeatLoop();
-            UpgradeManager.get(context).resumePendingResult();
-            broadcastStatus("mqtt", "MQTT已连接");
-            reconnectScheduled.set(false);
+            afterConnected(false);
         } catch (Throwable error) {
             Log.e(TAG, "MQTT连接失败", error);
             broadcastStatus("mqtt", "MQTT连接失败");
@@ -122,15 +119,12 @@ public final class MqttManager {
 
     /** 发布 QoS 1 非保留消息。 */
     public synchronized boolean publish(String topic, String payload) {
-        if (client == null || !client.isConnected()) {
+        if (topic == null || topic.isEmpty() || client == null || !client.isConnected()) {
             return false;
         }
-
         try {
-            MqttMessage message = new MqttMessage(
-                    payload.getBytes(StandardCharsets.UTF_8)
-            );
-            message.setQos(1);
+            MqttMessage message = new MqttMessage(payload.getBytes(StandardCharsets.UTF_8));
+            message.setQos(credential == null || credential.qos <= 0 ? 1 : credential.qos);
             message.setRetained(false);
             client.publish(topic, message);
             return true;
@@ -140,7 +134,49 @@ public final class MqttManager {
         }
     }
 
-    /** 上报升级进度，字段保持 OTA_XLH3566 的后台格式。 */
+    public boolean reportCommandResult(String payload) {
+        return publishReport("command-result", payload);
+    }
+
+    public boolean reportCashEvent(String payload) {
+        return publishReport("cash-event", payload);
+    }
+
+    public boolean reportRedemptionRequest(String requestId, String pickupCode) {
+        if (requestId == null || requestId.isEmpty()
+                || pickupCode == null || pickupCode.isEmpty()) {
+            return false;
+        }
+        try {
+            JSONObject json = new JSONObject();
+            json.put("requestId", requestId);
+            json.put("pickupCode", pickupCode);
+            return publishReport("redemption-request", json.toString());
+        } catch (Throwable error) {
+            return false;
+        }
+    }
+
+    public boolean reportFault(
+            String faultCode,
+            String faultName,
+            int faultLevel,
+            String faultDesc
+    ) {
+        try {
+            JSONObject json = new JSONObject();
+            json.put("faultCode", faultCode);
+            json.put("faultName", faultName);
+            json.put("faultLevel", faultLevel);
+            json.put("faultDesc", faultDesc);
+            json.put("timestamp", System.currentTimeMillis());
+            return publishReport("fault", json.toString());
+        } catch (Throwable error) {
+            return false;
+        }
+    }
+
+    /** 上报 APK/控制板升级进度。 */
     public boolean reportUpgradeProgress(
             String messageId,
             String status,
@@ -156,7 +192,7 @@ public final class MqttManager {
         try {
             JSONObject json = new JSONObject();
             json.put("messageId", safe(messageId));
-            json.put("deviceNo", DeviceUtil.getDeviceId(context));
+            json.put("deviceNo", DeviceUtil.requireDeviceNo(context));
             json.put("status", status);
             json.put("progress", progress);
             json.put("currentVersion", safe(currentVersion));
@@ -167,12 +203,32 @@ public final class MqttManager {
             json.put("errorCode", errorCode == null ? JSONObject.NULL : errorCode);
             json.put("errorMessage", errorMessage == null ? JSONObject.NULL : errorMessage);
             json.put("timestamp", System.currentTimeMillis());
-            return publish(
-                    getUpgradeProgressTopic(DeviceUtil.getDeviceId(context)),
-                    json.toString()
-            );
+            return publishReport("upgrade-progress", json.toString());
         } catch (Throwable error) {
             Log.e(TAG, "组装升级进度失败", error);
+            return false;
+        }
+    }
+
+    /** 状态与心跳分开上报。 */
+    public boolean reportStatus() {
+        try {
+            DeviceCommandStore commandStore = new DeviceCommandStore(context);
+            String boardVersion = DeviceUtil.formatBoardVersion(commandStore.getBoardVersion());
+            JSONObject json = new JSONObject();
+            json.put("runningStatus", DeviceCommandManager.get(context).getRunningStatus());
+            json.put("publicIp", "");
+            json.put("privateIp", getPrivateIp());
+            json.put("networkType", getNetworkType());
+            json.put("privateHttpBaseUrl", "");
+            json.put("apkVersion", DeviceUtil.getAppVersion(context));
+            json.put("apkVersionCode", DeviceUtil.getAppVersionCode(context));
+            json.put("firmwareVersion", boardVersion);
+            json.put("firmwareVersionCode", DeviceUtil.parseBoardVersionCode(boardVersion));
+            json.put("timestamp", System.currentTimeMillis());
+            return publishReport("status", json.toString());
+        } catch (Throwable error) {
+            Log.e(TAG, "状态上报失败", error);
             return false;
         }
     }
@@ -193,24 +249,28 @@ public final class MqttManager {
         if (client == null || !client.isConnected()) {
             return;
         }
-
-        String deviceId = DeviceUtil.getDeviceId(context);
         client.subscribe(
-                new String[]{
-                        getUpgradeTopic(deviceId),
-                        getControlTopic(deviceId),
-                        getConfigTopic(deviceId),
-                        getTaskTopic(deviceId)
-                },
-                new int[]{1, 1, 1, 1}
+                credential.commandSubscribeTopic,
+                credential.qos <= 0 ? 1 : credential.qos
         );
+    }
+
+    private void afterConnected(boolean reconnect) throws Exception {
+        ensureSubscribed();
+        reportHeartbeat();
+        reportStatus();
+        startHeartbeatLoop();
+        DeviceCommandManager.get(context).start();
+        DeviceCommandManager.get(context).flushPending();
+        UpgradeManager.get(context).resumePendingResult();
+        broadcastStatus("mqtt", reconnect ? "MQTT已重连" : "MQTT已连接");
+        reconnectScheduled.set(false);
     }
 
     private synchronized void startHeartbeatLoop() {
         if (heartbeatTask != null && !heartbeatTask.isCancelled()) {
             return;
         }
-
         int interval = credential != null && credential.heartbeatInterval > 0
                 ? credential.heartbeatInterval
                 : AppConfig.DEFAULT_HEARTBEAT_SECONDS;
@@ -223,25 +283,27 @@ public final class MqttManager {
     }
 
     private void reportHeartbeat() {
-        try {
-            JSONObject json = new JSONObject();
-            json.put("machineId", DeviceUtil.getDeviceId(context));
-            json.put("deviceNo", DeviceUtil.getDeviceId(context));
-            json.put("status", "online");
-            json.put("appVersion", DeviceUtil.getAppVersion(context));
-            json.put("boardConnected", SerialManager.get(context).isOpen());
-            json.put("timestamp", System.currentTimeMillis());
-            publish(getHeartbeatTopic(DeviceUtil.getDeviceId(context)), json.toString());
-        } catch (Throwable error) {
-            Log.e(TAG, "发送MQTT心跳失败", error);
+        publishReport("heartbeat", "{}");
+    }
+
+    private boolean publishReport(String key, String payload) {
+        ActivationManager.MqttCredential current = credential;
+        if (current == null) {
+            return false;
         }
+        String topic = current.getReportTopic(key);
+        if (topic.isEmpty()) {
+            Log.e(TAG, "激活响应缺少上报Topic：" + key);
+            return false;
+        }
+        return publish(topic, payload);
     }
 
     private void handleMessage(String topic, String payload) {
         try {
             JSONObject json = new JSONObject(payload);
-            String targetDevice = json.optString("deviceNo", "");
-            String localDevice = DeviceUtil.getDeviceId(context);
+            String targetDevice = DeviceUtil.normalizeDeviceNo(json.optString("deviceNo", ""));
+            String localDevice = DeviceUtil.requireDeviceNo(context);
             if (!targetDevice.isEmpty() && !localDevice.equals(targetDevice)) {
                 return;
             }
@@ -250,43 +312,17 @@ public final class MqttManager {
                 UpgradeManager.get(context).handleMqttCommand(payload);
                 return;
             }
-
-            if (topic.contains("/command/control")) {
-                handleControlCommand(json);
+            if (topic.contains("/command/control") || topic.contains("/command/config")) {
+                DeviceCommandManager.get(context).handleCommand(json);
                 return;
             }
-
-            // 配置和任务 topic 暂时保留订阅，未定义的业务不擅自执行。
-            Log.i(TAG, "收到暂未实现的MQTT消息，topic=" + topic);
+            if (topic.contains("/command/task")) {
+                Log.i(TAG, "收到异步任务，当前仅保留订阅，未打印完整payload");
+                return;
+            }
+            Log.w(TAG, "收到未知MQTT Topic：" + topic);
         } catch (Throwable error) {
             Log.e(TAG, "处理MQTT消息失败", error);
-        }
-    }
-
-    private void handleControlCommand(JSONObject json) {
-        String action = json.optString("action", json.optString("command", ""));
-        SerialManager serial = SerialManager.get(context);
-
-        switch (action) {
-            case "stop":
-            case "stopAll":
-                serial.sendCommand(0xFF, 0, true);
-                break;
-            case "unlock":
-                serial.sendCommand(0x10, 0, true);
-                break;
-            case "setPrice":
-                int priceCent = json.optInt("priceCent", 0);
-                if (priceCent >= 1 && priceCent <= 10000) {
-                    serial.sendCommand(0x20, priceCent, true);
-                }
-                break;
-            case "requestStatus":
-                serial.sendCommand(0x21, 0, false);
-                break;
-            default:
-                Log.w(TAG, "未知远程控制命令=" + action);
-                break;
         }
     }
 
@@ -304,14 +340,12 @@ public final class MqttManager {
         if (client == null) {
             return;
         }
-
         try {
             if (client.isConnected()) {
                 client.disconnect();
             }
         } catch (Throwable ignored) {
         }
-
         try {
             client.close();
         } catch (Throwable ignored) {
@@ -327,18 +361,61 @@ public final class MqttManager {
         context.sendBroadcast(intent);
     }
 
+    private String getPrivateIp() {
+        try {
+            ConnectivityManager manager =
+                    (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            Network network = manager == null ? null : manager.getActiveNetwork();
+            LinkProperties properties = manager == null || network == null
+                    ? null
+                    : manager.getLinkProperties(network);
+            if (properties != null) {
+                for (LinkAddress address : properties.getLinkAddresses()) {
+                    if (!address.getAddress().isLoopbackAddress()
+                            && address.getAddress().getHostAddress() != null
+                            && !address.getAddress().getHostAddress().contains(":")) {
+                        return address.getAddress().getHostAddress();
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
+    }
+
+    private String getNetworkType() {
+        try {
+            ConnectivityManager manager =
+                    (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            Network network = manager == null ? null : manager.getActiveNetwork();
+            NetworkCapabilities capabilities = manager == null || network == null
+                    ? null
+                    : manager.getNetworkCapabilities(network);
+            if (capabilities == null) {
+                return "unknown";
+            }
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                return "wifi";
+            }
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
+                return "ethernet";
+            }
+            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                return "cellular";
+            }
+        } catch (Throwable ignored) {
+        }
+        return "unknown";
+    }
+
     private final class CallbackImpl implements MqttCallbackExtended {
         @Override
         public void connectComplete(boolean reconnect, String serverURI) {
             executor.execute(() -> {
                 try {
-                    ensureSubscribed();
-                    reportHeartbeat();
-                    startHeartbeatLoop();
-                    UpgradeManager.get(context).resumePendingResult();
-                    broadcastStatus("mqtt", reconnect ? "MQTT已重连" : "MQTT已连接");
+                    afterConnected(reconnect);
                 } catch (Throwable error) {
-                    Log.e(TAG, "MQTT重连后恢复订阅失败", error);
+                    Log.e(TAG, "MQTT连接后恢复失败", error);
                 }
             });
         }
@@ -360,29 +437,5 @@ public final class MqttManager {
 
     private static String safe(String value) {
         return value == null ? "" : value;
-    }
-
-    private static String getUpgradeTopic(String deviceId) {
-        return "pxd/v1/device/" + deviceId + "/command/upgrade";
-    }
-
-    private static String getControlTopic(String deviceId) {
-        return "pxd/v1/device/" + deviceId + "/command/control";
-    }
-
-    private static String getConfigTopic(String deviceId) {
-        return "pxd/v1/device/" + deviceId + "/command/config";
-    }
-
-    private static String getTaskTopic(String deviceId) {
-        return "pxd/v1/device/" + deviceId + "/command/task";
-    }
-
-    private static String getHeartbeatTopic(String deviceId) {
-        return "pxd/v1/device/" + deviceId + "/report/heartbeat";
-    }
-
-    private static String getUpgradeProgressTopic(String deviceId) {
-        return "pxd/v1/device/" + deviceId + "/report/upgrade-progress";
     }
 }

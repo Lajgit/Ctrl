@@ -14,6 +14,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -22,6 +23,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.gouzhu.mqtt.DeviceCommandManager;
 import com.gouzhu.network.WifiConfigActivity;
 import com.gouzhu.network.WifiSupport;
 import com.gouzhu.payment.PaymentManager;
@@ -31,8 +33,8 @@ import com.gouzhu.service.DeviceService;
 /**
  * 购珠机顾客主界面。
  *
- * <p>正式顾客界面不显示网络、MQTT、串口、库存、版本号等设备状态。
- * K2 或当前预留的后台按钮用于进入后台设置。</p>
+ * <p>顾客页隐藏内部设备状态；K2 或调试按钮进入后台。会员存珠任务到达后，
+ * 用户倒完珠子并点击“开始存珠”，才启动控制板存珠电机。</p>
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -45,6 +47,11 @@ public class MainActivity extends AppCompatActivity {
     private TextView paymentStatusText;
     private Button paymentButton;
     private ImageView paymentQrImage;
+
+    private LinearLayout collectionLayout;
+    private TextView collectionStatusText;
+    private Button collectionStartButton;
+    private Button collectionFinishButton;
 
     private int selectedBeadCount;
     private int selectedPriceFen;
@@ -65,6 +72,11 @@ public class MainActivity extends AppCompatActivity {
 
             if (PaymentManager.ACTION_PAYMENT_EVENT.equals(intent.getAction())) {
                 handlePaymentEvent(intent);
+                return;
+            }
+
+            if (AppConfig.ACTION_COLLECTION_EVENT.equals(intent.getAction())) {
+                handleCollectionEvent(intent);
             }
         }
     };
@@ -95,6 +107,12 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         backendOpening = false;
         hideSystemUi();
+        if (DeviceCommandManager.get(this).hasPendingCollection()) {
+            collectionLayout.setVisibility(View.VISIBLE);
+            collectionStatusText.setText(R.string.collection_ready_hint);
+            collectionStartButton.setEnabled(true);
+            collectionFinishButton.setEnabled(false);
+        }
     }
 
     @Override
@@ -120,6 +138,11 @@ public class MainActivity extends AppCompatActivity {
         paymentButton = findViewById(R.id.button_start_payment);
         paymentQrImage = findViewById(R.id.image_payment_qr);
         paymentButton.setEnabled(false);
+
+        collectionLayout = findViewById(R.id.layout_collection);
+        collectionStatusText = findViewById(R.id.text_collection_status);
+        collectionStartButton = findViewById(R.id.button_collection_start);
+        collectionFinishButton = findViewById(R.id.button_collection_finish);
     }
 
     private void bindActions() {
@@ -131,7 +154,18 @@ public class MainActivity extends AppCompatActivity {
         bindPackageButton(R.id.button_package_100, 100, 10000);
 
         paymentButton.setOnClickListener(view -> startPayment());
-        findViewById(R.id.button_backend_settings).setOnClickListener(view -> openBackendSettings());
+        findViewById(R.id.button_backend_settings).setOnClickListener(
+                view -> openBackendSettings()
+        );
+        collectionStartButton.setOnClickListener(view -> {
+            if (DeviceCommandManager.get(this).startPendingCollection()) {
+                collectionStartButton.setEnabled(false);
+                collectionFinishButton.setEnabled(true);
+            }
+        });
+        collectionFinishButton.setOnClickListener(view ->
+                DeviceCommandManager.get(this).finishPendingCollection()
+        );
     }
 
     private void bindPackageButton(int viewId, int beadCount, int priceFen) {
@@ -192,6 +226,26 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void handleCollectionEvent(Intent intent) {
+        String event = intent.getStringExtra(DeviceCommandManager.EXTRA_COLLECTION_EVENT);
+        String message = intent.getStringExtra(DeviceCommandManager.EXTRA_COLLECTION_MESSAGE);
+        collectionLayout.setVisibility(View.VISIBLE);
+        collectionStatusText.setText(message == null ? "" : message);
+
+        if (DeviceCommandManager.COLLECTION_READY.equals(event)) {
+            collectionStartButton.setEnabled(true);
+            collectionFinishButton.setEnabled(false);
+        } else if (DeviceCommandManager.COLLECTION_STARTED.equals(event)
+                || DeviceCommandManager.COLLECTION_PROGRESS.equals(event)) {
+            collectionStartButton.setEnabled(false);
+            collectionFinishButton.setEnabled(true);
+        } else if (DeviceCommandManager.COLLECTION_FINISHED.equals(event)
+                || DeviceCommandManager.COLLECTION_FAILED.equals(event)) {
+            collectionStartButton.setEnabled(false);
+            collectionFinishButton.setEnabled(false);
+        }
+    }
+
     private void handleBoardEvent(int code2) {
         switch (code2) {
             case CODE_BACKEND_SETTINGS_REQUEST:
@@ -236,6 +290,7 @@ public class MainActivity extends AppCompatActivity {
         IntentFilter filter = new IntentFilter();
         filter.addAction(AppConfig.ACTION_BOARD_EVENT);
         filter.addAction(PaymentManager.ACTION_PAYMENT_EVENT);
+        filter.addAction(AppConfig.ACTION_COLLECTION_EVENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(appReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {

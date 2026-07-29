@@ -38,10 +38,14 @@ static volatile uint8_t BillRxHead = 0U;
 static volatile uint8_t BillRxTail = 0U;
 static uint8_t BillEscrowType = 0U;
 static bool BillEnableState = true;
+static bool CoinEnableState = true;
 static BillRxState_t BillRxState = BILL_RX_IDLE;
 static uint32_t BillRxStateTick = 0U;
 static uint32_t BillPollTick = 0U;
 static uint8_t BillLastReportStatus = 0xFFU;
+
+/* 最近一次现金事件：Data1=介质，Data2:Data4=整数人民币元。 */
+static volatile uint32_t CashEventPackedData = 0U;
 
 /* 启用、禁用命令只做有限次数重试，不再每秒永久发送。 */
 static bool BillStateCommandPending = false;
@@ -76,6 +80,104 @@ extern Tx_HandleTypeDef Tx1;
 #define ICT_SEQUENCE_TIMEOUT 100U
 #define ICT_STATE_COMMAND_RETRY_TIME 1000U
 #define ICT_STATE_COMMAND_MAX_RETRY 3U
+
+/**
+ * 量产硬件适配点：控制投币器 inhibit/enable 引脚。
+ *
+ * 当前控制板源码未给出真实 inhibit 引脚，默认弱实现只保留软件状态；
+ * 硬件引脚确认后在其他源文件提供同名强实现覆盖本函数。
+ */
+__weak bool CashHardware_SetCoinEnable(bool enable)
+{
+    (void)enable;
+    return true;
+}
+
+/**
+ * 量产硬件适配点：执行真实退币动作。
+ *
+ * medium：0=硬币，1=纸币；amount_yuan：整数人民币元。
+ * 当前原理图未标注退币机构控制引脚或串口协议，因此弱实现返回失败，
+ * 防止在未确认硬件接口时误驱动其他输出。
+ */
+__weak bool CashHardware_DoReturn(uint8_t medium, uint32_t amount_yuan)
+{
+    (void)medium;
+    (void)amount_yuan;
+    return false;
+}
+
+static uint32_t BillTypeToYuan(uint8_t bill_type)
+{
+    switch (bill_type)
+    {
+    case 0x40U:
+        return 1U;
+    case 0x41U:
+        return 5U;
+    case 0x42U:
+        return 10U;
+    case 0x43U:
+        return 20U;
+    case 0x44U:
+        return 50U;
+    case 0x45U:
+        return 100U;
+    default:
+        return 0U;
+    }
+}
+
+static void CashEvent_Set(uint8_t medium, uint32_t amount_yuan)
+{
+    if ((amount_yuan == 0U) || (amount_yuan > 0x00FFFFFFUL))
+    {
+        return;
+    }
+
+    CashEventPackedData = ((uint32_t)medium << 24U) |
+                          (amount_yuan & 0x00FFFFFFUL);
+}
+
+uint32_t CashEvent_GetPackedData(void)
+{
+    return CashEventPackedData;
+}
+
+void CoinAcceptor_SetEnable(bool enable)
+{
+    CoinEnableState = enable;
+    (void)CashHardware_SetCoinEnable(enable);
+}
+
+bool CoinAcceptor_IsEnabled(void)
+{
+    return CoinEnableState;
+}
+
+bool CashHardware_RequestReturn(uint8_t medium, uint32_t amount_yuan)
+{
+    if (((medium != CASH_MEDIUM_COIN) &&
+         (medium != CASH_MEDIUM_BANKNOTE)) ||
+        (amount_yuan == 0U) ||
+        (amount_yuan > 0x00FFFFFFUL))
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashReturnFailed);
+        return false;
+    }
+
+    CashEvent_Set(medium, amount_yuan);
+
+    if (CashHardware_DoReturn(medium, amount_yuan) == false)
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashReturnFailed);
+        return false;
+    }
+
+    CashEvent_Set(medium, amount_yuan);
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashReturnedAmount);
+    return true;
+}
 
 static void Encoder_ShortCallback(uint16_t id)
 {
@@ -142,12 +244,19 @@ static void PulseInput_Scan(PulseInput_t *input)
         }
         else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
         {
-            EventGroupSetBits(&Mesg_event, input->event);
-
-            if (input->event == MesgEvent_CoinInput)
+            if ((input->event != MesgEvent_CoinInput) ||
+                (CoinEnableState == true))
             {
-                /* 硬币机每个有效脉冲固定计为人民币 1 元，由固件计算吐珠数量。 */
+                EventGroupSetBits(&Mesg_event, input->event);
+            }
+
+            if ((input->event == MesgEvent_CoinInput) &&
+                (CoinEnableState == true))
+            {
+                /* 1 个有效硬币脉冲固定为 1 元，由控制板独立计价和吐珠。 */
                 Purchase_AddCoinPayment();
+                CashEvent_Set(CASH_MEDIUM_COIN, 1U);
+                EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptedAmount);
             }
 
             input->state = PULSE_IDLE;
@@ -227,28 +336,32 @@ static void BillAcceptor_ReportStatus(uint8_t status)
 
 static void BillAcceptor_CompletePayment(uint8_t bill_type, uint8_t complete_status)
 {
+    uint32_t amount_yuan;
+
     BillAcceptor_LastType = bill_type;
     BillAcceptor_LastStatus = complete_status;
     EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
 
-    /* 当前先实现人民币版本，0x40~0x45 的金额由控制板直接换算吐珠。 */
     if (BillAcceptor_CurrencyMode == BILL_CURRENCY_RMB)
     {
         Purchase_AddBillPayment(bill_type);
+        amount_yuan = BillTypeToYuan(bill_type);
+        if (amount_yuan > 0U)
+        {
+            CashEvent_Set(CASH_MEDIUM_BANKNOTE, amount_yuan);
+            EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptedAmount);
+        }
     }
 }
 
 static void BillAcceptor_HandleByte(uint8_t data)
 {
-    /* 先处理正在等待的多字节序列。 */
     if (BillRxState == BILL_RX_WAIT_POWER_ON_2)
     {
         if (data == ICT_RESP_POWER_ON_2)
         {
             BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
             BillAcceptor_SetRxState(BILL_RX_IDLE);
-
-            /* 纸钞机重启后恢复固件要求的禁用状态。 */
             if (BillEnableState == false)
             {
                 BillAcceptor_StartStateCommand(ICT_CMD_DISABLE);
@@ -261,12 +374,10 @@ static void BillAcceptor_HandleByte(uint8_t data)
             BillRxStateTick = HAL_GetTick();
             return;
         }
-
         BillAcceptor_SetRxState(BILL_RX_IDLE);
     }
     else if (BillRxState == BILL_RX_WAIT_ESCROW_VALUE)
     {
-        /* ICT106 文档序列中可能夹带 0x8F，等待币种码时忽略。 */
         if (data == ICT_RESP_POWER_ON_2)
         {
             BillRxStateTick = HAL_GetTick();
@@ -280,20 +391,17 @@ static void BillAcceptor_HandleByte(uint8_t data)
             BillAcceptor_SetRxState(BILL_RX_IDLE);
             return;
         }
-
         BillAcceptor_SetRxState(BILL_RX_IDLE);
     }
     else if (BillRxState == BILL_RX_WAIT_JAM_VALUE)
     {
         if (BillAcceptor_IsDenomination(data))
         {
-            /* 0x83 后的币种已经堆叠，按已收钞和已付款处理。 */
             BillAcceptor_CompletePayment(data, ICT_RESP_JAM_STACKING);
             BillEscrowType = 0U;
             BillAcceptor_SetRxState(BILL_RX_IDLE);
             return;
         }
-
         BillAcceptor_SetRxState(BILL_RX_IDLE);
     }
 
@@ -309,7 +417,6 @@ static void BillAcceptor_HandleByte(uint8_t data)
         break;
 
     case ICT_RESP_STACKING:
-        /* 只有已取得币种码时才确认正常收钞，避免沿用上一次币种。 */
         if (BillAcceptor_IsDenomination(BillEscrowType))
         {
             BillAcceptor_CompletePayment(BillEscrowType, ICT_RESP_STACKING);
@@ -342,14 +449,15 @@ static void BillAcceptor_Init(void)
     BillRxTail = 0U;
     BillEscrowType = 0U;
     BillEnableState = true;
+    CoinEnableState = true;
     BillRxState = BILL_RX_IDLE;
     BillLastReportStatus = 0xFFU;
     BillPollTick = HAL_GetTick();
     BillStateCommandPending = false;
     HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
 
-    /* 量产纸钞机仅使用 USART3 TTL，默认上电启用；无珠状态会在 Purchase_Init 中重新禁用。 */
     BillAcceptor_StartStateCommand(ICT_CMD_ENABLE);
+    (void)CashHardware_SetCoinEnable(true);
 }
 
 static void BillAcceptor_Task(void)
@@ -362,7 +470,6 @@ static void BillAcceptor_Task(void)
         BillAcceptor_HandleByte(data);
     }
 
-    /* ICT106 最大响应时间为 50 ms，100 ms 未完成则放弃当前多字节序列。 */
     if ((BillRxState != BILL_RX_IDLE) &&
         (now - BillRxStateTick >= ICT_SEQUENCE_TIMEOUT))
     {
@@ -370,7 +477,6 @@ static void BillAcceptor_Task(void)
         BillAcceptor_SetRxState(BILL_RX_IDLE);
     }
 
-    /* 等待多字节序列期间不插入 0x0C；启用或禁用状态均继续轮询。 */
     if ((BillRxState == BILL_RX_IDLE) &&
         (now - BillPollTick >= ICT_POLL_INTERVAL))
     {
@@ -397,27 +503,18 @@ static void BillAcceptor_Task(void)
 void BillAcceptor_RxCpltCallback(void)
 {
     uint8_t next_head = (uint8_t)((BillRxHead + 1U) % sizeof(BillRxQueue));
-
     if (next_head != BillRxTail)
     {
         BillRxQueue[BillRxHead] = BillAcceptor_RxByte;
         BillRxHead = next_head;
     }
-
     HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
 }
 
 void BillAcceptor_SetCurrencyMode(uint8_t mode)
 {
-    if (mode == BILL_CURRENCY_FOREIGN)
-    {
-        BillAcceptor_CurrencyMode = BILL_CURRENCY_FOREIGN;
-    }
-    else
-    {
-        BillAcceptor_CurrencyMode = BILL_CURRENCY_RMB;
-    }
-
+    BillAcceptor_CurrencyMode =
+        (mode == BILL_CURRENCY_FOREIGN) ? BILL_CURRENCY_FOREIGN : BILL_CURRENCY_RMB;
     EventGroupSetBits(&Mesg_event, MesgEvent_BillCurrencyMode);
 }
 

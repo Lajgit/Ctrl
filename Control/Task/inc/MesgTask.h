@@ -8,7 +8,7 @@
 #define Android_USART USART1
 
 #define VERSION_MAJOR 1U
-#define VERSION_MINOR 2U
+#define VERSION_MINOR 3U
 #define VERSION_PATCH 0U
 #define VERSION_BUILD 0U
 #define VERSION ((VERSION_MAJOR << 24) | (VERSION_MINOR << 16) | \
@@ -17,21 +17,19 @@
 #define Board_to_Android 0x00U
 #define Android_to_Board 0x01U
 
-/* 主板发给安卓的功能码 */
+/* 主板发给安卓的功能码。 */
 #define VersionRequest 0x00U
-#define BeadMotor1Feedback 0x01U   /* 吐珠电机 PD3 光眼反馈 */
+#define BeadMotor1Feedback 0x01U
 #define CoinInput 0x02U
-#define BeadMotor2Feedback 0x03U   /* 存珠电机 PD4 光眼反馈 */
+#define BeadMotor2Feedback 0x03U
 #define BillAccepted 0x04U
 #define RemainingBead 0x05U
-#define BeadMotor1Timeout 0x07U    /* 吐珠电机超时 */
-#define BeadMotor2Timeout 0x08U    /* 存珠电机超时 */
+#define BeadMotor1Timeout 0x07U
+#define BeadMotor2Timeout 0x08U
 #define AlreadyUnlock 0x0DU
 #define Encoder 0x0FU
 #define BillStatus 0x12U
 #define BillCurrencyModeStatus 0x13U
-
-/* 固件购买、库存、补珠和后台设置状态。 */
 #define BeadPriceStatus 0x20U
 #define BeadStockStatus 0x21U
 #define PurchasePendingStatus 0x22U
@@ -39,28 +37,45 @@
 #define BeadLowStock 0x24U
 #define BeadEmpty 0x25U
 #define BeadRefilled 0x26U
-#define BackendSettingsRequest 0x27U  /* K2 短按，请求安卓进入后台设置 */
+#define BackendSettingsRequest 0x27U
 
-/* 安卓发给主板的功能码 */
-#define BeadMotor1Output 0x01U     /* 启动吐珠电机，维护/调试使用 */
-#define BeadMotor2Output 0x02U     /* 启动存珠电机 */
+/*
+ * 明确现金金额事件：Data1=现金介质，Data2:Data4=整数人民币元。
+ * 介质：0=硬币，1=纸币。
+ */
+#define CashAcceptedAmount 0x28U
+#define CashReturnedAmount 0x29U
+#define CashReturnFailed 0x2AU
+
+/* 安卓发给主板的功能码。 */
+#define BeadMotor1Output 0x01U
+#define BeadMotor2Output 0x02U
+#define BeadMotor2Stop 0x03U
 #define Unlock 0x10U
 #define BillCurrencyModeSet 0x19U
 #define BillEnable 0x1AU
 #define BillDisable 0x1BU
 #define BillReset 0x1CU
-#define BeadPriceSet 0x20U         /* Data1:Data4 为单颗价格，单位：人民币分 */
+#define CoinEnable 0x1DU
+#define CoinDisable 0x1EU
+/* Data1=现金介质，Data2:Data4=整数人民币元。 */
+#define CashReturnRequest 0x1FU
+#define BeadPriceSet 0x20U
 #define PurchaseStatusRequest 0x21U
-#define PaidPurchaseOutput 0x27U   /* 服务器支付成功后下发，Data1:Data4 为吐珠数量 */
+/* 平台 MQTT dispense_marbles 经安卓转发，Data1:Data4 为吐珠数量。 */
+#define PaidPurchaseOutput 0x27U
 #define BoardRestart 0xF0U
 #define StopAllDevice 0xFFU
+
+#define CASH_MEDIUM_COIN 0x00U
+#define CASH_MEDIUM_BANKNOTE 0x01U
 
 #define BILL_CURRENCY_RMB 0x00U
 #define BILL_CURRENCY_FOREIGN 0x01U
 
 #define OTA_REQUEST_MAGIC 0x424F5441U
 
-/* 消息事件位 */
+/* 消息事件位。 */
 #define MesgEvent_BeadMotor1Feedback (1u << 0)
 #define MesgEvent_CoinInput (1u << 1)
 #define MesgEvent_BeadMotor2Feedback (1u << 2)
@@ -80,9 +95,11 @@
 #define MesgEvent_BeadEmpty (1u << 16)
 #define MesgEvent_BeadRefilled (1u << 17)
 #define MesgEvent_BackendSettingsRequest (1u << 18)
+#define MesgEvent_CashAcceptedAmount (1u << 19)
+#define MesgEvent_CashReturnedAmount (1u << 20)
+#define MesgEvent_CashReturnFailed (1u << 21)
 
 #define ResendTrigger_Time 1000U
-/* 覆盖安卓 1 秒重发和最多 3 次重发，防止同一 ID 重复执行电机命令。 */
 #define MesgDeal_Time 5000U
 #define Max_Resend_Times 3U
 

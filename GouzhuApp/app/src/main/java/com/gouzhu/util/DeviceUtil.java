@@ -1,31 +1,25 @@
 package com.gouzhu.util;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.provider.Settings;
 
 import java.util.Locale;
-import java.util.UUID;
 
 /**
  * 设备编号与版本工具。
  */
 public final class DeviceUtil {
 
-    private static final String PREF = "device_identity";
-    private static final String KEY_FALLBACK_ID = "fallback_device_id";
-
     private DeviceUtil() {
     }
 
     /**
-     * 获取稳定设备号。
+     * 获取并规范化正式 deviceNo。
      *
-     * <p>优先使用 ANDROID_ID；取不到时生成 UUID 并持久化。</p>
+     * <p>当前项目不再生成随机兜底编号，避免设备号变化后与平台登记公钥不匹配。</p>
      */
     public static String getDeviceId(Context context) {
-        String id = null;
-
+        String id = "";
         try {
             id = Settings.Secure.getString(
                     context.getContentResolver(),
@@ -33,24 +27,29 @@ public final class DeviceUtil {
             );
         } catch (Throwable ignored) {
         }
+        return normalizeDeviceNo(id);
+    }
 
-        SharedPreferences preferences = context.getApplicationContext()
-                .getSharedPreferences(PREF, Context.MODE_PRIVATE);
-
-        if (isEmpty(id)) {
-            id = preferences.getString(KEY_FALLBACK_ID, "");
+    /** 获取设备号，缺失时直接抛出生产配置错误。 */
+    public static String requireDeviceNo(Context context) {
+        String deviceNo = getDeviceId(context);
+        if (deviceNo.isEmpty()) {
+            throw new IllegalStateException("设备号为空，禁止生成随机deviceNo");
         }
+        return deviceNo;
+    }
 
-        if (isEmpty(id)) {
-            id = UUID.randomUUID().toString();
-            preferences.edit().putString(KEY_FALLBACK_ID, id).apply();
+    /** 平台统一设备号规范化规则。 */
+    public static String normalizeDeviceNo(String value) {
+        if (value == null) {
+            return "";
         }
-
-        return id.toUpperCase(Locale.ROOT)
+        return value.toUpperCase(Locale.ROOT)
                 .replace(":", "")
                 .replace("-", "")
                 .replace("_", "")
-                .replace(" ", "");
+                .replace(" ", "")
+                .trim();
     }
 
     /** 获取当前 App 版本名。 */
@@ -75,14 +74,11 @@ public final class DeviceUtil {
         }
     }
 
-    /**
-     * 将形如 1.2.3.4 的固件版本转换成控制板升级协议的 32 位版本值。
-     */
+    /** 将四段控制板版本转换成可上报整数。 */
     public static int parseBoardVersionCode(String version) {
-        if (isEmpty(version)) {
+        if (version == null || version.trim().isEmpty()) {
             return 0;
         }
-
         String[] parts = version.trim().split("\\.");
         int result = 0;
         for (int index = 0; index < 4; index++) {
@@ -99,7 +95,11 @@ public final class DeviceUtil {
         return result;
     }
 
-    private static boolean isEmpty(String value) {
-        return value == null || value.trim().isEmpty();
+    /** 将控制板 32 位版本值显示成四段版本。 */
+    public static String formatBoardVersion(long value) {
+        return ((value >>> 24) & 0xFF)
+                + "." + ((value >>> 16) & 0xFF)
+                + "." + ((value >>> 8) & 0xFF)
+                + "." + (value & 0xFF);
     }
 }

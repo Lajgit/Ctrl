@@ -1,92 +1,55 @@
 # GouzhuApp
 
-购珠机 RK3566 Android 13 单应用工程，包名为 `com.gouzhu`。
+RK3566 Android 13 售珠机单应用工程，最终包名 `com.gouzhu`。
 
-## 当前功能
+## 当前架构
 
-- 顾客首页隐藏网络、MQTT、串口、库存、设备号和版本等设备状态；
-- 控制板 K2（SettingButton/PD11）请求进入后台设置；
-- 顾客首页保留“后台设置（调试入口）”按钮，量产时可再隐藏；
-- 套餐选择、支付按钮和付款二维码显示；
-- 服务器支付消息、扫码模块结果的 App 内部接入接口；
-- 服务器确认支付成功后，通过控制板 `Code2=0x27` 下发吐珠数量；
-- `/dev/ttyS5`、115200、8N1 控制板通信；
-- WiFi、设备注册激活、MQTT、App 自升级和控制板 bin 升级。
+- 只安装 `com.gouzhu`，不依赖或守护 `com.zeda.ota`；
+- `/dev/ttyS5`、115200、8N1 与控制板通信；
+- Android Keystore 生成单设备 ECDSA P-256 身份密钥；
+- 支持身份签名报到、首次激活、MQTT HMAC 后续激活和授权凭证恢复；
+- Broker、订阅 Topic 和上报 Topic 使用激活接口返回值；
+- MQTT 心跳、状态、故障、指令回执、现金事件、扫码核销和升级；
+- App 自升级和控制板 bin 升级；
+- K2 进入后台设置。
 
-## 支付接口状态
+## 业务边界
 
-正式服务器 URL、Topic、鉴权、签名和字段尚未提供，因此当前只预留代码边界，不伪造生产接口。
+### 扫码和平台业务出珠
 
-### 创建支付请求
-
-用户选择套餐并按下“立即支付”后：
-
-```java
-PaymentManager.PaymentRequest request =
-        PaymentManager.get(context).startPayment(beadCount, priceFen);
-```
-
-`request.requestJson` 是待发送给服务器的 JSON。
-
-### 服务器返回付款二维码
-
-网络层收到服务器字符串后调用：
-
-```java
-PaymentManager.get(context).handleServerQrString(orderId, qrContent);
-```
-
-App 使用 ZXing 在本机生成付款二维码。
-
-### 扫码模块结果
-
-扫码模块 SDK 或串口驱动得到字符串后调用：
-
-```java
-ScannerBridge.onQrDecoded(context, decodedText);
-```
-
-当前返回待上报 JSON；正式接口确定后在 `PaymentManager.submitScannerQrString()` 中上报。
-
-### 服务器支付结果
-
-```java
-PaymentManager.get(context).handleServerPaymentResult(
-        orderId,
-        true,
-        beadCount,
-        "支付成功"
-);
-```
-
-App 对 `orderId` 去重，再发送控制板正式命令：
+支付结果、付款二维码和核销响应不直接驱动控制板。只有合法 MQTT：
 
 ```text
-Code1 = 0x01
-Code2 = 0x27
-Data1:Data4 = 吐珠数量
+commandType=dispense_marbles
 ```
 
-控制板把数量计入掉电保存的 `PendingBeads`，复用现有欠吐、无珠和补珠恢复流程。
+才会在持久化并上报 ACK 后，经串口 `Code2=0x27` 下发数量。终态数量来自 PD3 光眼。
 
-## 后台设置
+### 现金购珠
 
-正式设备短按 K2：
+现金购珠由控制板独立计价、保存欠吐并吐珠。控制板使用 `Code2=0x28` 上报已收现金：
 
 ```text
-K2 / SettingButton / PD11
-→ 控制板上报 Code1=0x00、Code2=0x27
-→ GouzhuApp 打开 BackendSettingsActivity
+Data1       = 0硬币 / 1纸币
+Data2:Data4 = 整数人民币元
 ```
 
-后台页显示：
+Android 只将现金事实保存并上报 `report/cash-event`，不得再次驱动现金吐珠。
 
-- 网络状态；
-- 激活/MQTT 状态；
-- 控制板串口和固件版本；
-- 库存、欠吐和最近事件；
-- 设备号和 App 版本；
-- WiFi 设置和状态刷新。
+### 会员存珠
+
+平台下发 `collect_marbles` 后，页面先提示用户倒珠。用户点击“开始存珠”才发送 `Code2=0x02`，PD4 每颗计数并写入本地持久化；用户点击“完成存珠”发送 `Code2=0x03` 停止。App 重启后恢复任务和计数，但不自动重启电机。
+
+## 硬件适配
+
+控制板公共代码提供弱函数：
+
+```c
+bool CashHardware_SetCoinEnable(bool enable);
+bool CashHardware_DoReturn(uint8_t medium, uint32_t amount_yuan);
+```
+
+量产前必须根据最终投币器 inhibit 引脚和真实退币机构协议提供强实现。默认退币实现安全失败，不会猜测或误驱动未知 GPIO。
 
 ## 构建
 
@@ -103,11 +66,8 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 adb shell am start -n com.gouzhu/.MainActivity
 ```
 
-## 尚未验证
+## 联调资料
 
-- RK3566 上 K2 实际电平与 PD11 映射；
-- 后台页在 1024×1280 实屏上的完整布局；
-- 正式服务器支付接口；
-- 扫码模块型号和通信接口；
-- 支付成功后 `0x27` 的串口联调、订单去重和掉电边界；
-- App 自升级和控制板 bin 升级回归。
+- `../售珠机设备端统一对接文档_20260729.md`
+- `../ANDROID_COMMUNICATION_PROTOCOL.md`
+- `../购珠机控制板_安卓通信协议表_V1.1.1.xlsx`

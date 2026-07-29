@@ -1,6 +1,7 @@
 #include "MesgTask.h"
 #include "CtrlTask.h"
 #include "BackendKeyTask.h"
+#include "KeyTask.h"
 
 Event_Handle_t Mesg_event;
 
@@ -44,26 +45,28 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor1Feedback))
     {
-        /* PD3：吐珠电机光眼反馈。 */
+        /* PD3：吐珠电机光眼确认一颗。 */
         Comm_SendMesg_FillData(&Tx1, Board_to_Android, BeadMotor1Feedback, 1U, 0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadMotor1Feedback);
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor2Feedback))
     {
-        /* PD4：存珠电机光眼反馈。 */
+        /* PD4：存珠电机光眼确认一颗；安卓据此累计并掉电保存本次实际数量。 */
         Comm_SendMesg_FillData(&Tx1, Board_to_Android, BeadMotor2Feedback, 1U, 0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadMotor2Feedback);
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_CoinInput))
     {
+        /* 保留旧硬币脉冲事件，Data=1 表示一个 1 元硬币。 */
         Comm_SendMesg_FillData(&Tx1, Board_to_Android, CoinInput, 1U, 0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_CoinInput);
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BillAccepted))
     {
+        /* 保留 ICT 原始类型和状态，供后台诊断。 */
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
                                           BillAccepted,
@@ -71,6 +74,41 @@ void Mesg_Task(void)
                                           BillAcceptor_CurrencyMode,
                                           &ResendList);
         EventGroupClearBits(&Mesg_event, MesgEvent_BillAccepted);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashAcceptedAmount))
+    {
+        /* 现金事实统一上报：Data1=介质，Data2:Data4=整数人民币元。 */
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          CashAcceptedAmount,
+                                          CashEvent_GetPackedData(),
+                                          0x00U,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CashAcceptedAmount);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashReturnedAmount))
+    {
+        /* 只有真实退币机构动作成功后才发送 returned。 */
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          CashReturnedAmount,
+                                          CashEvent_GetPackedData(),
+                                          0x00U,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CashReturnedAmount);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashReturnFailed))
+    {
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          CashReturnFailed,
+                                          CashEvent_GetPackedData(),
+                                          0x01U,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CashReturnFailed);
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BillStatus))
@@ -85,7 +123,6 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BillCurrencyMode))
     {
-        /* 币种模式只放在 Data4，ExpandCode 保持 0。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                BillCurrencyModeStatus,
@@ -96,7 +133,7 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadPriceStatus))
     {
-        /* Data1:Data4 为单颗价格（分），ExpandCode 为设置结果。 */
+        /* 本地现金计价仍使用分，避免浮点；现金事件上报金额则使用整数元。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                BeadPriceStatus,
@@ -107,7 +144,6 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadStockStatus))
     {
-        /* 每成功吐出一颗后同步最新库存。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                BeadStockStatus,
@@ -118,7 +154,6 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_PurchasePendingStatus))
     {
-        /* 已收款但尚未吐出的珠子数量。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                PurchasePendingStatus,
@@ -129,7 +164,6 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_PurchaseCreditStatus))
     {
-        /* 尚不足以购买一颗珠子的累计人民币余额，单位：分。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                PurchaseCreditStatus,
@@ -140,7 +174,6 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadLowStock))
     {
-        /* 库存首次降到 3000 或以下，要求安卓确认接收。 */
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
                                           BeadLowStock,
@@ -152,7 +185,6 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadEmpty))
     {
-        /* 无珠时 Data1:Data4 保存仍需补吐的珠子数量。 */
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
                                           BeadEmpty,
@@ -164,7 +196,6 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadRefilled))
     {
-        /* K1 补珠确认后上报新库存，安卓据此恢复购买界面。 */
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
                                           BeadRefilled,
@@ -176,7 +207,6 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BackendSettingsRequest))
     {
-        /* K2 请求进入后台设置，需要安卓原样确认。 */
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
                                           BackendSettingsRequest,

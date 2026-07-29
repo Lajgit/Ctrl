@@ -1,26 +1,24 @@
 package com.gouzhu.activation;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Base64;
 import android.util.Log;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.gouzhu.AppConfig;
+import com.gouzhu.mqtt.DeviceCommandStore;
 import com.gouzhu.util.DeviceUtil;
 
 import java.io.IOException;
 import java.lang.reflect.Type;
-import java.nio.charset.StandardCharsets;
-import java.util.UUID;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 
 import okhttp3.Call;
 import okhttp3.MediaType;
@@ -31,25 +29,16 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 /**
- * 设备注册、自动认领和 MQTT 凭据保存。
+ * 新版设备认证状态机。
  *
- * <p>接口、批次号和签名方式移植自 OTA_XLH3566，包名及版本获取方式改为
- * 单应用 com.gouzhu。</p>
+ * <p>不读取旧签名、旧批次硬编码、旧 MQTT 凭证或旧包名数据。每次 HTTP 请求
+ * 都重新生成 nonce、毫秒时间戳和签名。</p>
  */
 public final class ActivationManager {
 
     private static final String TAG = "GouzhuActivation";
-
-    /** OTA_XLH3566 当前自动认领批次。 */
-    private static final String BATCH_NO = "ACBFSGS2YACC6IO";
-
-    /** OTA_XLH3566 当前批次签名密钥。 */
-    private static final String BATCH_SECRET =
-            "pevx7513ZxRWLFlXFw_2WepJOTWtusjA";
-
-    private static final String PREF_CLAIM = "claim";
-    private static final String KEY_CLAIMED = "claimed";
-    private static final String PREF_MQTT = "mqtt_credential";
+    private static final long MIN_POLL_DELAY_MS = 10_000L;
+    private static final long MAX_POLL_DELAY_MS = 30_000L;
 
     private final Context context;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -78,15 +67,39 @@ public final class ActivationManager {
         void onError(Exception error);
     }
 
-    /** 启动注册激活流程。重复调用不会启动多条轮询线程。 */
+    /**
+     * 启动认证。
+     *
+     * <p>有 MQTT 凭证时先执行 mqttPassword HMAC 后续激活；没有凭证时先尝试
+     * 平台授权恢复，恢复窗口不存在时再进入新设备报到和首次激活。</p>
+     */
     public void start(Callback callback) {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        enroll(callback);
+        new Thread(() -> {
+            try {
+                DeviceIdentityStore.ensureKeyPair(context);
+                MqttCredential credential = SecureCredentialStore.load(context);
+                if (credential != null) {
+                    requestMqttActivation(credential, callback);
+                } else {
+                    requestCredentialRecovery(callback, true);
+                }
+            } catch (Exception error) {
+                postError(callback, error);
+            }
+        }, "购珠机-设备认证").start();
     }
 
-    /** 停止轮询。 */
+    /** 平台已开启恢复窗口时，可由后台设置页主动调用。 */
+    public void recoverCredential(Callback callback) {
+        if (!running.compareAndSet(false, true)) {
+            return;
+        }
+        requestCredentialRecovery(callback, false);
+    }
+
     public void stop() {
         running.set(false);
         if (pollRunnable != null) {
@@ -94,193 +107,236 @@ public final class ActivationManager {
         }
     }
 
-    public static boolean isClaimed(Context context) {
-        return context.getApplicationContext()
-                .getSharedPreferences(PREF_CLAIM, Context.MODE_PRIVATE)
-                .getBoolean(KEY_CLAIMED, false);
-    }
-
-    public static void clearActivation(Context context) {
-        context.getApplicationContext()
-                .getSharedPreferences(PREF_CLAIM, Context.MODE_PRIVATE)
-                .edit()
-                .clear()
-                .apply();
-        context.getApplicationContext()
-                .getSharedPreferences(PREF_MQTT, Context.MODE_PRIVATE)
-                .edit()
-                .clear()
-                .apply();
-    }
-
-    /** 读取激活接口保存的 MQTT 凭据。 */
+    /** 读取新版加密 MQTT 凭证。 */
     public static MqttCredential loadCredential(Context context) {
-        SharedPreferences preferences = context.getApplicationContext()
-                .getSharedPreferences(PREF_MQTT, Context.MODE_PRIVATE);
+        return SecureCredentialStore.load(context);
+    }
 
-        MqttCredential credential = new MqttCredential();
-        credential.brokerUrl = preferences.getString("brokerUrl", "");
-        credential.clientId = preferences.getString("clientId", "");
-        credential.username = preferences.getString("username", "");
-        credential.password = preferences.getString("password", "");
-        credential.heartbeatInterval = preferences.getInt("heartbeatInterval", 0);
-        credential.keepAliveSeconds = preferences.getInt("keepAliveSeconds", 0);
+    /** 清理当前测试凭证；不会删除 Android Keystore 中的身份私钥。 */
+    public static void clearCredential(Context context) {
+        SecureCredentialStore.clear(context);
+    }
 
-        return credential.isValid() ? credential : null;
+    /** 导出可交付平台登记的 X.509 公钥。 */
+    public static String exportIdentityPublicKey(Context context) throws Exception {
+        return DeviceIdentityStore.getPublicKeyBase64(context);
+    }
+
+    private void requestCredentialRecovery(Callback callback, boolean fallbackToEnroll) {
+        try {
+            String deviceNo = DeviceUtil.requireDeviceNo(context);
+            DeviceAuthSigner.SignedRequest signed =
+                    DeviceAuthSigner.signCredentialRecovery(context, deviceNo);
+            DeviceRequest request = buildBaseRequest(deviceNo, signed);
+            postJson(
+                    "/api/device/credential-recovery",
+                    request,
+                    new TypeToken<ApiResponse<ActivationData>>() { }.getType(),
+                    new ApiCallback<ApiResponse<ActivationData>>() {
+                        @Override
+                        public void onSuccess(ApiResponse<ActivationData> response) {
+                            if (!running.get()) {
+                                return;
+                            }
+                            try {
+                                ActivationData data = requireBusinessSuccess(response, "凭证恢复");
+                                finishActivation(data, callback);
+                            } catch (Exception error) {
+                                if (fallbackToEnroll) {
+                                    enroll(callback);
+                                } else {
+                                    postError(callback, error);
+                                }
+                            }
+                        }
+
+                        @Override
+                        public void onFailure(Exception error) {
+                            if (fallbackToEnroll) {
+                                enroll(callback);
+                            } else {
+                                postError(callback, error);
+                            }
+                        }
+                    }
+            );
+        } catch (Exception error) {
+            if (fallbackToEnroll) {
+                enroll(callback);
+            } else {
+                postError(callback, error);
+            }
+        }
     }
 
     private void enroll(Callback callback) {
-        EnrollData request = buildEnrollRequest();
+        try {
+            String deviceNo = DeviceUtil.requireDeviceNo(context);
+            DeviceAuthSigner.SignedRequest signed =
+                    DeviceAuthSigner.signEnrollment(context, deviceNo);
+            DeviceRequest request = buildBaseRequest(deviceNo, signed);
 
-        postJson(
-                "/api/device/enroll",
-                request,
-                new TypeToken<ApiResponse<EnrollData>>() { }.getType(),
-                new ApiCallback<ApiResponse<EnrollData>>() {
-                    @Override
-                    public void onSuccess(ApiResponse<EnrollData> response) {
-                        if (!running.get()) {
-                            return;
+            postJson(
+                    "/api/device/enroll",
+                    request,
+                    new TypeToken<ApiResponse<EnrollData>>() { }.getType(),
+                    new ApiCallback<ApiResponse<EnrollData>>() {
+                        @Override
+                        public void onSuccess(ApiResponse<EnrollData> response) {
+                            if (!running.get()) {
+                                return;
+                            }
+                            try {
+                                EnrollData data = requireBusinessSuccess(response, "设备报到");
+                                lastClaimCode = safe(data.claimCode);
+                                lastQrContent = safe(data.claimQrContent);
+                                mainHandler.post(() -> callback.onWaitingClaim(
+                                        lastQrContent,
+                                        lastClaimCode
+                                ));
+                                requestIdentityActivation(callback, true);
+                            } catch (Exception error) {
+                                postError(callback, error);
+                            }
                         }
 
-                        if (response == null || response.data == null) {
-                            postError(callback, new IOException("注册接口返回数据为空"));
-                            return;
+                        @Override
+                        public void onFailure(Exception error) {
+                            postError(callback, error);
                         }
-
-                        EnrollData data = response.data;
-                        lastClaimCode = safe(data.claimCode);
-                        lastQrContent = safe(data.claimQrContent);
-                        mainHandler.post(() -> callback.onWaitingClaim(
-                                lastQrContent,
-                                lastClaimCode
-                        ));
-
-                        // MQTT 凭据只由 activation 接口返回，因此注册后必须继续请求激活。
-                        requestActivation(request, callback, true);
                     }
-
-                    @Override
-                    public void onFailure(Exception error) {
-                        postError(callback, error);
-                    }
-                }
-        );
+            );
+        } catch (Exception error) {
+            postError(callback, error);
+        }
     }
 
-    private EnrollData buildEnrollRequest() {
-        EnrollData request = new EnrollData();
-        request.deviceNo = DeviceUtil.getDeviceId(context);
-        request.firmwareVersion = DeviceUtil.getAppVersion(context);
-        request.apkVersion = DeviceUtil.getAppVersion(context);
-        request.nonce = UUID.randomUUID().toString().replace("-", "");
-        request.timestamp = System.currentTimeMillis();
-        request.signature = "";
-        fillBatchSignature(request);
-        return request;
-    }
+    private void requestIdentityActivation(Callback callback, boolean startPolling) {
+        try {
+            String deviceNo = DeviceUtil.requireDeviceNo(context);
+            DeviceAuthSigner.SignedRequest signed =
+                    DeviceAuthSigner.signActivationWithIdentity(context, deviceNo);
+            DeviceRequest request = buildBaseRequest(deviceNo, signed);
 
-    private void requestActivation(
-            EnrollData request,
-            Callback callback,
-            boolean startPollingWhenWaiting
-    ) {
-        request.timestamp = System.currentTimeMillis();
-        fillBatchSignature(request);
-
-        postJson(
-                "/api/device/activation",
-                request,
-                new TypeToken<ApiResponse<ActivationData>>() { }.getType(),
-                new ApiCallback<ApiResponse<ActivationData>>() {
-                    @Override
-                    public void onSuccess(ApiResponse<ActivationData> response) {
-                        if (!running.get()) {
-                            return;
+            postJson(
+                    "/api/device/activation",
+                    request,
+                    new TypeToken<ApiResponse<ActivationData>>() { }.getType(),
+                    new ApiCallback<ApiResponse<ActivationData>>() {
+                        @Override
+                        public void onSuccess(ApiResponse<ActivationData> response) {
+                            if (!running.get()) {
+                                return;
+                            }
+                            try {
+                                ActivationData data = requireBusinessSuccess(response, "首次激活");
+                                if (data.claimed && hasMqttCredential(data)) {
+                                    finishActivation(data, callback);
+                                    return;
+                                }
+                                mainHandler.post(() -> callback.onWaitingClaim(
+                                        lastQrContent,
+                                        lastClaimCode
+                                ));
+                                if (startPolling) {
+                                    scheduleIdentityActivation(callback);
+                                }
+                            } catch (Exception error) {
+                                postError(callback, error);
+                            }
                         }
 
-                        if (response != null
-                                && response.data != null
-                                && handleActivation(response.data, callback)) {
-                            return;
-                        }
-
-                        if (startPollingWhenWaiting) {
-                            startPolling(request, callback);
-                        }
-                    }
-
-                    @Override
-                    public void onFailure(Exception error) {
-                        Log.w(TAG, "首次激活请求失败，进入轮询", error);
-                        if (startPollingWhenWaiting) {
-                            startPolling(request, callback);
+                        @Override
+                        public void onFailure(Exception error) {
+                            if (startPolling) {
+                                scheduleIdentityActivation(callback);
+                            } else {
+                                postError(callback, error);
+                            }
                         }
                     }
-                }
-        );
+            );
+        } catch (Exception error) {
+            postError(callback, error);
+        }
     }
 
-    private void startPolling(EnrollData request, Callback callback) {
+    private void scheduleIdentityActivation(Callback callback) {
         if (!running.get()) {
             return;
         }
-
         if (pollRunnable != null) {
             mainHandler.removeCallbacks(pollRunnable);
         }
-
-        pollRunnable = new Runnable() {
-            @Override
-            public void run() {
-                if (!running.get()) {
-                    return;
-                }
-
-                mainHandler.post(() -> callback.onWaitingClaim(
-                        lastQrContent,
-                        lastClaimCode
-                ));
-
-                requestActivation(request, callback, false);
-                if (running.get()) {
-                    mainHandler.postDelayed(this, 5000L);
-                }
-            }
-        };
-        mainHandler.postDelayed(pollRunnable, 5000L);
+        long delay = ThreadLocalRandom.current().nextLong(
+                MIN_POLL_DELAY_MS,
+                MAX_POLL_DELAY_MS + 1L
+        );
+        pollRunnable = () -> requestIdentityActivation(callback, true);
+        mainHandler.postDelayed(pollRunnable, delay);
     }
 
-    private boolean handleActivation(ActivationData data, Callback callback) {
-        if (!data.claimed) {
-            return false;
+    private void requestMqttActivation(MqttCredential current, Callback callback) {
+        try {
+            String deviceNo = DeviceUtil.requireDeviceNo(context);
+            DeviceAuthSigner.SignedRequest signed =
+                    DeviceAuthSigner.signActivationWithMqttPassword(
+                            deviceNo,
+                            current.password
+                    );
+            DeviceRequest request = buildBaseRequest(deviceNo, signed);
+            postJson(
+                    "/api/device/activation",
+                    request,
+                    new TypeToken<ApiResponse<ActivationData>>() { }.getType(),
+                    new ApiCallback<ApiResponse<ActivationData>>() {
+                        @Override
+                        public void onSuccess(ApiResponse<ActivationData> response) {
+                            if (!running.get()) {
+                                return;
+                            }
+                            try {
+                                ActivationData data = requireBusinessSuccess(response, "后续激活");
+                                finishActivation(data, callback);
+                            } catch (Exception error) {
+                                postError(callback, error);
+                            }
+                        }
+
+                        @Override
+                        public void onFailure(Exception error) {
+                            postError(callback, error);
+                        }
+                    }
+            );
+        } catch (Exception error) {
+            postError(callback, error);
         }
+    }
 
-        MqttCredential credential = new MqttCredential();
-        credential.brokerUrl = data.mqttBrokerUrl;
-        credential.clientId = data.mqttClientId;
-        credential.username = data.mqttUsername;
-        credential.password = data.mqttPassword;
-        credential.heartbeatInterval = data.heartbeatInterval;
-        credential.keepAliveSeconds = data.keepAliveSeconds;
+    private DeviceRequest buildBaseRequest(
+            String deviceNo,
+            DeviceAuthSigner.SignedRequest signed
+    ) {
+        DeviceRequest request = new DeviceRequest();
+        request.deviceNo = deviceNo;
+        request.firmwareVersion = DeviceUtil.formatBoardVersion(
+                new DeviceCommandStore(context).getBoardVersion()
+        );
+        request.apkVersion = DeviceUtil.getAppVersion(context);
+        request.nonce = signed.nonce;
+        request.timestamp = signed.timestamp;
+        request.signature = signed.signature;
+        return request;
+    }
 
+    private void finishActivation(ActivationData data, Callback callback) throws Exception {
+        MqttCredential credential = MqttCredential.from(data);
         if (!credential.isValid()) {
-            postError(callback, new IOException("设备已激活，但 MQTT 凭据不完整"));
-            return false;
+            throw new IOException("激活响应缺少完整MQTT凭证或Topic");
         }
-
-        if (!saveCredential(credential)) {
-            postError(callback, new IOException("保存 MQTT 凭据失败"));
-            return false;
-        }
-
-        boolean claimSaved = context.getSharedPreferences(PREF_CLAIM, Context.MODE_PRIVATE)
-                .edit()
-                .putBoolean(KEY_CLAIMED, true)
-                .commit();
-        if (!claimSaved) {
-            postError(callback, new IOException("保存设备激活状态失败"));
-            return false;
+        if (!SecureCredentialStore.save(context, credential)) {
+            throw new IOException("MQTT凭证原子保存失败");
         }
 
         running.set(false);
@@ -288,46 +344,27 @@ public final class ActivationManager {
             mainHandler.removeCallbacks(pollRunnable);
         }
         mainHandler.post(() -> callback.onActivated(credential));
-        return true;
     }
 
-    private boolean saveCredential(MqttCredential credential) {
-        return context.getSharedPreferences(PREF_MQTT, Context.MODE_PRIVATE)
-                .edit()
-                .putString("brokerUrl", credential.brokerUrl)
-                .putString("clientId", credential.clientId)
-                .putString("username", credential.username)
-                .putString("password", credential.password)
-                .putInt("heartbeatInterval", credential.heartbeatInterval)
-                .putInt("keepAliveSeconds", credential.keepAliveSeconds)
-                .commit();
+    private static boolean hasMqttCredential(ActivationData data) {
+        return data != null
+                && !safe(data.mqttBrokerUrl).isEmpty()
+                && !safe(data.mqttClientId).isEmpty()
+                && !safe(data.mqttUsername).isEmpty()
+                && !safe(data.mqttPassword).isEmpty();
     }
 
-    private void fillBatchSignature(EnrollData request) {
-        request.batchNo = BATCH_NO;
-        String source = request.deviceNo
-                + "|" + request.batchNo
-                + "|" + request.nonce
-                + "|" + request.timestamp;
-        request.batchSignature = hmacSha256Base64Url(source, BATCH_SECRET);
-    }
-
-    private String hmacSha256Base64Url(String text, String secret) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(
-                    secret.getBytes(StandardCharsets.UTF_8),
-                    "HmacSHA256"
-            ));
-            byte[] result = mac.doFinal(text.getBytes(StandardCharsets.UTF_8));
-            return Base64.encodeToString(
-                    result,
-                    Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING
-            );
-        } catch (Throwable error) {
-            Log.e(TAG, "计算批次签名失败", error);
-            return "";
+    private static <T> T requireBusinessSuccess(
+            ApiResponse<T> response,
+            String action
+    ) throws IOException {
+        if (response == null) {
+            throw new IOException(action + "返回为空");
         }
+        if (!response.success || response.code != 200 || response.data == null) {
+            throw new IOException(action + "失败：" + safe(response.msg));
+        }
+        return response.data;
     }
 
     private <T> void postJson(
@@ -360,8 +397,7 @@ public final class ActivationManager {
                             callback.onFailure(new IOException("HTTP " + response.code()));
                             return;
                         }
-                        T parsed = gson.fromJson(responseBody.string(), responseType);
-                        callback.onSuccess(parsed);
+                        callback.onSuccess(gson.fromJson(responseBody.string(), responseType));
                     } catch (Exception error) {
                         callback.onFailure(error);
                     }
@@ -373,12 +409,12 @@ public final class ActivationManager {
     }
 
     private void postError(Callback callback, Exception error) {
-        Log.e(TAG, "设备注册激活失败", error);
+        if (!running.get()) {
+            return;
+        }
+        running.set(false);
+        Log.e(TAG, "设备认证失败", error);
         mainHandler.post(() -> callback.onError(error));
-    }
-
-    private static String safe(String value) {
-        return value == null ? "" : value;
     }
 
     private interface ApiCallback<T> {
@@ -394,17 +430,18 @@ public final class ActivationManager {
         boolean success;
     }
 
-    private static final class EnrollData {
+    private static class DeviceRequest {
         String deviceNo;
         String firmwareVersion;
         String apkVersion;
         String nonce;
         long timestamp;
         String signature;
-        String batchNo;
-        String batchSignature;
+    }
 
+    private static final class EnrollData {
         boolean accepted;
+        String deviceNo;
         String claimToken;
         String claimCode;
         String claimQrContent;
@@ -417,7 +454,10 @@ public final class ActivationManager {
     private static final class ActivationData {
         boolean accepted;
         boolean claimed;
+        long deviceId;
         String deviceNo;
+        String deviceSn;
+        String deviceName;
         String mqttBrokerUrl;
         String mqttClientId;
         String mqttUsername;
@@ -425,9 +465,16 @@ public final class ActivationManager {
         int heartbeatInterval;
         int keepAliveSeconds;
         int configVersion;
+        MqttTopics mqttTopics;
     }
 
-    /** MQTT 连接参数。 */
+    private static final class MqttTopics {
+        String commandSubscribeTopic;
+        Map<String, String> reportTopics;
+        int qos;
+    }
+
+    /** MQTT 连接参数及服务端下发 Topic。 */
     public static final class MqttCredential {
         public String brokerUrl;
         public String clientId;
@@ -435,16 +482,59 @@ public final class ActivationManager {
         public String password;
         public int heartbeatInterval;
         public int keepAliveSeconds;
+        public int configVersion;
+        public String commandSubscribeTopic;
+        public Map<String, String> reportTopics = new HashMap<>();
+        public int qos = 1;
+
+        static MqttCredential from(ActivationData data) {
+            MqttCredential credential = new MqttCredential();
+            credential.brokerUrl = safe(data.mqttBrokerUrl);
+            credential.clientId = safe(data.mqttClientId);
+            credential.username = safe(data.mqttUsername);
+            credential.password = safe(data.mqttPassword);
+            credential.heartbeatInterval = data.heartbeatInterval;
+            credential.keepAliveSeconds = data.keepAliveSeconds;
+            credential.configVersion = data.configVersion;
+            if (data.mqttTopics != null) {
+                credential.commandSubscribeTopic =
+                        safe(data.mqttTopics.commandSubscribeTopic);
+                credential.qos = data.mqttTopics.qos <= 0 ? 1 : data.mqttTopics.qos;
+                if (data.mqttTopics.reportTopics != null) {
+                    credential.reportTopics.putAll(data.mqttTopics.reportTopics);
+                }
+            }
+            return credential;
+        }
+
+        public String getReportTopic(String key) {
+            String value = reportTopics == null ? null : reportTopics.get(key);
+            return safe(value);
+        }
+
+        public Map<String, String> getReportTopics() {
+            return reportTopics == null
+                    ? Collections.emptyMap()
+                    : Collections.unmodifiableMap(reportTopics);
+        }
 
         public boolean isValid() {
-            return !isEmpty(brokerUrl)
-                    && !isEmpty(clientId)
-                    && !isEmpty(username)
-                    && !isEmpty(password);
+            return !safe(brokerUrl).isEmpty()
+                    && !safe(clientId).isEmpty()
+                    && !safe(username).isEmpty()
+                    && !safe(password).isEmpty()
+                    && !safe(commandSubscribeTopic).isEmpty()
+                    && !getReportTopic("heartbeat").isEmpty()
+                    && !getReportTopic("status").isEmpty()
+                    && !getReportTopic("fault").isEmpty()
+                    && !getReportTopic("command-result").isEmpty()
+                    && !getReportTopic("upgrade-progress").isEmpty()
+                    && !getReportTopic("redemption-request").isEmpty()
+                    && !getReportTopic("cash-event").isEmpty();
         }
+    }
 
-        private static boolean isEmpty(String value) {
-            return value == null || value.trim().isEmpty();
-        }
+    private static String safe(String value) {
+        return value == null ? "" : value.trim();
     }
 }

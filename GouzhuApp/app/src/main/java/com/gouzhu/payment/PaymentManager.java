@@ -5,7 +5,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.util.Log;
 
-import com.gouzhu.serial.SerialManager;
+import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.util.DeviceUtil;
 
 import org.json.JSONObject;
@@ -13,11 +13,10 @@ import org.json.JSONObject;
 import java.util.UUID;
 
 /**
- * 支付流程预留管理器。
+ * 顾客支付和扫码入口。
  *
- * <p>当前没有正式服务器接口。本类固定了 App 内部调用边界：
- * 创建支付请求、接收服务器二维码字符串、接收服务器支付结果、
- * 接收扫码模块解析出的字符串。正式接口接入时只替换网络调用，不改顾客页面和控制板协议。</p>
+ * <p>支付页面或支付结果本身不得直接驱动控制板。正式物理出珠只由平台通过
+ * MQTT 下发 dispense_marbles，再由设备指令管理器执行。</p>
  */
 public final class PaymentManager {
 
@@ -30,17 +29,19 @@ public final class PaymentManager {
     public static final String EVENT_REQUEST_CREATED = "requestCreated";
     public static final String EVENT_QR_READY = "qrReady";
     public static final String EVENT_FAILED = "failed";
+    public static final String EVENT_WAITING = "waiting";
     public static final String EVENT_SUCCESS = "success";
-    public static final String EVENT_SCANNER_RESERVED = "scannerReserved";
+    public static final String EVENT_SCANNER_REPORTED = "scannerReported";
 
     private static final String TAG = "GouzhuPayment";
     private static final String PREF = "payment_state";
     private static final String KEY_CURRENT_ORDER_ID = "currentOrderId";
     private static final String KEY_CURRENT_BEAD_COUNT = "currentBeadCount";
     private static final String KEY_CURRENT_PRICE_FEN = "currentPriceFen";
-    private static final String KEY_COMPLETED_ORDER_ID = "completedOrderId";
+    private static final String KEY_PAYMENT_CONFIRMED_ORDER_ID = "paymentConfirmedOrderId";
     private static final String KEY_LAST_REQUEST_JSON = "lastRequestJson";
     private static final String KEY_LAST_SCANNER_JSON = "lastScannerJson";
+    private static final String KEY_SCANNER_REQUEST_ID = "scannerRequestId";
 
     private static volatile PaymentManager instance;
     private final Context context;
@@ -65,16 +66,14 @@ public final class PaymentManager {
             throw new IllegalArgumentException("套餐数量和金额必须大于0");
         }
 
-        String orderId = DeviceUtil.getDeviceId(context)
-                + "-"
-                + System.currentTimeMillis()
-                + "-"
-                + UUID.randomUUID().toString().substring(0, 8);
+        String orderId = DeviceUtil.requireDeviceNo(context)
+                + "-" + System.currentTimeMillis()
+                + "-" + UUID.randomUUID().toString().substring(0, 8);
 
         JSONObject json = new JSONObject();
         try {
             json.put("type", "paymentRequest");
-            json.put("deviceNo", DeviceUtil.getDeviceId(context));
+            json.put("deviceNo", DeviceUtil.requireDeviceNo(context));
             json.put("orderId", orderId);
             json.put("beadCount", beadCount);
             json.put("amountFen", priceFen);
@@ -88,9 +87,8 @@ public final class PaymentManager {
                 .putInt(KEY_CURRENT_BEAD_COUNT, beadCount)
                 .putInt(KEY_CURRENT_PRICE_FEN, priceFen)
                 .putString(KEY_LAST_REQUEST_JSON, json.toString())
-                .apply();
+                .commit();
 
-        Log.i(TAG, "支付请求接口待接入，request=" + json);
         broadcast(EVENT_REQUEST_CREATED, "等待服务器返回付款二维码", orderId, null);
         return new PaymentRequest(orderId, beadCount, priceFen, json.toString());
     }
@@ -99,11 +97,13 @@ public final class PaymentManager {
         if (!isCurrentOrder(orderId) || qrContent == null || qrContent.trim().isEmpty()) {
             return false;
         }
-
         broadcast(EVENT_QR_READY, "请扫码完成支付", orderId, qrContent);
         return true;
     }
 
+    /**
+     * 支付结果只更新页面状态，不能直接发串口吐珠命令。
+     */
     public synchronized boolean handleServerPaymentResult(
             String orderId,
             boolean success,
@@ -129,59 +129,51 @@ public final class PaymentManager {
             return true;
         }
 
-        String completedOrderId = preferences().getString(KEY_COMPLETED_ORDER_ID, "");
-        if (orderId.equals(completedOrderId)) {
-            Log.w(TAG, "忽略重复支付结果，orderId=" + orderId);
+        String confirmed = preferences().getString(KEY_PAYMENT_CONFIRMED_ORDER_ID, "");
+        if (orderId.equals(confirmed)) {
             return true;
         }
-
-        boolean sent = SerialManager.get(context).sendCommand(
-                0x27,
-                Integer.toUnsignedLong(beadCount),
-                true
-        );
-        if (!sent) {
-            broadcast(EVENT_FAILED, "控制板未连接，支付结果尚未转发", orderId, null);
-            return true;
-        }
-
-        preferences().edit()
-                .putString(KEY_COMPLETED_ORDER_ID, orderId)
-                .apply();
+        preferences().edit().putString(KEY_PAYMENT_CONFIRMED_ORDER_ID, orderId).commit();
 
         broadcast(
                 EVENT_SUCCESS,
-                "支付成功，正在吐出 " + beadCount + " 珠",
+                "支付已确认，等待平台下发出珠指令",
                 orderId,
                 null
         );
         return true;
     }
 
+    /**
+     * 扫码模块读取六位取珠码后，上报 redemption-request。
+     * 同一次失败重试复用相同 requestId。
+     */
     public String submitScannerQrString(String scanContent) {
         if (scanContent == null || scanContent.trim().isEmpty()) {
             return "";
         }
+        String pickupCode = scanContent.trim();
+        String requestId = preferences().getString(KEY_SCANNER_REQUEST_ID, "");
+        if (requestId.isEmpty()) {
+            requestId = "scan-" + System.currentTimeMillis() + "-"
+                    + UUID.randomUUID().toString().substring(0, 6);
+            preferences().edit().putString(KEY_SCANNER_REQUEST_ID, requestId).commit();
+        }
 
         JSONObject json = new JSONObject();
         try {
-            json.put("type", "scannerQr");
-            json.put("deviceNo", DeviceUtil.getDeviceId(context));
-            json.put("scanContent", scanContent);
-            json.put("timestamp", System.currentTimeMillis());
+            json.put("requestId", requestId);
+            json.put("pickupCode", pickupCode);
         } catch (Throwable error) {
-            Log.e(TAG, "组装扫码结果失败", error);
+            Log.e(TAG, "组装扫码核销请求失败", error);
             return "";
         }
 
-        preferences().edit()
-                .putString(KEY_LAST_SCANNER_JSON, json.toString())
-                .apply();
-
-        Log.i(TAG, "扫码结果上报接口待接入，payload=" + json);
+        preferences().edit().putString(KEY_LAST_SCANNER_JSON, json.toString()).commit();
+        boolean sent = MqttManager.get(context).reportRedemptionRequest(requestId, pickupCode);
         broadcast(
-                EVENT_SCANNER_RESERVED,
-                "已读取扫码内容，等待接入服务器上报接口",
+                sent ? EVENT_SCANNER_REPORTED : EVENT_FAILED,
+                sent ? "取珠码已上报，等待平台处理" : "网络未连接，取珠码将在重试时复用",
                 getCurrentOrderId(),
                 null
         );
@@ -193,7 +185,6 @@ public final class PaymentManager {
             JSONObject json = new JSONObject(payload);
             String type = json.optString("type", "");
             String orderId = json.optString("orderId", "");
-
             if ("paymentQr".equals(type)) {
                 return handleServerQrString(orderId, json.optString("qrContent", ""));
             }

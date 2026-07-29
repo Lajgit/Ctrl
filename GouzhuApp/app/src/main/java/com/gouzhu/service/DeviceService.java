@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat;
 import com.gouzhu.AppConfig;
 import com.gouzhu.R;
 import com.gouzhu.activation.ActivationManager;
+import com.gouzhu.mqtt.DeviceCommandManager;
 import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.network.WifiSupport;
 import com.gouzhu.serial.SerialManager;
@@ -25,15 +26,15 @@ import com.gouzhu.upgrade.UpgradeManager;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 购珠机设备后台服务。
+ * com.gouzhu 单应用后台服务。
  *
- * <p>服务统一管理控制板串口、已保存 WiFi、设备注册激活、MQTT 和升级恢复，
- * 不再拉起或守护第二个 App。</p>
+ * <p>统一管理 ttyS5、网络、新版身份认证、后续激活、MQTT 和升级，不再读取或
+ * 守护 com.zeda.ota 等旧应用。</p>
  */
 public class DeviceService extends Service {
 
     private static final String TAG = "GouzhuService";
-    private static final long RETRY_DELAY_MS = 10_000L;
+    private static final long RETRY_DELAY_MS = 30_000L;
 
     private final AtomicBoolean initializing = new AtomicBoolean(false);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -45,7 +46,10 @@ public class DeviceService extends Service {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
-        startForeground(AppConfig.SERVICE_NOTIFICATION_ID, buildNotification("设备服务正在启动"));
+        startForeground(
+                AppConfig.SERVICE_NOTIFICATION_ID,
+                buildNotification("设备服务正在启动")
+        );
     }
 
     @Override
@@ -75,15 +79,16 @@ public class DeviceService extends Service {
     private void initializeDevice() {
         broadcastStatus("service", "正在连接控制板");
         SerialManager.get(this).open();
+        DeviceCommandManager.get(this).start();
 
         if (!WifiSupport.hasSavedWifi(this)) {
-            broadcastStatus("network", "尚未配置 WiFi");
-            updateNotification("等待配置 WiFi");
+            broadcastStatus("network", "尚未配置WiFi");
+            updateNotification("等待配置WiFi");
             return;
         }
 
         if (!WifiSupport.isInternetConnected(this)) {
-            broadcastStatus("network", "正在连接已保存的 WiFi");
+            broadcastStatus("network", "正在连接已保存的WiFi");
             WifiSupport.connectSavedWifi(this);
         }
 
@@ -97,13 +102,7 @@ public class DeviceService extends Service {
         broadcastStatus("network", "网络已连接：" + WifiSupport.getCurrentSsid(this));
         updateNotification("网络已连接");
 
-        ActivationManager.MqttCredential credential =
-                ActivationManager.loadCredential(this);
-        if (ActivationManager.isClaimed(this) && credential != null) {
-            connectMqtt(credential);
-            return;
-        }
-
+        // 无论本地是否存在凭证，都先由新版认证状态机刷新当前连接配置。
         startActivation();
     }
 
@@ -112,29 +111,29 @@ public class DeviceService extends Service {
             activationManager.stop();
         }
 
-        broadcastStatus("activation", "正在注册激活设备");
+        broadcastStatus("activation", "正在执行设备认证");
         activationManager = new ActivationManager(this);
         activationManager.start(new ActivationManager.Callback() {
             @Override
             public void onWaitingClaim(String qrContent, String claimCode) {
                 String text = claimCode == null || claimCode.trim().isEmpty()
-                        ? "等待设备激活"
-                        : "等待设备激活，认领码：" + claimCode;
+                        ? "等待平台完成设备认领"
+                        : "等待设备认领，认领码：" + claimCode;
                 broadcastStatus("activation", text);
                 updateNotification(text);
             }
 
             @Override
             public void onActivated(ActivationManager.MqttCredential credential) {
-                broadcastStatus("activation", "设备激活成功");
-                updateNotification("设备激活成功");
+                broadcastStatus("activation", "设备认证成功");
+                updateNotification("设备认证成功");
                 connectMqtt(credential);
             }
 
             @Override
             public void onError(Exception error) {
-                broadcastStatus("activation", "设备激活失败：" + messageOf(error));
-                updateNotification("设备激活失败");
+                broadcastStatus("activation", "设备认证失败：" + messageOf(error));
+                updateNotification("设备认证失败");
                 scheduleRetry();
             }
         });
@@ -161,13 +160,12 @@ public class DeviceService extends Service {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return;
         }
-
         NotificationChannel channel = new NotificationChannel(
                 AppConfig.SERVICE_CHANNEL_ID,
                 "购珠机设备服务",
                 NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription("维持购珠机串口、网络、激活、MQTT和升级任务");
+        channel.setDescription("维持购珠机串口、网络、认证、MQTT和升级任务");
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.createNotificationChannel(channel);
@@ -206,6 +204,7 @@ public class DeviceService extends Service {
         if (activationManager != null) {
             activationManager.stop();
         }
+        DeviceCommandManager.get(this).stop();
         MqttManager.get(this).close();
         SerialManager.get(this).close();
         super.onDestroy();
