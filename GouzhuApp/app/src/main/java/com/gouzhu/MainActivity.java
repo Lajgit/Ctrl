@@ -6,11 +6,14 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -21,50 +24,47 @@ import androidx.core.content.ContextCompat;
 
 import com.gouzhu.network.WifiConfigActivity;
 import com.gouzhu.network.WifiSupport;
-import com.gouzhu.serial.SerialManager;
+import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.payment.QrCodeUtil;
 import com.gouzhu.service.DeviceService;
-import com.gouzhu.util.DeviceUtil;
-
-import java.util.Locale;
 
 /**
- * 购珠机主界面。
+ * 购珠机顾客主界面。
  *
- * <p>当前完成固定竖屏首页、设备状态显示和控制板事件接收。套餐按钮只保存当前选择，
- * 支付接口尚未提供，因此不会擅自触发吐珠。</p>
+ * <p>正式顾客界面不显示网络、MQTT、串口、库存、版本号等设备状态。
+ * K2 或当前预留的后台按钮用于进入后台设置。</p>
  */
 public class MainActivity extends AppCompatActivity {
 
+    private static final int CODE_BACKEND_SETTINGS_REQUEST = 0x27;
+    private static final int CODE_BEAD_OUTPUT_TIMEOUT = 0x07;
+    private static final int CODE_BEAD_EMPTY = 0x25;
+    private static final int CODE_BEAD_REFILLED = 0x26;
+
     private TextView selectedPackageText;
-    private TextView networkStatusText;
-    private TextView mqttStatusText;
-    private TextView boardStatusText;
-    private TextView stockText;
-    private TextView eventText;
+    private TextView paymentStatusText;
+    private Button paymentButton;
+    private ImageView paymentQrImage;
 
+    private int selectedBeadCount;
+    private int selectedPriceFen;
     private boolean receiverRegistered;
+    private boolean backendOpening;
 
-    private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
+    private final BroadcastReceiver appReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent == null) {
                 return;
             }
 
-            if (AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())) {
-                updateServiceStatus(
-                        intent.getStringExtra("key"),
-                        intent.getStringExtra("value")
-                );
+            if (AppConfig.ACTION_BOARD_EVENT.equals(intent.getAction())) {
+                handleBoardEvent(intent.getIntExtra("code2", -1));
                 return;
             }
 
-            if (AppConfig.ACTION_BOARD_EVENT.equals(intent.getAction())) {
-                handleBoardEvent(
-                        intent.getIntExtra("code2", -1),
-                        intent.getLongExtra("data", 0L),
-                        intent.getIntExtra("expandCode", 0)
-                );
+            if (PaymentManager.ACTION_PAYMENT_EVENT.equals(intent.getAction())) {
+                handlePaymentEvent(intent);
             }
         }
     };
@@ -79,41 +79,28 @@ public class MainActivity extends AppCompatActivity {
         requestNotificationPermission();
         startDeviceService();
 
-        TextView deviceText = findViewById(R.id.text_device_info);
-        deviceText.setText(getString(
-                R.string.device_info_format,
-                DeviceUtil.getDeviceId(this),
-                DeviceUtil.getAppVersion(this)
-        ));
-
         if (!WifiSupport.hasSavedWifi(this)) {
-            openWifiConfig();
+            startActivity(new Intent(this, WifiConfigActivity.class));
         }
     }
 
     @Override
     protected void onStart() {
         super.onStart();
-        registerStatusReceiver();
+        registerAppReceiver();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        backendOpening = false;
         hideSystemUi();
-        if (WifiSupport.isInternetConnected(this)) {
-            networkStatusText.setText(getString(
-                    R.string.network_connected_format,
-                    WifiSupport.getCurrentSsid(this)
-            ));
-        }
-        SerialManager.get(this).sendCommand(0x21, 0L, false);
     }
 
     @Override
     protected void onStop() {
         if (receiverRegistered) {
-            unregisterReceiver(statusReceiver);
+            unregisterReceiver(appReceiver);
             receiverRegistered = false;
         }
         super.onStop();
@@ -129,41 +116,107 @@ public class MainActivity extends AppCompatActivity {
 
     private void bindViews() {
         selectedPackageText = findViewById(R.id.text_selected_package);
-        networkStatusText = findViewById(R.id.text_network_status);
-        mqttStatusText = findViewById(R.id.text_mqtt_status);
-        boardStatusText = findViewById(R.id.text_board_status);
-        stockText = findViewById(R.id.text_stock_status);
-        eventText = findViewById(R.id.text_latest_event);
+        paymentStatusText = findViewById(R.id.text_payment_status);
+        paymentButton = findViewById(R.id.button_start_payment);
+        paymentQrImage = findViewById(R.id.image_payment_qr);
+        paymentButton.setEnabled(false);
     }
 
     private void bindActions() {
-        bindPackageButton(R.id.button_package_1, 1, 1);
-        bindPackageButton(R.id.button_package_5, 5, 5);
-        bindPackageButton(R.id.button_package_10, 10, 10);
-        bindPackageButton(R.id.button_package_20, 20, 20);
-        bindPackageButton(R.id.button_package_50, 50, 50);
-        bindPackageButton(R.id.button_package_100, 100, 100);
+        bindPackageButton(R.id.button_package_1, 1, 100);
+        bindPackageButton(R.id.button_package_5, 5, 500);
+        bindPackageButton(R.id.button_package_10, 10, 1000);
+        bindPackageButton(R.id.button_package_20, 20, 2000);
+        bindPackageButton(R.id.button_package_50, 50, 5000);
+        bindPackageButton(R.id.button_package_100, 100, 10000);
 
-        findViewById(R.id.button_wifi_settings).setOnClickListener(view -> openWifiConfig());
-        findViewById(R.id.button_refresh_status).setOnClickListener(view -> {
-            boolean sent = SerialManager.get(this).sendCommand(0x21, 0L, false);
-            Toast.makeText(
-                    this,
-                    sent ? R.string.status_request_sent : R.string.board_not_connected,
-                    Toast.LENGTH_SHORT
-            ).show();
-        });
+        paymentButton.setOnClickListener(view -> startPayment());
+        findViewById(R.id.button_backend_settings).setOnClickListener(view -> openBackendSettings());
     }
 
-    private void bindPackageButton(int viewId, int beadCount, int priceYuan) {
+    private void bindPackageButton(int viewId, int beadCount, int priceFen) {
         findViewById(viewId).setOnClickListener(view -> {
+            selectedBeadCount = beadCount;
+            selectedPriceFen = priceFen;
             selectedPackageText.setText(getString(
                     R.string.package_selected_format,
                     beadCount,
-                    priceYuan
+                    priceFen / 100
             ));
-            eventText.setText(R.string.payment_api_pending);
+            paymentStatusText.setText(R.string.payment_ready);
+            paymentQrImage.setImageDrawable(null);
+            paymentQrImage.setVisibility(View.GONE);
+            paymentButton.setEnabled(true);
         });
+    }
+
+    private void startPayment() {
+        if (selectedBeadCount <= 0 || selectedPriceFen <= 0) {
+            Toast.makeText(this, R.string.package_not_selected, Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        PaymentManager.PaymentRequest request = PaymentManager.get(this).startPayment(
+                selectedBeadCount,
+                selectedPriceFen
+        );
+        paymentStatusText.setText(getString(
+                R.string.payment_waiting_qr_format,
+                request.orderId
+        ));
+        paymentQrImage.setImageDrawable(null);
+        paymentQrImage.setVisibility(View.GONE);
+    }
+
+    private void handlePaymentEvent(Intent intent) {
+        String event = intent.getStringExtra(PaymentManager.EXTRA_EVENT);
+        String message = intent.getStringExtra(PaymentManager.EXTRA_MESSAGE);
+
+        if (PaymentManager.EVENT_QR_READY.equals(event)) {
+            String qrContent = intent.getStringExtra(PaymentManager.EXTRA_QR_CONTENT);
+            Bitmap bitmap = QrCodeUtil.create(qrContent, 520);
+            if (bitmap == null) {
+                paymentStatusText.setText(R.string.payment_qr_invalid);
+                return;
+            }
+            paymentQrImage.setImageBitmap(bitmap);
+            paymentQrImage.setVisibility(View.VISIBLE);
+            paymentStatusText.setText(R.string.payment_scan_hint);
+            return;
+        }
+
+        paymentStatusText.setText(message == null ? "" : message);
+        if (PaymentManager.EVENT_SUCCESS.equals(event)) {
+            paymentButton.setEnabled(false);
+            paymentQrImage.setVisibility(View.GONE);
+        }
+    }
+
+    private void handleBoardEvent(int code2) {
+        switch (code2) {
+            case CODE_BACKEND_SETTINGS_REQUEST:
+                openBackendSettings();
+                break;
+            case CODE_BEAD_OUTPUT_TIMEOUT:
+            case CODE_BEAD_EMPTY:
+                paymentStatusText.setText(R.string.machine_temporarily_unavailable);
+                paymentButton.setEnabled(false);
+                break;
+            case CODE_BEAD_REFILLED:
+                paymentStatusText.setText(R.string.machine_ready);
+                paymentButton.setEnabled(selectedBeadCount > 0);
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void openBackendSettings() {
+        if (backendOpening) {
+            return;
+        }
+        backendOpening = true;
+        startActivity(new Intent(this, BackendSettingsActivity.class));
     }
 
     private void startDeviceService() {
@@ -175,113 +228,20 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void openWifiConfig() {
-        startActivity(new Intent(this, WifiConfigActivity.class));
-    }
-
-    private void registerStatusReceiver() {
+    private void registerAppReceiver() {
         if (receiverRegistered) {
             return;
         }
 
         IntentFilter filter = new IntentFilter();
-        filter.addAction(AppConfig.ACTION_SERVICE_STATUS);
         filter.addAction(AppConfig.ACTION_BOARD_EVENT);
+        filter.addAction(PaymentManager.ACTION_PAYMENT_EVENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(appReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            registerReceiver(statusReceiver, filter);
+            registerReceiver(appReceiver, filter);
         }
         receiverRegistered = true;
-    }
-
-    private void updateServiceStatus(String key, String value) {
-        String safeValue = value == null ? "" : value;
-        if ("network".equals(key)) {
-            networkStatusText.setText(safeValue);
-        } else if ("mqtt".equals(key) || "activation".equals(key)) {
-            mqttStatusText.setText(safeValue);
-        } else if ("serial".equals(key)) {
-            boardStatusText.setText(safeValue);
-        } else if ("service".equals(key)) {
-            eventText.setText(safeValue);
-        }
-    }
-
-    private void handleBoardEvent(int code2, long data, int expandCode) {
-        switch (code2) {
-            case 0x00:
-                boardStatusText.setText(getString(
-                        R.string.board_version_format,
-                        formatPackedVersion(data)
-                ));
-                break;
-            case 0x01:
-                eventText.setText(R.string.board_bead_output_feedback);
-                break;
-            case 0x02:
-                eventText.setText(R.string.board_coin_input);
-                break;
-            case 0x04:
-                int billType = (int) ((data >>> 16) & 0xFF);
-                int billState = (int) (data & 0xFF);
-                eventText.setText(getString(
-                        R.string.board_bill_accepted_format,
-                        billType,
-                        billState
-                ));
-                break;
-            case 0x07:
-                eventText.setText(getString(R.string.board_output_timeout_format, data));
-                break;
-            case 0x20:
-                eventText.setText(getString(
-                        R.string.board_price_format,
-                        data / 100.0
-                ));
-                break;
-            case 0x21:
-                stockText.setText(getString(R.string.stock_format, data));
-                break;
-            case 0x22:
-                eventText.setText(getString(R.string.pending_bead_format, data));
-                break;
-            case 0x23:
-                eventText.setText(getString(
-                        R.string.credit_format,
-                        data / 100.0
-                ));
-                break;
-            case 0x24:
-                stockText.setText(getString(R.string.low_stock_format, data));
-                break;
-            case 0x25:
-                stockText.setText(R.string.board_empty);
-                eventText.setText(getString(R.string.pending_bead_format, data));
-                break;
-            case 0x26:
-                stockText.setText(getString(R.string.refilled_format, data));
-                break;
-            default:
-                eventText.setText(getString(
-                        R.string.board_event_format,
-                        code2,
-                        data,
-                        expandCode
-                ));
-                break;
-        }
-    }
-
-    private String formatPackedVersion(long value) {
-        return String.format(
-                Locale.ROOT,
-                "%d.%d.%d.%d",
-                (value >>> 24) & 0xFF,
-                (value >>> 16) & 0xFF,
-                (value >>> 8) & 0xFF,
-                value & 0xFF
-        );
     }
 
     private void requestNotificationPermission() {

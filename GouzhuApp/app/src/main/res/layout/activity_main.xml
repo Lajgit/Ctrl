@@ -126,81 +126,39 @@
             android:textSize="19sp"
             android:textStyle="bold" />
 
-        <TextView
+        <Button
+            android:id="@+id/button_start_payment"
+            style="@style/Widget.Gouzhu.PrimaryButton"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="28dp"
-            android:text="@string/device_section_title"
-            android:textColor="@color/text_primary"
-            android:textSize="24sp"
-            android:textStyle="bold" />
+            android:layout_marginTop="18dp"
+            android:text="@string/start_payment" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:background="@drawable/bg_status_panel"
-            android:orientation="vertical"
-            android:padding="22dp">
-
-            <TextView
-                android:id="@+id/text_network_status"
-                style="@style/Widget.Gouzhu.StatusText"
-                android:text="@string/network_waiting" />
-
-            <TextView
-                android:id="@+id/text_mqtt_status"
-                style="@style/Widget.Gouzhu.StatusText"
-                android:text="@string/mqtt_waiting" />
-
-            <TextView
-                android:id="@+id/text_board_status"
-                style="@style/Widget.Gouzhu.StatusText"
-                android:text="@string/board_waiting" />
-
-            <TextView
-                android:id="@+id/text_stock_status"
-                style="@style/Widget.Gouzhu.StatusText"
-                android:text="@string/stock_unknown" />
-
-            <TextView
-                android:id="@+id/text_latest_event"
-                style="@style/Widget.Gouzhu.StatusText"
-                android:text="@string/latest_event_waiting" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/button_wifi_settings"
-                style="@style/Widget.Gouzhu.ActionButton"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:text="@string/wifi_settings" />
-
-            <Space
-                android:layout_width="16dp"
-                android:layout_height="1dp" />
-
-            <Button
-                android:id="@+id/button_refresh_status"
-                style="@style/Widget.Gouzhu.ActionButton"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:text="@string/refresh_status" />
-        </LinearLayout>
+        <ImageView
+            android:id="@+id/image_payment_qr"
+            android:layout_width="340dp"
+            android:layout_height="340dp"
+            android:layout_marginTop="20dp"
+            android:background="@color/white"
+            android:contentDescription="@string/payment_qr_description"
+            android:padding="12dp"
+            android:scaleType="fitCenter"
+            android:visibility="gone" />
 
         <TextView
-            android:id="@+id/text_device_info"
+            android:id="@+id/text_payment_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="16dp"
             android:gravity="center"
-            android:textColor="@color/text_hint"
-            android:textSize="13sp" />
+            android:text="@string/payment_select_package"
+            android:textColor="@color/text_secondary"
+            android:textSize="18sp" />
+
+        <Button
+            android:id="@+id/button_backend_settings"
+            style="@style/Widget.Gouzhu.ActionButton"
+            android:layout_width="220dp"
+            android:layout_marginTop="28dp"
+            android:text="@string/backend_debug_entry" />
     </LinearLayout>
 </ScrollView>

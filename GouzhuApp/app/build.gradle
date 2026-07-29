@@ -2,8 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-def appVersionName = "1.0.0"
-def appVersionCode = 1
+def appVersionName = "1.0.1"
+def appVersionCode = 2
 
 android {
     namespace 'com.gouzhu'
@@ -54,6 +54,9 @@ dependencies {
     implementation 'com.squareup.okhttp3:okhttp:4.10.0'
     implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
     implementation 'com.google.code.gson:gson:2.10.1'
+
+    // 服务器返回支付字符串后，在本机生成付款二维码。
+    implementation 'com.google.zxing:core:3.5.3'
 
     testImplementation libs.junit
     androidTestImplementation libs.espresso.core

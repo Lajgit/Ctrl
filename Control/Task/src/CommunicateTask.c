@@ -2,6 +2,7 @@
 #include "MesgTask.h"
 #include "CtrlTask.h"
 #include "KeyTask.h"
+#include "FlashTask.h"
 #include "app_crc.h"
 #include "app_list.h"
 #include "string.h"
@@ -10,6 +11,7 @@
 static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg);
 static bool Board_WriteBootRequest(uint32_t request_magic);
 static void Board_SystemRestart(bool enter_bootloader);
+static void Purchase_AddPaidOutput(uint32_t bead_count);
 
 ListHandle_t ResendList, DealList;
 static ListNode_t ResendList_buffer[100];
@@ -26,6 +28,7 @@ extern Event_Handle_t Mesg_event;
 extern BeadMotor_t BeadMotor1;
 extern BeadMotor_t BeadMotor2;
 extern Lock_t Lock;
+extern Setting_TypeDef Setting;
 
 static bool Board_WriteBootRequest(uint32_t request_magic)
 {
@@ -85,6 +88,41 @@ static void Board_SystemRestart(bool enter_bootloader)
 
     while (1)
     {
+    }
+}
+
+/*
+ * 服务器确认支付成功后，安卓把吐珠数量作为正式购买命令发给控制板。
+ * 数量计入掉电保存的 PendingBeads，后续复用现有欠吐、无珠和补珠恢复流程。
+ */
+static void Purchase_AddPaidOutput(uint32_t bead_count)
+{
+    if (bead_count == 0U)
+    {
+        return;
+    }
+
+    if (bead_count > (0xFFFFFFFFUL - Setting.PendingBeads))
+    {
+        Setting.PendingBeads = 0xFFFFFFFFUL;
+    }
+    else
+    {
+        Setting.PendingBeads += bead_count;
+    }
+
+    FlashTask_RequestSave();
+    EventGroupSetBits(&Mesg_event, MesgEvent_PurchasePendingStatus);
+
+    /*
+     * 已付款数量即使在无珠状态也必须保留。
+     * 库存为0或已锁定无珠时通知安卓，补珠后由现有 Purchase_Task 自动继续。
+     */
+    if ((Setting.BeadStock == 0U) ||
+        ((Setting.PurchaseFlags & PURCHASE_FLAG_NO_BEAD) != 0U))
+    {
+        /* 复用现有无珠锁定函数，确保 PurchaseNoBead 同步置位并禁用纸钞机。 */
+        Purchase_OnDispenseTimeout();
     }
 }
 
@@ -188,6 +226,11 @@ static void USART1_Deal(void *rx_mesg)
             case PurchaseStatusRequest:
                 /* 返回价格、库存、欠吐数量和不足一颗的累计余额。 */
                 Purchase_RequestStatus();
+                break;
+
+            case PaidPurchaseOutput:
+                /* Data1:Data4 为服务器确认支付成功后的吐珠数量。 */
+                Purchase_AddPaidOutput(USART_GetData32(mesg));
                 break;
 
             case BoardRestart:

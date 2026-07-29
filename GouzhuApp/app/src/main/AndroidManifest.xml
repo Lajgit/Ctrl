@@ -36,6 +36,12 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".BackendSettingsActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"

@@ -8,8 +8,8 @@
 #define Android_USART USART1
 
 #define VERSION_MAJOR 1U
-#define VERSION_MINOR 1U
-#define VERSION_PATCH 1U
+#define VERSION_MINOR 2U
+#define VERSION_PATCH 0U
 #define VERSION_BUILD 0U
 #define VERSION ((VERSION_MAJOR << 24) | (VERSION_MINOR << 16) | \
                  (VERSION_PATCH << 8) | VERSION_BUILD)
@@ -31,7 +31,7 @@
 #define BillStatus 0x12U
 #define BillCurrencyModeStatus 0x13U
 
-/* 固件购买、库存和补珠状态。 */
+/* 固件购买、库存、补珠和后台设置状态。 */
 #define BeadPriceStatus 0x20U
 #define BeadStockStatus 0x21U
 #define PurchasePendingStatus 0x22U
@@ -39,9 +39,10 @@
 #define BeadLowStock 0x24U
 #define BeadEmpty 0x25U
 #define BeadRefilled 0x26U
+#define BackendSettingsRequest 0x27U  /* K2 短按，请求安卓进入后台设置 */
 
 /* 安卓发给主板的功能码 */
-#define BeadMotor1Output 0x01U     /* 启动吐珠电机 */
+#define BeadMotor1Output 0x01U     /* 启动吐珠电机，维护/调试使用 */
 #define BeadMotor2Output 0x02U     /* 启动存珠电机 */
 #define Unlock 0x10U
 #define BillCurrencyModeSet 0x19U
@@ -50,6 +51,7 @@
 #define BillReset 0x1CU
 #define BeadPriceSet 0x20U         /* Data1:Data4 为单颗价格，单位：人民币分 */
 #define PurchaseStatusRequest 0x21U
+#define PaidPurchaseOutput 0x27U   /* 服务器支付成功后下发，Data1:Data4 为吐珠数量 */
 #define BoardRestart 0xF0U
 #define StopAllDevice 0xFFU
 
@@ -77,6 +79,7 @@
 #define MesgEvent_BeadLowStock (1u << 15)
 #define MesgEvent_BeadEmpty (1u << 16)
 #define MesgEvent_BeadRefilled (1u << 17)
+#define MesgEvent_BackendSettingsRequest (1u << 18)
 
 #define ResendTrigger_Time 1000U
 /* 覆盖安卓 1 秒重发和最多 3 次重发，防止同一 ID 重复执行电机命令。 */

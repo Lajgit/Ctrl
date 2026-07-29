@@ -1,5 +1,6 @@
 #include "MesgTask.h"
 #include "CtrlTask.h"
+#include "BackendKeyTask.h"
 
 Event_Handle_t Mesg_event;
 
@@ -38,6 +39,9 @@ static uint32_t MakeBillData(void)
 
 void Mesg_Task(void)
 {
+    /* K2（SettingButton/PD11）短按后请求安卓进入后台设置。 */
+    BackendKey_Task();
+
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor1Feedback))
     {
         /* PD3：吐珠电机光眼反馈。 */
@@ -125,7 +129,7 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_PurchaseCreditStatus))
     {
-        /* 尚不足一颗珠子的累计人民币余额，单位：分。 */
+        /* 尚不足以购买一颗珠子的累计人民币余额，单位：分。 */
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                PurchaseCreditStatus,
@@ -168,6 +172,18 @@ void Mesg_Task(void)
                                           0x00U,
                                           &ResendList);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadRefilled);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BackendSettingsRequest))
+    {
+        /* K2 请求进入后台设置，需要安卓原样确认。 */
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          BackendSettingsRequest,
+                                          1U,
+                                          0x00U,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_BackendSettingsRequest);
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_RemainingBead))

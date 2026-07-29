@@ -4,36 +4,96 @@
 
 ## 当前功能
 
-- 固定竖屏购珠首页和设备状态界面；
+- 顾客首页隐藏网络、MQTT、串口、库存、设备号和版本等设备状态；
+- 控制板 K2（SettingButton/PD11）请求进入后台设置；
+- 顾客首页保留“后台设置（调试入口）”按钮，量产时可再隐藏；
+- 套餐选择、支付按钮和付款二维码显示；
+- 服务器支付消息、扫码模块结果的 App 内部接入接口；
+- 服务器确认支付成功后，通过控制板 `Code2=0x27` 下发吐珠数量；
 - `/dev/ttyS5`、115200、8N1 控制板通信；
-- 14 字节购珠机协议解析、CRC16 校验和 ACK；
-- 已保存 WiFi 的自动连接及屏幕 WiFi 配置页；
-- 设备注册、自动认领和激活；
-- MQTT 自动连接、自动重连、订阅、心跳和升级进度上报；
-- `type=ota` 的 GouzhuApp 自升级；
-- `type=ball` 的控制板 bin 下载、MD5 校验和串口 Bootloader 升级；
-- 开机及应用自升级完成后的服务恢复。
+- WiFi、设备注册激活、MQTT、App 自升级和控制板 bin 升级。
 
-## 暂未实现
+## 支付接口状态
 
-- 扫码支付、订单查询和支付回调；
-- 会员取珠、会员存珠、团购核销和积分商城；
-- 正式运营后台业务配置。
+正式服务器 URL、Topic、鉴权、签名和字段尚未提供，因此当前只预留代码边界，不伪造生产接口。
 
-因此首页套餐按钮当前只记录选择，不会发送吐珠命令，避免在支付接口未接入时误吐珠。
+### 创建支付请求
+
+用户选择套餐并按下“立即支付”后：
+
+```java
+PaymentManager.PaymentRequest request =
+        PaymentManager.get(context).startPayment(beadCount, priceFen);
+```
+
+`request.requestJson` 是待发送给服务器的 JSON。
+
+### 服务器返回付款二维码
+
+网络层收到服务器字符串后调用：
+
+```java
+PaymentManager.get(context).handleServerQrString(orderId, qrContent);
+```
+
+App 使用 ZXing 在本机生成付款二维码。
+
+### 扫码模块结果
+
+扫码模块 SDK 或串口驱动得到字符串后调用：
+
+```java
+ScannerBridge.onQrDecoded(context, decodedText);
+```
+
+当前返回待上报 JSON；正式接口确定后在 `PaymentManager.submitScannerQrString()` 中上报。
+
+### 服务器支付结果
+
+```java
+PaymentManager.get(context).handleServerPaymentResult(
+        orderId,
+        true,
+        beadCount,
+        "支付成功"
+);
+```
+
+App 对 `orderId` 去重，再发送控制板正式命令：
+
+```text
+Code1 = 0x01
+Code2 = 0x27
+Data1:Data4 = 吐珠数量
+```
+
+控制板把数量计入掉电保存的 `PendingBeads`，复用现有欠吐、无珠和补珠恢复流程。
+
+## 后台设置
+
+正式设备短按 K2：
+
+```text
+K2 / SettingButton / PD11
+→ 控制板上报 Code1=0x00、Code2=0x27
+→ GouzhuApp 打开 BackendSettingsActivity
+```
+
+后台页显示：
+
+- 网络状态；
+- 激活/MQTT 状态；
+- 控制板串口和固件版本；
+- 库存、欠吐和最近事件；
+- 设备号和 App 版本；
+- WiFi 设置和状态刷新。
 
 ## 构建
 
-在 `GouzhuApp` 目录执行：
-
 ```powershell
+cd GouzhuApp
+.\gradlew.bat clean
 .\gradlew.bat :app:assembleDebug
-```
-
-调试 APK：
-
-```text
-app\build\outputs\apk\debug\app-debug.apk
 ```
 
 安装：
@@ -43,63 +103,11 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 adb shell am start -n com.gouzhu/.MainActivity
 ```
 
-## RK3566 系统配置要求
+## 尚未验证
 
-### ttyS5
-
-量产镜像应在 `ueventd` 和 SELinux 中允许 `com.gouzhu` 访问 `/dev/ttyS5`。应用会尝试通过 `stty` 配置 115200、8N1；调试镜像存在 `su` 时，也会尝试临时修改串口权限。
-
-检查命令：
-
-```powershell
-adb shell "ls -lZ /dev/ttyS5"
-adb shell "toybox stty -F /dev/ttyS5 -a"
-```
-
-### WiFi
-
-Android 13 普通第三方应用不能直接保存和连接任意 WiFi。本工程沿用 OTA_XLH3566 在 RK3566 系统镜像中的系统权限方案，量产 APK应作为系统或特权应用预装，并授予 Manifest 中声明的系统 WiFi 权限。
-
-### 自升级
-
-当前通过以下命令静默覆盖安装：
-
-```text
-su 0 sh -c "pm install -r --user 0 <apk>"
-```
-
-量产要求：
-
-- 系统允许该命令执行，或后续改为系统静默安装接口；
-- 所有正式 APK 使用同一签名证书；
-- 新 APK 的 `versionCode` 必须高于已安装版本。
-
-## MQTT 升级类型
-
-只接受：
-
-```text
-ota  - GouzhuApp 自升级
-ball - 控制板 bin 升级
-```
-
-原 OTA_XLH3566 的 `game` 升级分支未移植。
-
-## 控制板升级流程
-
-```text
-下载 bin → MD5 校验 → 普通协议发送 BOTA → HELLO → BEGIN
-→ 1024 字节 DATA 分包 → END 校验 → INSTALL → 控制板重启
-→ VersionRequest 确认新版本 → MQTT 上报成功
-```
-
-Bootloader 帧使用 `AA 5A` 帧头、CRC32、16 位小端序号和长度。
-
-## 回归检查
-
-1. 空白安装后进入 WiFi 配置页，连接正式 WiFi；
-2. 检查注册激活及 MQTT 心跳；
-3. 检查 `/dev/ttyS5` 能读取控制板版本、库存和现金事件；
-4. 发送 `type=ota` 指令，确认下载、MD5、安装及新版本成功补报；
-5. 发送 `type=ball` 指令，确认 BOTA、分包、CRC32、安装、重启和版本确认；
-6. 在下载中断、串口断开、MD5 错误和 APK 签名不一致场景下检查失败上报。
+- RK3566 上 K2 实际电平与 PD11 映射；
+- 后台页在 1024×1280 实屏上的完整布局；
+- 正式服务器支付接口；
+- 扫码模块型号和通信接口；
+- 支付成功后 `0x27` 的串口联调、订单去重和掉电边界；
+- App 自升级和控制板 bin 升级回归。
