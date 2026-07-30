@@ -140,13 +140,8 @@ static void Ctrl_BeadMotor(BeadMotor_t *bead_motor,
 {
     if (bead_motor->motor.state == DEVICE_STATE_START)
     {
-        /*
-         * 先公布正向忙状态，再开启 PWM，避免光眼中断发生在 SetSpeed 与状态更新之间。
-         * direction 预先写入，保证中断能够正确过滤反转清障脉冲。
-         */
-        bead_motor->motor.direction = dir;
-        bead_motor->motor.state = DEVICE_STATE_BUSY;
         bead_motor->motor.SetSpeed(&bead_motor->motor, speed, dir);
+        bead_motor->motor.state = DEVICE_STATE_BUSY;
     }
 
     if (bead_motor->motor.state == DEVICE_STATE_STOP)
@@ -154,7 +149,6 @@ static void Ctrl_BeadMotor(BeadMotor_t *bead_motor,
         bead_motor->motor.Stop(&bead_motor->motor);
         bead_motor->motor.state = DEVICE_STATE_IDLE;
         bead_motor->remain_num = 0U;
-        bead_motor->realtime_remain_num = 0U;
     }
 
     /* 第一次超时后反转清障，达到反转时间后再恢复正转。 */
@@ -168,8 +162,8 @@ static void Ctrl_BeadMotor(BeadMotor_t *bead_motor,
         }
     }
 
-    /* 仅正向运行状态参与无反馈超时；末颗快速刹车使用 PAUSE 状态，不得误判超时。 */
-    if ((bead_motor->motor.state == DEVICE_STATE_BUSY) &&
+    if ((bead_motor->motor.state != DEVICE_STATE_IDLE) &&
+        (bead_motor->motor.state != DEVICE_STATE_TIMEOUT) &&
         (bead_motor->motor.GetRuntime(&bead_motor->motor) > timeout))
     {
         if (bead_motor->retry_count < retry_times)
@@ -218,41 +212,22 @@ static void Ctrl_Lock(Lock_t *lock, uint32_t timeout)
 
 void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num)
 {
-    uint32_t primask;
-
     if ((bead_motor == NULL) || (num == 0U))
     {
         return;
     }
 
-    primask = __get_PRIMASK();
-    __disable_irq();
-
-    /* 外部停止函数可能只清理逻辑剩余量；新任务开始前同步清零实时计数。 */
-    if (((bead_motor->motor.state == DEVICE_STATE_IDLE) ||
-         (bead_motor->motor.state == DEVICE_STATE_STOP)) &&
-        (bead_motor->remain_num == 0U))
+    /* 防止多次追加数量导致 16 位剩余数量回绕。 */
+    if (num > (uint16_t)(0xFFFFU - bead_motor->remain_num))
     {
-        bead_motor->realtime_remain_num = 0U;
-    }
-
-    /* 逻辑剩余量和中断实时剩余量必须同时满足 16 位饱和保护。 */
-    if ((num > (uint16_t)(0xFFFFU - bead_motor->remain_num)) ||
-        (num > (uint16_t)(0xFFFFU - bead_motor->realtime_remain_num)))
-    {
-        if (primask == 0U)
-        {
-            __enable_irq();
-        }
         return;
     }
 
     bead_motor->remain_num += num;
-    bead_motor->realtime_remain_num += num;
 
     /*
      * 电机运行期间的新命令只追加数量，不重置超时和反转重试状态。
-     * 末颗快速刹车后的 PAUSE 状态由主循环消费完已登记脉冲后决定是否重启。
+     * 仅在空闲或刚停止时启动新的动作。
      */
     if ((bead_motor->motor.state == DEVICE_STATE_IDLE) ||
         (bead_motor->motor.state == DEVICE_STATE_STOP))
@@ -260,11 +235,6 @@ void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num)
         bead_motor->retry_count = 0U;
         bead_motor->motor.ResetRuntime(&bead_motor->motor);
         bead_motor->motor.state = DEVICE_STATE_START;
-    }
-
-    if (primask == 0U)
-    {
-        __enable_irq();
     }
 }
 
@@ -285,80 +255,26 @@ void BeadMotor_Resume(BeadMotor_t *bead_motor)
     }
 }
 
-bool BeadMotor_FeedbackIRQ(BeadMotor_t *bead_motor)
+void BeadMotor_Feedback(BeadMotor_t *bead_motor)
 {
     if (bead_motor == NULL)
     {
-        return false;
-    }
-
-    /*
-     * 只接受正向运行期间的光眼脉冲。空闲、停止、反转清障及快速刹车后的
-     * 惯性/抖动脉冲全部忽略，防止库存和欠吐数量被重复扣减。
-     */
-    if ((bead_motor->motor.state != DEVICE_STATE_BUSY) ||
-        (bead_motor->motor.direction != BeadMotor_Dir) ||
-        (bead_motor->realtime_remain_num == 0U))
-    {
-        return false;
+        return;
     }
 
     bead_motor->motor.ResetRuntime(&bead_motor->motor);
     bead_motor->retry_count = 0U;
-    bead_motor->realtime_remain_num--;
 
-    if (bead_motor->realtime_remain_num == 0U)
+    if (bead_motor->remain_num > 0U)
     {
-        /*
-         * 最后一颗在 EXTI 上下文立即停止 PWM，不能等待 Flash、消息和下一轮 CtrlTask。
-         * Stop 必须保持为无阻塞的定时器寄存器操作，禁止在该调用链中加入延时。
-         */
-        bead_motor->motor.Stop(&bead_motor->motor);
-        bead_motor->motor.state = DEVICE_STATE_PAUSE;
+        bead_motor->remain_num--;
     }
 
-    return true;
-}
-
-BeadFeedbackResult_t BeadMotor_Feedback(BeadMotor_t *bead_motor)
-{
-    if (bead_motor == NULL)
+    if ((bead_motor->remain_num == 0U) &&
+        (bead_motor->motor.state != DEVICE_STATE_IDLE))
     {
-        return BEAD_FEEDBACK_IGNORED;
+        bead_motor->motor.state = DEVICE_STATE_STOP;
     }
-
-    /*
-     * EXTI 已先递减 realtime_remain_num；两者的差值就是尚未在主循环消费的
-     * 有效光眼脉冲。没有差值时说明是滞后、抖动或停止后的无效通知。
-     */
-    if (bead_motor->remain_num <= bead_motor->realtime_remain_num)
-    {
-        return BEAD_FEEDBACK_IGNORED;
-    }
-
-    bead_motor->remain_num--;
-
-    if ((bead_motor->motor.state == DEVICE_STATE_PAUSE) &&
-        (bead_motor->remain_num == bead_motor->realtime_remain_num))
-    {
-        /*
-         * 已消费完快速刹车前登记的全部脉冲。若刹车期间又追加了数量，重新启动；
-         * 否则任务完成并回到空闲。这样不会丢失并发追加的维护或购买数量。
-         */
-        if (bead_motor->remain_num > 0U)
-        {
-            bead_motor->motor.ResetRuntime(&bead_motor->motor);
-            bead_motor->motor.state = DEVICE_STATE_START;
-        }
-        else
-        {
-            bead_motor->motor.state = DEVICE_STATE_IDLE;
-        }
-    }
-
-    return (bead_motor->remain_num == 0U)
-               ? BEAD_FEEDBACK_FINISHED
-               : BEAD_FEEDBACK_COUNTED;
 }
 
 void Device_Init(void)
@@ -372,10 +288,8 @@ void Device_Init(void)
     Device_Switch_Init(&Lock.sw, Lock_Valve_GPIO_Port, Lock_Valve_Pin, GPIO_PIN_SET);
 
     BeadMotor1.remain_num = 0U;
-    BeadMotor1.realtime_remain_num = 0U;
     BeadMotor1.retry_count = 0U;
     BeadMotor2.remain_num = 0U;
-    BeadMotor2.realtime_remain_num = 0U;
     BeadMotor2.retry_count = 0U;
 }
 
@@ -384,13 +298,11 @@ void Device_StopAllImmediately(void)
     BeadMotor1.motor.LosePower(&BeadMotor1.motor);
     BeadMotor1.motor.state = DEVICE_STATE_IDLE;
     BeadMotor1.remain_num = 0U;
-    BeadMotor1.realtime_remain_num = 0U;
     BeadMotor1.retry_count = 0U;
 
     BeadMotor2.motor.LosePower(&BeadMotor2.motor);
     BeadMotor2.motor.state = DEVICE_STATE_IDLE;
     BeadMotor2.remain_num = 0U;
-    BeadMotor2.realtime_remain_num = 0U;
     BeadMotor2.retry_count = 0U;
 
     Lock.sw.off(&Lock.sw);
