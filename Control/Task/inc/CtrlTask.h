@@ -31,9 +31,23 @@
 #define PURCHASE_PRICE_SET_OK 0x00U
 #define PURCHASE_PRICE_SET_INVALID 0x01U
 
+typedef enum
+{
+    BEAD_FEEDBACK_IGNORED = 0,
+    BEAD_FEEDBACK_COUNTED,
+    BEAD_FEEDBACK_FINISHED,
+} BeadFeedbackResult_t;
+
 typedef struct
 {
+    /* 主循环已经确认并处理后的剩余数量。 */
     uint16_t remain_num;
+
+    /*
+     * EXTI 实时剩余数量。光眼中断先递减该值，并在减到 0 时立即刹车；
+     * 必须使用 volatile，禁止用 remain_num 代替，否则 Flash 延迟会导致多出一颗。
+     */
+    volatile uint16_t realtime_remain_num;
     uint8_t retry_count;
     motor_t motor;
 } BeadMotor_t;
@@ -46,7 +60,12 @@ typedef struct
 void Device_Init(void);
 void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num);
 void BeadMotor_Resume(BeadMotor_t *bead_motor);
-void BeadMotor_Feedback(BeadMotor_t *bead_motor);
+
+/* EXTI 中断登记有效光眼，并在最后一颗时立即停止 PWM。 */
+bool BeadMotor_FeedbackIRQ(BeadMotor_t *bead_motor);
+
+/* 主循环消费一个已由 EXTI 登记的有效光眼反馈。 */
+BeadFeedbackResult_t BeadMotor_Feedback(BeadMotor_t *bead_motor);
 void Device_StopAllImmediately(void);
 
 /* 固件购买、欠吐和库存管理接口。 */

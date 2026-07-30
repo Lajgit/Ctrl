@@ -12,15 +12,17 @@ extern Rx_HandleTypeDef Rx1;
 extern UART_HandleTypeDef huart3;
 
 /*
- * 外部中断只登记脉冲，不在中断上下文直接修改电机状态和消息事件。
- * 主循环每次最多处理每路一个脉冲，避免多个反馈被事件位合并丢失。
+ * EXTI 先通过 realtime_remain_num 实时确认有效脉冲；最后一颗在中断中立即刹车。
+ * 主循环仍逐个处理有效脉冲，避免消息事件位合并后丢失实际计数。
  */
 static volatile uint16_t BeadMotor1FeedbackPending = 0U;
 static volatile uint16_t BeadMotor2FeedbackPending = 0U;
 
 static void BeadMotor1Feedback_IRQ(void)
 {
-    if (BeadMotor1FeedbackPending < 0xFFFFU)
+    /* 队列已满时不接受新反馈，避免实时计数与主循环待处理数失配。 */
+    if ((BeadMotor1FeedbackPending < 0xFFFFU) &&
+        (BeadMotor_FeedbackIRQ(&BeadMotor1) == true))
     {
         BeadMotor1FeedbackPending++;
     }
@@ -28,7 +30,8 @@ static void BeadMotor1Feedback_IRQ(void)
 
 static void BeadMotor2Feedback_IRQ(void)
 {
-    if (BeadMotor2FeedbackPending < 0xFFFFU)
+    if ((BeadMotor2FeedbackPending < 0xFFFFU) &&
+        (BeadMotor_FeedbackIRQ(&BeadMotor2) == true))
     {
         BeadMotor2FeedbackPending++;
     }
@@ -39,6 +42,7 @@ void InterruptTask_Process(void)
     uint32_t primask;
     bool process_motor1 = false;
     bool process_motor2 = false;
+    BeadFeedbackResult_t feedback_result;
 
     /* 临界区内只取出一个待处理脉冲，缩短关中断时间。 */
     primask = __get_PRIMASK();
@@ -63,19 +67,28 @@ void InterruptTask_Process(void)
 
     if (process_motor1 == true)
     {
-        /* PD3：吐珠电机光眼确认一颗后，电机剩余量、库存和欠吐量同步减一。 */
-        BeadMotor_Feedback(&BeadMotor1);
-        Purchase_OnBeadDispensed();
-        EventGroupSetBits(&Mesg_event, MesgEvent_BeadMotor1Feedback);
-        EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+        /*
+         * PD3：仅 EXTI 已登记的正向有效脉冲才扣库存和欠吐量。
+         * 停机后的惯性脉冲、光眼抖动和反转清障脉冲不会进入此分支。
+         */
+        feedback_result = BeadMotor_Feedback(&BeadMotor1);
+        if (feedback_result != BEAD_FEEDBACK_IGNORED)
+        {
+            Purchase_OnBeadDispensed();
+            EventGroupSetBits(&Mesg_event, MesgEvent_BeadMotor1Feedback);
+            EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+        }
     }
 
     if (process_motor2 == true)
     {
-        /* PD4：存珠电机光眼反馈。 */
-        BeadMotor_Feedback(&BeadMotor2);
-        EventGroupSetBits(&Mesg_event, MesgEvent_BeadMotor2Feedback);
-        EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+        /* PD4：存珠同样只统计正向运行期间的有效光眼脉冲。 */
+        feedback_result = BeadMotor_Feedback(&BeadMotor2);
+        if (feedback_result != BEAD_FEEDBACK_IGNORED)
+        {
+            EventGroupSetBits(&Mesg_event, MesgEvent_BeadMotor2Feedback);
+            EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+        }
     }
 }
 
