@@ -3,6 +3,7 @@
 
 #include "main.h"
 #include "port_device.h"
+#include <stdbool.h>
 
 #define BeadMotorTimeout_time 3000U
 #define BeadMotorReverse_Time 300U
