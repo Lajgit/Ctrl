@@ -56,6 +56,11 @@
                 android:text="@string/stock_unknown" />
 
             <TextView
+                android:id="@+id/text_pending_status"
+                style="@style/Widget.Gouzhu.StatusText"
+                android:text="@string/pending_status_unknown" />
+
+            <TextView
                 android:id="@+id/text_latest_event"
                 style="@style/Widget.Gouzhu.StatusText"
                 android:text="@string/latest_event_waiting" />
