@@ -24,6 +24,16 @@
     <string name="machine_ready">设备已恢复，可以继续购买</string>
     <string name="backend_debug_entry">后台设置（调试入口）</string>
 
+    <string name="activation_title">设备激活</string>
+    <string name="activation_hint">请使用运营平台或商户端扫描二维码，完成设备认领</string>
+    <string name="activation_qr_description">设备认领二维码</string>
+    <string name="activation_qr_waiting">正在等待服务端返回认领二维码</string>
+    <string name="activation_claim_code_format">认领码：%1$s</string>
+    <string name="activation_claim_code_waiting">认领码：等待服务端返回</string>
+    <string name="activation_waiting">等待扫码认领；设备会自动轮询激活状态</string>
+    <string name="activation_success">设备认领成功，正在进入购珠首页</string>
+    <string name="activation_device_format">设备号：%1$s</string>
+
     <string name="collection_title">会员存珠</string>
     <string name="collection_ready_hint">请倒入需要存入的珠子，再点击“开始存珠”</string>
     <string name="collection_start">开始存珠</string>
