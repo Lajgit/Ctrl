@@ -4,8 +4,12 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -30,12 +34,39 @@ import java.util.Locale;
  */
 public class BackendSettingsActivity extends AppCompatActivity {
 
+    private static final long BOARD_POLL_INTERVAL_MS = 2_000L;
+    private static final long BOARD_RESPONSE_TIMEOUT_MS = 5_000L;
+    private static final String STATUS_PREFS = "backend_status";
+    private static final String KEY_PENDING_KNOWN = "pending_known";
+    private static final String KEY_PENDING_BEADS = "pending_beads";
+
     private TextView networkStatusText;
     private TextView mqttStatusText;
     private TextView boardStatusText;
     private TextView stockText;
+    private TextView pendingText;
     private TextView eventText;
     private boolean receiverRegistered;
+    private boolean boardResponsive;
+    private long boardMonitorStartedAt;
+    private long lastBoardResponseAt;
+
+    private final Handler statusHandler = new Handler(Looper.getMainLooper());
+
+    private final Runnable boardStatusMonitor = new Runnable() {
+        @Override
+        public void run() {
+            SerialManager serial = SerialManager.get(BackendSettingsActivity.this);
+            if (!serial.isOpen()) {
+                setBoardDisconnected(R.string.board_serial_not_connected);
+            } else {
+                // ttyS5 即使控制板物理断开仍可写入，因此必须通过版本应答判断在线状态。
+                serial.sendCommand(0x00, 0L, false);
+                evaluateBoardResponseTimeout();
+            }
+            statusHandler.postDelayed(this, BOARD_POLL_INTERVAL_MS);
+        }
+    };
 
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
@@ -72,7 +103,10 @@ public class BackendSettingsActivity extends AppCompatActivity {
         mqttStatusText = findViewById(R.id.text_mqtt_status);
         boardStatusText = findViewById(R.id.text_board_status);
         stockText = findViewById(R.id.text_stock_status);
+        pendingText = findViewById(R.id.text_pending_status);
         eventText = findViewById(R.id.text_latest_event);
+
+        restorePendingStatus();
 
         TextView deviceText = findViewById(R.id.text_device_info);
         deviceText.setText(getString(
@@ -84,7 +118,9 @@ public class BackendSettingsActivity extends AppCompatActivity {
         findViewById(R.id.button_wifi_settings).setOnClickListener(
                 view -> startActivity(new Intent(this, WifiConfigActivity.class))
         );
-        findViewById(R.id.button_refresh_status).setOnClickListener(view -> requestBoardStatus());
+        findViewById(R.id.button_refresh_status).setOnClickListener(
+                view -> requestBoardStatus(true)
+        );
         findViewById(R.id.button_exit_backend).setOnClickListener(view -> finish());
     }
 
@@ -104,11 +140,14 @@ public class BackendSettingsActivity extends AppCompatActivity {
                     WifiSupport.getCurrentSsid(this)
             ));
         }
-        requestBoardStatus();
+
+        startBoardStatusMonitor();
+        requestBoardStatus(false);
     }
 
     @Override
     protected void onStop() {
+        statusHandler.removeCallbacks(boardStatusMonitor);
         if (receiverRegistered) {
             unregisterReceiver(statusReceiver);
             receiverRegistered = false;
@@ -116,13 +155,55 @@ public class BackendSettingsActivity extends AppCompatActivity {
         super.onStop();
     }
 
-    private void requestBoardStatus() {
-        boolean sent = SerialManager.get(this).sendCommand(0x21, 0L, false);
-        Toast.makeText(
-                this,
-                sent ? R.string.status_request_sent : R.string.board_not_connected,
-                Toast.LENGTH_SHORT
-        ).show();
+    private void startBoardStatusMonitor() {
+        statusHandler.removeCallbacks(boardStatusMonitor);
+        boardResponsive = false;
+        lastBoardResponseAt = 0L;
+        boardMonitorStartedAt = SystemClock.elapsedRealtime();
+        boardStatusText.setText(R.string.board_checking_response);
+        statusHandler.post(boardStatusMonitor);
+    }
+
+    private void requestBoardStatus(boolean showToast) {
+        SerialManager serial = SerialManager.get(this);
+        boolean versionSent = serial.sendCommand(0x00, 0L, false);
+        boolean statusSent = serial.sendCommand(0x21, 0L, false);
+        boolean sent = versionSent || statusSent;
+
+        if (!sent) {
+            setBoardDisconnected(R.string.board_serial_not_connected);
+        }
+
+        if (showToast) {
+            Toast.makeText(
+                    this,
+                    sent ? R.string.status_request_sent : R.string.board_not_connected,
+                    Toast.LENGTH_SHORT
+            ).show();
+        }
+    }
+
+    private void evaluateBoardResponseTimeout() {
+        long now = SystemClock.elapsedRealtime();
+        long reference = lastBoardResponseAt > 0L
+                ? lastBoardResponseAt
+                : boardMonitorStartedAt;
+        if ((now - reference) >= BOARD_RESPONSE_TIMEOUT_MS) {
+            setBoardDisconnected(R.string.board_disconnected);
+        }
+    }
+
+    private void markBoardResponsive() {
+        lastBoardResponseAt = SystemClock.elapsedRealtime();
+        if (!boardResponsive) {
+            boardResponsive = true;
+            boardStatusText.setText(R.string.board_connected_waiting_version);
+        }
+    }
+
+    private void setBoardDisconnected(int textResId) {
+        boardResponsive = false;
+        boardStatusText.setText(textResId);
     }
 
     private void registerStatusReceiver() {
@@ -147,13 +228,25 @@ public class BackendSettingsActivity extends AppCompatActivity {
         } else if ("mqtt".equals(key) || "activation".equals(key)) {
             mqttStatusText.setText(safeValue);
         } else if ("serial".equals(key)) {
-            boardStatusText.setText(safeValue);
+            /*
+             * “ttyS5 已打开”不能代表控制板在线。只有收到合法控制板帧才显示已连接；
+             * 串口打开失败或读写异常仍立即显示为断开。
+             */
+            if (safeValue.contains("失败")
+                    || safeValue.contains("异常")
+                    || safeValue.contains("未连接")) {
+                setBoardDisconnected(R.string.board_serial_not_connected);
+            } else if (!boardResponsive) {
+                boardStatusText.setText(R.string.board_waiting_response);
+            }
         } else if ("service".equals(key)) {
             eventText.setText(safeValue);
         }
     }
 
     private void handleBoardEvent(int code2, long data, int expandCode) {
+        markBoardResponsive();
+
         switch (code2) {
             case 0x00:
                 boardStatusText.setText(getString(
@@ -178,6 +271,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
                 break;
             case 0x07:
                 eventText.setText(getString(R.string.board_output_timeout_format, data));
+                updatePendingStatus(data);
                 break;
             case 0x20:
                 eventText.setText(getString(
@@ -189,7 +283,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
                 stockText.setText(getString(R.string.stock_format, data));
                 break;
             case 0x22:
-                eventText.setText(getString(R.string.pending_bead_format, data));
+                updatePendingStatus(data);
                 break;
             case 0x23:
                 eventText.setText(getString(
@@ -202,7 +296,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
                 break;
             case 0x25:
                 stockText.setText(R.string.board_empty);
-                eventText.setText(getString(R.string.pending_bead_format, data));
+                updatePendingStatus(data);
                 break;
             case 0x26:
                 stockText.setText(getString(R.string.refilled_format, data));
@@ -218,6 +312,36 @@ public class BackendSettingsActivity extends AppCompatActivity {
                         expandCode
                 ));
                 break;
+        }
+    }
+
+    private void restorePendingStatus() {
+        SharedPreferences preferences = getSharedPreferences(STATUS_PREFS, MODE_PRIVATE);
+        if (!preferences.getBoolean(KEY_PENDING_KNOWN, false)) {
+            pendingText.setText(R.string.pending_status_unknown);
+            return;
+        }
+        updatePendingText(preferences.getLong(KEY_PENDING_BEADS, 0L));
+    }
+
+    private void updatePendingStatus(long pendingBeads) {
+        long safeValue = Math.max(0L, pendingBeads);
+        updatePendingText(safeValue);
+        getSharedPreferences(STATUS_PREFS, MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_PENDING_KNOWN, true)
+                .putLong(KEY_PENDING_BEADS, safeValue)
+                .apply();
+    }
+
+    private void updatePendingText(long pendingBeads) {
+        if (pendingBeads > 0L) {
+            pendingText.setText(getString(
+                    R.string.pending_status_warning_format,
+                    pendingBeads
+            ));
+        } else {
+            pendingText.setText(getString(R.string.pending_status_format, 0L));
         }
     }
 
