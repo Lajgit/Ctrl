@@ -2,8 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-def appVersionName = "1.1.0"
-def appVersionCode = 3
+def appVersionName = "1.2.0"
+def appVersionCode = 4
 
 android {
     namespace 'com.gouzhu'
@@ -50,12 +50,19 @@ dependencies {
     implementation libs.constraintlayout
     implementation libs.material
 
-    // 新版设备身份认证、后续激活、MQTT和升级依赖。
-    implementation 'com.squareup.okhttp3:okhttp:4.10.0'
+    // 服务端设备 SDK：只引入 standalone，禁止与瘦 JAR 同时加入。
+    implementation files('libs/pinball-device-sdk-client-0.1.0-SNAPSHOT-standalone.jar')
+
+    // SDK 不替代 MQTT 厂商库；当前仍使用 Paho 连接服务端返回的 Broker/Topic。
     implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
+
+    // APK/控制板升级下载模块仍使用 OkHttp。
+    implementation 'com.squareup.okhttp3:okhttp:4.10.0'
+
+    // App 现有本地业务持久化仍使用 Gson；SDK 内部 Gson 已重定位，不会冲突。
     implementation 'com.google.code.gson:gson:2.10.1'
 
-    // 服务器返回二维码原始字符串后在本机生成付款二维码。
+    // 服务端返回二维码原始字符串后在本机生成付款二维码。
     implementation 'com.google.zxing:core:3.5.3'
 
     testImplementation libs.junit
