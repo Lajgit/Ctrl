@@ -22,14 +22,15 @@ import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.network.WifiSupport;
 import com.gouzhu.serial.SerialManager;
 import com.gouzhu.upgrade.UpgradeManager;
+import com.pinball.xiaoda.device.sdk.core.MqttCredential;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * com.gouzhu 单应用后台服务。
  *
- * <p>统一管理 ttyS5、网络、新版身份认证、后续激活、MQTT 和升级，不再读取或
- * 守护 com.zeda.ota 等旧应用。</p>
+ * <p>统一管理 ttyS5、网络、服务端 SDK 生命周期、MQTT 和升级，不读取或守护
+ * 旧包名、旧认证流程或旧凭证。</p>
  */
 public class DeviceService extends Service {
 
@@ -101,8 +102,6 @@ public class DeviceService extends Service {
 
         broadcastStatus("network", "网络已连接：" + WifiSupport.getCurrentSsid(this));
         updateNotification("网络已连接");
-
-        // 无论本地是否存在凭证，都先由新版认证状态机刷新当前连接配置。
         startActivation();
     }
 
@@ -111,7 +110,7 @@ public class DeviceService extends Service {
             activationManager.stop();
         }
 
-        broadcastStatus("activation", "正在执行设备认证");
+        broadcastStatus("activation", "正在执行设备SDK认证");
         activationManager = new ActivationManager(this);
         activationManager.start(new ActivationManager.Callback() {
             @Override
@@ -124,8 +123,8 @@ public class DeviceService extends Service {
             }
 
             @Override
-            public void onActivated(ActivationManager.MqttCredential credential) {
-                broadcastStatus("activation", "设备认证成功");
+            public void onActivated(MqttCredential credential) {
+                broadcastStatus("activation", "设备SDK认证成功");
                 updateNotification("设备认证成功");
                 connectMqtt(credential);
             }
@@ -139,7 +138,7 @@ public class DeviceService extends Service {
         });
     }
 
-    private void connectMqtt(ActivationManager.MqttCredential credential) {
+    private void connectMqtt(MqttCredential credential) {
         MqttManager.get(this).connect(credential);
         UpgradeManager.get(this).resumePendingResult();
         broadcastStatus("service", "购珠机设备服务运行中");
@@ -165,7 +164,7 @@ public class DeviceService extends Service {
                 "购珠机设备服务",
                 NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription("维持购珠机串口、网络、认证、MQTT和升级任务");
+        channel.setDescription("维持购珠机串口、网络、SDK认证、MQTT和升级任务");
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.createNotificationChannel(channel);
