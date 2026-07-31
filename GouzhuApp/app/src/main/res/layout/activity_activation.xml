@@ -87,5 +87,17 @@
             android:gravity="center"
             android:textColor="@color/text_hint"
             android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/text_activation_identity_registration"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/bg_status_panel"
+            android:padding="18dp"
+            android:textColor="@color/text_secondary"
+            android:textIsSelectable="true"
+            android:textSize="14sp"
+            android:visibility="gone" />
     </LinearLayout>
 </ScrollView>
