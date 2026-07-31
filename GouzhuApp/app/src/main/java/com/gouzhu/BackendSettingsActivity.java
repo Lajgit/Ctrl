@@ -1,10 +1,14 @@
 package com.gouzhu;
 
+import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -13,12 +17,14 @@ import android.os.SystemClock;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 
+import com.gouzhu.activation.ActivationLogStore;
 import com.gouzhu.network.WifiConfigActivity;
 import com.gouzhu.network.WifiSupport;
 import com.gouzhu.serial.SerialManager;
@@ -120,6 +126,9 @@ public class BackendSettingsActivity extends AppCompatActivity {
         );
         findViewById(R.id.button_refresh_status).setOnClickListener(
                 view -> requestBoardStatus(true)
+        );
+        findViewById(R.id.button_activation_logs).setOnClickListener(
+                view -> showActivationLogs()
         );
         findViewById(R.id.button_exit_backend).setOnClickListener(view -> finish());
     }
@@ -343,6 +352,63 @@ public class BackendSettingsActivity extends AppCompatActivity {
         } else {
             pendingText.setText(getString(R.string.pending_status_format, 0L));
         }
+    }
+
+    private void showActivationLogs() {
+        TextView logView = new TextView(this);
+        int padding = dpToPx(16);
+        logView.setPadding(padding, padding, padding, padding);
+        logView.setTextSize(14f);
+        logView.setTypeface(Typeface.MONOSPACE);
+        logView.setTextIsSelectable(true);
+        updateActivationLogView(logView);
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        scrollView.addView(logView);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.activation_log_title)
+                .setView(scrollView)
+                .setPositiveButton(
+                        R.string.activation_log_copy,
+                        (ignored, which) -> copyActivationLogs(logView.getText().toString())
+                )
+                .setNeutralButton(R.string.activation_log_clear, null)
+                .setNegativeButton(R.string.activation_log_close, null)
+                .create();
+
+        dialog.setOnShowListener(ignored -> dialog
+                .getButton(AlertDialog.BUTTON_NEUTRAL)
+                .setOnClickListener(view -> {
+                    ActivationLogStore.clear(this);
+                    updateActivationLogView(logView);
+                    Toast.makeText(
+                            this,
+                            R.string.activation_log_cleared,
+                            Toast.LENGTH_SHORT
+                    ).show();
+                }));
+        dialog.show();
+    }
+
+    private void updateActivationLogView(TextView logView) {
+        String logs = ActivationLogStore.read(this);
+        logView.setText(logs.isEmpty() ? getString(R.string.activation_log_empty) : logs);
+    }
+
+    private void copyActivationLogs(String logs) {
+        ClipboardManager clipboard =
+                (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("购珠机注册激活日志", logs));
+        Toast.makeText(this, R.string.activation_log_copied, Toast.LENGTH_SHORT).show();
+    }
+
+    private int dpToPx(int dp) {
+        return Math.round(dp * getResources().getDisplayMetrics().density);
     }
 
     private String formatPackedVersion(long value) {
