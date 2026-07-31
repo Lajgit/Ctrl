@@ -6,10 +6,10 @@
 extern Event_Handle_t Mesg_event;
 
 /*
- * K2 使用原理图和 CubeMX 中的 SettingButton（PD11），低电平按下。
+ * K2 对应 KeyBoard2（PD13），低电平按下。
  * 该函数由 Mesg_Task 周期调用，完成 15 ms 消抖并只在一次按下沿上报一次。
  *
- * 使用头文件内 static inline，是为了不改变当前 Keil 工程的源文件列表。
+ * 使用头文件内 static 函数，是为了不改变当前 Keil 工程的源文件列表。
  */
 static void BackendKey_Task(void)
 {
@@ -19,7 +19,7 @@ static void BackendKey_Task(void)
     GPIO_PinState current_state;
     uint32_t now;
 
-    current_state = HAL_GPIO_ReadPin(SettingButton_GPIO_Port, SettingButton_Pin);
+    current_state = HAL_GPIO_ReadPin(KeyBoard2_GPIO_Port, KeyBoard2_Pin);
     now = HAL_GetTick();
 
     if (current_state != raw_state)
