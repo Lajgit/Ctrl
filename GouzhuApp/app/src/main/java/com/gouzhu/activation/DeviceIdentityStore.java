@@ -56,16 +56,20 @@ public final class DeviceIdentityStore {
         return Base64.encodeToString(publicKey.getEncoded(), Base64.NO_WRAP);
     }
 
-    /** 使用身份私钥执行 SHA256withECDSA，返回 ASN.1 DER 签名。 */
-    public static byte[] sign(Context context, byte[] content) throws Exception {
+    /** 返回 AndroidKeyStore 私钥句柄供服务端 SDK 签名，私钥材料不可导出。 */
+    public static PrivateKey getPrivateKey(Context context) throws Exception {
         ensureKeyPair(context);
         PrivateKey privateKey = (PrivateKey) loadKeyStore().getKey(KEY_ALIAS, null);
         if (privateKey == null) {
             throw new IllegalStateException("设备身份私钥不存在");
         }
+        return privateKey;
+    }
 
+    /** 兼容现有工具代码的本地 SHA256withECDSA 签名入口。 */
+    public static byte[] sign(Context context, byte[] content) throws Exception {
         Signature signature = Signature.getInstance("SHA256withECDSA");
-        signature.initSign(privateKey);
+        signature.initSign(getPrivateKey(context));
         signature.update(content);
         return signature.sign();
     }
