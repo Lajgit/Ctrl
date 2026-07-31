@@ -10,9 +10,10 @@ import android.net.NetworkCapabilities;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
-import com.gouzhu.activation.ActivationManager;
 import com.gouzhu.upgrade.UpgradeManager;
 import com.gouzhu.util.DeviceUtil;
+import com.pinball.xiaoda.device.sdk.client.MqttTransport;
+import com.pinball.xiaoda.device.sdk.core.MqttCredential;
 
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 import org.eclipse.paho.client.mqttv3.MqttCallbackExtended;
@@ -23,6 +24,7 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -30,12 +32,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 购珠机 MQTT 管理器。
+ * 购珠机 MQTT 管理器，同时实现服务端 SDK 的 MqttTransport。
  *
- * <p>Broker、订阅 Topic 和全部上报 Topic 只使用激活接口返回值，不在代码中
- * 拼接临时 Topic。日志不输出密码、operationToken、取珠码或完整业务 payload。</p>
+ * <p>Broker、账号、密码、订阅 Topic、上报 Topic、QoS、心跳和 KeepAlive 全部
+ * 使用 SDK 校验后的 MqttCredential，不在 App 中拼接生产 Topic。</p>
  */
-public final class MqttManager {
+public final class MqttManager implements MqttTransport {
 
     private static final String TAG = "GouzhuMqtt";
     private static volatile MqttManager instance;
@@ -47,7 +49,8 @@ public final class MqttManager {
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean(false);
 
     private MqttClient client;
-    private ActivationManager.MqttCredential credential;
+    private MqttCredential credential;
+    private MessageListener sdkListener;
     private ScheduledFuture<?> heartbeatTask;
 
     private MqttManager(Context context) {
@@ -65,13 +68,19 @@ public final class MqttManager {
         return instance;
     }
 
-    /** 异步连接 MQTT。 */
-    public void connect(ActivationManager.MqttCredential credential) {
-        if (credential == null || !credential.isValid()) {
-            broadcastStatus("mqtt", "MQTT凭证或Topic不完整");
+    public void connect(MqttCredential credential) {
+        connect(credential, null);
+    }
+
+    /** 异步连接 SDK 返回的 MQTT Broker。 */
+    @Override
+    public void connect(MqttCredential credential, MessageListener listener) {
+        if (credential == null) {
+            broadcastStatus("mqtt", "MQTT凭证为空");
             return;
         }
         this.credential = credential;
+        this.sdkListener = listener;
         executor.execute(this::connectInternal);
     }
 
@@ -80,6 +89,11 @@ public final class MqttManager {
             return;
         }
         try {
+            MqttCredential current = credential;
+            if (current == null) {
+                broadcastStatus("mqtt", "MQTT凭证不可用");
+                return;
+            }
             if (client != null && client.isConnected()) {
                 ensureSubscribed();
                 startHeartbeatLoop();
@@ -88,8 +102,8 @@ public final class MqttManager {
 
             closeOldClient();
             client = new MqttClient(
-                    credential.brokerUrl,
-                    credential.clientId,
+                    current.getBrokerUrl(),
+                    current.getClientId(),
                     new MemoryPersistence()
             );
 
@@ -97,13 +111,9 @@ public final class MqttManager {
             options.setCleanSession(true);
             options.setAutomaticReconnect(true);
             options.setConnectionTimeout(10);
-            options.setKeepAliveInterval(
-                    credential.keepAliveSeconds > 0
-                            ? credential.keepAliveSeconds
-                            : AppConfig.DEFAULT_MQTT_KEEP_ALIVE_SECONDS
-            );
-            options.setUserName(credential.username);
-            options.setPassword(credential.password.toCharArray());
+            options.setKeepAliveInterval(current.getKeepAliveSeconds());
+            options.setUserName(current.getUsername());
+            options.setPassword(current.getPassword().toCharArray());
 
             client.setCallback(new CallbackImpl());
             client.connect(options);
@@ -117,20 +127,47 @@ public final class MqttManager {
         }
     }
 
-    /** 发布 QoS 1 非保留消息。 */
+    /** 业务层发布 UTF-8 JSON，使用凭证中的 QoS，非保留。 */
     public synchronized boolean publish(String topic, String payload) {
+        MqttCredential current = credential;
+        int qos = current == null ? 1 : current.getQos();
+        return publishInternal(
+                topic,
+                payload == null ? new byte[0] : payload.getBytes(StandardCharsets.UTF_8),
+                qos,
+                false
+        );
+    }
+
+    @Override
+    public synchronized void publish(String topic, byte[] payload, int qos, boolean retained) {
+        publishInternal(topic, payload == null ? new byte[0] : payload, qos, retained);
+    }
+
+    private boolean publishInternal(String topic, byte[] payload, int qos, boolean retained) {
         if (topic == null || topic.isEmpty() || client == null || !client.isConnected()) {
             return false;
         }
         try {
-            MqttMessage message = new MqttMessage(payload.getBytes(StandardCharsets.UTF_8));
-            message.setQos(credential == null || credential.qos <= 0 ? 1 : credential.qos);
-            message.setRetained(false);
+            MqttMessage message = new MqttMessage(payload);
+            message.setQos(Math.max(0, Math.min(2, qos)));
+            message.setRetained(retained);
             client.publish(topic, message);
             return true;
         } catch (Throwable error) {
             Log.e(TAG, "MQTT发布失败，topic=" + topic, error);
             return false;
+        }
+    }
+
+    @Override
+    public synchronized void subscribe(String topic, int qos) {
+        try {
+            if (client != null && client.isConnected() && topic != null && !topic.isEmpty()) {
+                client.subscribe(topic, Math.max(0, Math.min(2, qos)));
+            }
+        } catch (Throwable error) {
+            Log.e(TAG, "MQTT订阅失败", error);
         }
     }
 
@@ -176,7 +213,6 @@ public final class MqttManager {
         }
     }
 
-    /** 上报 APK/控制板升级进度。 */
     public boolean reportUpgradeProgress(
             String messageId,
             String status,
@@ -210,7 +246,6 @@ public final class MqttManager {
         }
     }
 
-    /** 状态与心跳分开上报。 */
     public boolean reportStatus() {
         try {
             DeviceCommandStore commandStore = new DeviceCommandStore(context);
@@ -233,6 +268,7 @@ public final class MqttManager {
         }
     }
 
+    @Override
     public boolean isConnected() {
         return client != null && client.isConnected();
     }
@@ -245,14 +281,17 @@ public final class MqttManager {
         closeOldClient();
     }
 
+    @Override
+    public void disconnect() {
+        close();
+    }
+
     private synchronized void ensureSubscribed() throws Exception {
-        if (client == null || !client.isConnected()) {
+        MqttCredential current = credential;
+        if (client == null || !client.isConnected() || current == null) {
             return;
         }
-        client.subscribe(
-                credential.commandSubscribeTopic,
-                credential.qos <= 0 ? 1 : credential.qos
-        );
+        client.subscribe(current.getCommandSubscribeTopic(), current.getQos());
     }
 
     private void afterConnected(boolean reconnect) throws Exception {
@@ -271,9 +310,10 @@ public final class MqttManager {
         if (heartbeatTask != null && !heartbeatTask.isCancelled()) {
             return;
         }
-        int interval = credential != null && credential.heartbeatInterval > 0
-                ? credential.heartbeatInterval
-                : AppConfig.DEFAULT_HEARTBEAT_SECONDS;
+        MqttCredential current = credential;
+        int interval = current == null
+                ? AppConfig.DEFAULT_HEARTBEAT_SECONDS
+                : current.getHeartbeatIntervalSeconds();
         heartbeatTask = executor.scheduleWithFixedDelay(
                 this::reportHeartbeat,
                 interval,
@@ -287,20 +327,22 @@ public final class MqttManager {
     }
 
     private boolean publishReport(String key, String payload) {
-        ActivationManager.MqttCredential current = credential;
+        MqttCredential current = credential;
         if (current == null) {
             return false;
         }
-        String topic = current.getReportTopic(key);
-        if (topic.isEmpty()) {
-            Log.e(TAG, "激活响应缺少上报Topic：" + key);
+        Map<String, String> topics = current.getReportTopics();
+        String topic = topics == null ? null : topics.get(key);
+        if (topic == null || topic.isEmpty()) {
+            Log.e(TAG, "SDK凭证缺少上报Topic：" + key);
             return false;
         }
         return publish(topic, payload);
     }
 
-    private void handleMessage(String topic, String payload) {
+    private void handleMessage(String topic, byte[] payloadBytes) {
         try {
+            String payload = new String(payloadBytes, StandardCharsets.UTF_8);
             JSONObject json = new JSONObject(payload);
             String targetDevice = DeviceUtil.normalizeDeviceNo(json.optString("deviceNo", ""));
             String localDevice = DeviceUtil.requireDeviceNo(context);
@@ -317,7 +359,7 @@ public final class MqttManager {
                 return;
             }
             if (topic.contains("/command/task")) {
-                Log.i(TAG, "收到异步任务，当前仅保留订阅，未打印完整payload");
+                Log.i(TAG, "收到异步任务，当前仅保留订阅，不打印完整payload");
                 return;
             }
             Log.w(TAG, "收到未知MQTT Topic：" + topic);
@@ -423,11 +465,20 @@ public final class MqttManager {
         @Override
         public void connectionLost(Throwable cause) {
             broadcastStatus("mqtt", "MQTT连接已断开");
+            MessageListener listener = sdkListener;
+            if (listener != null) {
+                listener.onConnectionLost(cause);
+            }
         }
 
         @Override
         public void messageArrived(String topic, MqttMessage message) {
-            handleMessage(topic, message.toString());
+            byte[] payload = message == null ? new byte[0] : message.getPayload();
+            MessageListener listener = sdkListener;
+            if (listener != null) {
+                listener.onMessage(topic, payload);
+            }
+            handleMessage(topic, payload);
         }
 
         @Override
