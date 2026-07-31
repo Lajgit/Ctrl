@@ -1,0 +1,2 @@
+pinball-device-sdk-client-0.1.0-SNAPSHOT-standalone.jar
+c43e038e1261dd04d565a4b686c475dbb1ee5607f561df3d94fe94a83f840e86
