@@ -138,7 +138,13 @@ public class DeviceService extends Service {
                 String text = "等待设备认领，请扫描屏幕二维码";
                 broadcastActivationWaiting(text, qrContent, claimCode);
                 updateNotification("等待扫码认领设备");
-                launchActivationScreen(qrContent, claimCode, text);
+                launchActivationScreen(
+                        qrContent,
+                        claimCode,
+                        text,
+                        false,
+                        null
+                );
             }
 
             @Override
@@ -156,8 +162,14 @@ public class DeviceService extends Service {
                         "设备SDK认证失败",
                         error
                 );
-                broadcastStatus("activation", "设备认证失败：" + messageOf(error));
-                updateNotification("设备认证失败");
+
+                String errorMessage = messageOf(error);
+                if (isIdentityNotRegistered(error)) {
+                    showIdentityRegistrationRequired(errorMessage);
+                } else {
+                    broadcastStatus("activation", "设备认证失败：" + errorMessage);
+                    updateNotification("设备认证失败");
+                }
                 scheduleRetry();
             }
         });
@@ -232,10 +244,48 @@ public class DeviceService extends Service {
         sendBroadcast(intent);
     }
 
+    private void showIdentityRegistrationRequired(String errorMessage) {
+        String status = "设备身份未登记，请先在平台登记设备号和身份公钥";
+        String publicKey = "";
+        try {
+            publicKey = ActivationManager.exportIdentityPublicKey(this);
+        } catch (Throwable keyError) {
+            Log.e(TAG, "读取设备身份公钥失败", keyError);
+            ActivationLogStore.appendError(this, "读取设备身份公钥失败", keyError);
+        }
+
+        ActivationLogStore.append(
+                this,
+                "注册/激活",
+                status + "；服务端错误：" + errorMessage
+        );
+        broadcastIdentityRegistrationRequired(status, publicKey);
+        updateNotification("等待平台登记设备身份");
+        launchActivationScreen(
+                null,
+                null,
+                status,
+                true,
+                publicKey
+        );
+    }
+
+    private void broadcastIdentityRegistrationRequired(String value, String publicKey) {
+        Intent intent = new Intent(AppConfig.ACTION_SERVICE_STATUS);
+        intent.setPackage(getPackageName());
+        intent.putExtra("key", "activation");
+        intent.putExtra("value", value);
+        intent.putExtra(ActivationActivity.EXTRA_IDENTITY_REGISTRATION_REQUIRED, true);
+        intent.putExtra(ActivationActivity.EXTRA_IDENTITY_PUBLIC_KEY, publicKey);
+        sendBroadcast(intent);
+    }
+
     private void launchActivationScreen(
             String qrContent,
             String claimCode,
-            String status
+            String status,
+            boolean identityRegistrationRequired,
+            String identityPublicKey
     ) {
         if (!activationScreenLaunchRequested.compareAndSet(false, true)) {
             return;
@@ -251,11 +301,19 @@ public class DeviceService extends Service {
             intent.putExtra(ActivationActivity.EXTRA_CLAIM_QR_CONTENT, qrContent);
             intent.putExtra(ActivationActivity.EXTRA_CLAIM_CODE, claimCode);
             intent.putExtra(ActivationActivity.EXTRA_ACTIVATION_STATUS, status);
+            intent.putExtra(
+                    ActivationActivity.EXTRA_IDENTITY_REGISTRATION_REQUIRED,
+                    identityRegistrationRequired
+            );
+            intent.putExtra(
+                    ActivationActivity.EXTRA_IDENTITY_PUBLIC_KEY,
+                    identityPublicKey
+            );
             startActivity(intent);
         } catch (Throwable error) {
             activationScreenLaunchRequested.set(false);
-            Log.e(TAG, "打开设备扫码认领界面失败", error);
-            ActivationLogStore.appendError(this, "打开扫码认领界面失败", error);
+            Log.e(TAG, "打开设备注册激活界面失败", error);
+            ActivationLogStore.appendError(this, "打开注册激活界面失败", error);
         }
     }
 
@@ -292,6 +350,18 @@ public class DeviceService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    private static boolean isIdentityNotRegistered(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.contains("设备身份未登记")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private static String stageName(String key) {
