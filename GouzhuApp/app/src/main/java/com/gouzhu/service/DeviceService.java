@@ -149,7 +149,11 @@ public class DeviceService extends Service {
 
             @Override
             public void onError(Exception error) {
-                ActivationLogStore.appendError(this, "设备SDK认证失败", error);
+                ActivationLogStore.appendError(
+                        DeviceService.this,
+                        "设备SDK认证失败",
+                        error
+                );
                 broadcastStatus("activation", "设备认证失败：" + messageOf(error));
                 updateNotification("设备认证失败");
                 scheduleRetry();
