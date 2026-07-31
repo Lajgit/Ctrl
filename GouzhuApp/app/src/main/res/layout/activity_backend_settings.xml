@@ -89,6 +89,13 @@
             android:text="@string/refresh_status" />
 
         <Button
+            android:id="@+id/button_activation_logs"
+            style="@style/Widget.Gouzhu.ActionButton"
+            android:layout_width="match_parent"
+            android:layout_marginTop="14dp"
+            android:text="@string/activation_log_button" />
+
+        <Button
             android:id="@+id/button_exit_backend"
             style="@style/Widget.Gouzhu.PrimaryButton"
             android:layout_width="match_parent"
