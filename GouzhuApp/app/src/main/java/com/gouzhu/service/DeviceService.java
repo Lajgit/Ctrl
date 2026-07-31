@@ -14,6 +14,7 @@ import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
+import com.gouzhu.ActivationActivity;
 import com.gouzhu.AppConfig;
 import com.gouzhu.R;
 import com.gouzhu.activation.ActivationLogStore;
@@ -39,6 +40,7 @@ public class DeviceService extends Service {
     private static final long RETRY_DELAY_MS = 30_000L;
 
     private final AtomicBoolean initializing = new AtomicBoolean(false);
+    private final AtomicBoolean activationScreenLaunchRequested = new AtomicBoolean(false);
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private ActivationManager activationManager;
@@ -133,15 +135,15 @@ public class DeviceService extends Service {
         activationManager.start(new ActivationManager.Callback() {
             @Override
             public void onWaitingClaim(String qrContent, String claimCode) {
-                String text = claimCode == null || claimCode.trim().isEmpty()
-                        ? "等待平台完成设备认领"
-                        : "等待设备认领，认领码：" + claimCode;
-                broadcastStatus("activation", text);
-                updateNotification(text);
+                String text = "等待设备认领，请扫描屏幕二维码";
+                broadcastActivationWaiting(text, qrContent, claimCode);
+                updateNotification("等待扫码认领设备");
+                launchActivationScreen(qrContent, claimCode, text);
             }
 
             @Override
             public void onActivated(MqttCredential credential) {
+                activationScreenLaunchRequested.set(false);
                 broadcastStatus("activation", "设备SDK认证成功");
                 updateNotification("设备认证成功");
                 connectMqtt(credential);
@@ -210,6 +212,50 @@ public class DeviceService extends Service {
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.notify(AppConfig.SERVICE_NOTIFICATION_ID, buildNotification(text));
+        }
+    }
+
+    private void broadcastActivationWaiting(
+            String value,
+            String qrContent,
+            String claimCode
+    ) {
+        // 调试日志只记录流程状态，不记录二维码原文和一次性认领码。
+        ActivationLogStore.append(this, "注册/激活", value);
+
+        Intent intent = new Intent(AppConfig.ACTION_SERVICE_STATUS);
+        intent.setPackage(getPackageName());
+        intent.putExtra("key", "activation");
+        intent.putExtra("value", value);
+        intent.putExtra(ActivationActivity.EXTRA_CLAIM_QR_CONTENT, qrContent);
+        intent.putExtra(ActivationActivity.EXTRA_CLAIM_CODE, claimCode);
+        sendBroadcast(intent);
+    }
+
+    private void launchActivationScreen(
+            String qrContent,
+            String claimCode,
+            String status
+    ) {
+        if (!activationScreenLaunchRequested.compareAndSet(false, true)) {
+            return;
+        }
+
+        try {
+            Intent intent = new Intent(this, ActivationActivity.class);
+            intent.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            | Intent.FLAG_ACTIVITY_SINGLE_TOP
+            );
+            intent.putExtra(ActivationActivity.EXTRA_CLAIM_QR_CONTENT, qrContent);
+            intent.putExtra(ActivationActivity.EXTRA_CLAIM_CODE, claimCode);
+            intent.putExtra(ActivationActivity.EXTRA_ACTIVATION_STATUS, status);
+            startActivity(intent);
+        } catch (Throwable error) {
+            activationScreenLaunchRequested.set(false);
+            Log.e(TAG, "打开设备扫码认领界面失败", error);
+            ActivationLogStore.appendError(this, "打开扫码认领界面失败", error);
         }
     }
 
