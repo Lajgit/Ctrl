@@ -1,2 +1,6 @@
-pinball-device-sdk-client-0.1.0-SNAPSHOT-standalone.jar
-c43e038e1261dd04d565a4b686c475dbb1ee5607f561df3d94fe94a83f840e86
+新版 SDK 文件：
+xiaoda-device-sdk-0.1.0.jar
+xiaoda-device-mqtt-0.1.0.jar
+xiaoda-device-hardware-0.1.0.jar
+
+旧版 JAR 的 SHA-256 已失效。正式验收时以服务端交付清单重新校验三个文件。
