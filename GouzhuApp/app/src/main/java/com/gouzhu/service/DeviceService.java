@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat;
 
 import com.gouzhu.AppConfig;
 import com.gouzhu.R;
+import com.gouzhu.activation.ActivationLogStore;
 import com.gouzhu.activation.ActivationManager;
 import com.gouzhu.mqtt.DeviceCommandManager;
 import com.gouzhu.mqtt.MqttManager;
@@ -47,6 +48,7 @@ public class DeviceService extends Service {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        ActivationLogStore.append(this, "服务", "设备服务进程已创建");
         startForeground(
                 AppConfig.SERVICE_NOTIFICATION_ID,
                 buildNotification("设备服务正在启动")
@@ -69,6 +71,7 @@ public class DeviceService extends Service {
                 initializeDevice();
             } catch (Throwable error) {
                 Log.e(TAG, "设备服务初始化异常", error);
+                ActivationLogStore.appendError(this, "服务初始化失败", error);
                 broadcastStatus("service", "设备服务初始化异常：" + messageOf(error));
                 scheduleRetry();
             } finally {
@@ -110,6 +113,21 @@ public class DeviceService extends Service {
             activationManager.stop();
         }
 
+        MqttCredential storedCredential = ActivationManager.loadCredential(this);
+        if (storedCredential == null) {
+            ActivationLogStore.append(
+                    this,
+                    "认证入口",
+                    "未检测到完整MQTT凭证，进入首次报到/身份激活流程"
+            );
+        } else {
+            ActivationLogStore.append(
+                    this,
+                    "认证入口",
+                    "检测到完整MQTT凭证，进入日常reactivate流程"
+            );
+        }
+
         broadcastStatus("activation", "正在执行设备SDK认证");
         activationManager = new ActivationManager(this);
         activationManager.start(new ActivationManager.Callback() {
@@ -131,6 +149,7 @@ public class DeviceService extends Service {
 
             @Override
             public void onError(Exception error) {
+                ActivationLogStore.appendError(this, "设备SDK认证失败", error);
                 broadcastStatus("activation", "设备认证失败：" + messageOf(error));
                 updateNotification("设备认证失败");
                 scheduleRetry();
@@ -139,6 +158,7 @@ public class DeviceService extends Service {
     }
 
     private void connectMqtt(MqttCredential credential) {
+        ActivationLogStore.append(this, "MQTT", "认证凭证已保存，开始连接服务端MQTT");
         MqttManager.get(this).connect(credential);
         UpgradeManager.get(this).resumePendingResult();
         broadcastStatus("service", "购珠机设备服务运行中");
@@ -149,6 +169,7 @@ public class DeviceService extends Service {
         if (destroyed) {
             return;
         }
+        ActivationLogStore.append(this, "重试", "30秒后重新执行设备初始化和认证");
         mainHandler.removeCallbacks(retryRunnable);
         mainHandler.postDelayed(retryRunnable, RETRY_DELAY_MS);
     }
@@ -189,6 +210,13 @@ public class DeviceService extends Service {
     }
 
     private void broadcastStatus(String key, String value) {
+        if ("activation".equals(key)
+                || "network".equals(key)
+                || "mqtt".equals(key)
+                || "service".equals(key)) {
+            ActivationLogStore.append(this, stageName(key), value);
+        }
+
         Intent intent = new Intent(AppConfig.ACTION_SERVICE_STATUS);
         intent.setPackage(getPackageName());
         intent.putExtra("key", key);
@@ -199,6 +227,7 @@ public class DeviceService extends Service {
     @Override
     public void onDestroy() {
         destroyed = true;
+        ActivationLogStore.append(this, "服务", "设备服务正在停止");
         mainHandler.removeCallbacksAndMessages(null);
         if (activationManager != null) {
             activationManager.stop();
@@ -213,6 +242,19 @@ public class DeviceService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    private static String stageName(String key) {
+        if ("activation".equals(key)) {
+            return "注册/激活";
+        }
+        if ("network".equals(key)) {
+            return "网络";
+        }
+        if ("mqtt".equals(key)) {
+            return "MQTT";
+        }
+        return "服务";
     }
 
     private static String messageOf(Throwable error) {
