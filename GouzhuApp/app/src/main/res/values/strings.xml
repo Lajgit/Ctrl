@@ -30,9 +30,14 @@
     <string name="activation_qr_waiting">正在等待服务端返回认领二维码</string>
     <string name="activation_claim_code_format">认领码：%1$s</string>
     <string name="activation_claim_code_waiting">认领码：等待服务端返回</string>
+    <string name="activation_claim_code_unavailable">认领码：身份登记后由服务端生成</string>
     <string name="activation_waiting">等待扫码认领；设备会自动轮询激活状态</string>
     <string name="activation_success">设备认领成功，正在进入购珠首页</string>
     <string name="activation_device_format">设备号：%1$s</string>
+    <string name="activation_identity_not_registered">设备身份尚未在平台登记，服务端暂时无法生成认领二维码</string>
+    <string name="activation_identity_registration_hint">请将下方设备号和身份公钥提交平台登记。登记完成后设备会自动重试，并切换为扫码认领二维码。</string>
+    <string name="activation_identity_info_format">平台身份登记资料\n\n设备号：%1$s\n\nX.509 SubjectPublicKeyInfo 公钥（Base64）：\n%2$s</string>
+    <string name="activation_identity_key_unavailable">公钥读取失败，请查看注册/激活调试日志</string>
 
     <string name="collection_title">会员存珠</string>
     <string name="collection_ready_hint">请倒入需要存入的珠子，再点击“开始存珠”</string>
