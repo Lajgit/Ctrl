@@ -30,7 +30,7 @@
     <string name="collection_finish">结束存珠</string>
 
     <string name="backend_title">后台设置</string>
-    <string name="backend_hint">正式设备短按控制板 K2 进入本页；顾客首页不显示以下设备状态。</string>
+    <string name="backend_hint">正式设备短按控制板 K2（PD13）进入本页；顾客首页不显示以下设备状态。</string>
     <string name="exit_backend">退出后台设置</string>
     <string name="backend_entered_by_k2">最新事件：K2请求进入后台设置</string>
 
@@ -50,6 +50,14 @@
     <string name="latest_event_waiting">最新事件：等待设备事件</string>
     <string name="wifi_settings">网络设置</string>
     <string name="refresh_status">刷新设备状态</string>
+    <string name="activation_log_button">注册/激活调试日志</string>
+    <string name="activation_log_title">注册、激活与MQTT调试日志</string>
+    <string name="activation_log_empty">暂无注册激活日志。设备服务启动后会自动记录流程。</string>
+    <string name="activation_log_copy">复制日志</string>
+    <string name="activation_log_clear">清空日志</string>
+    <string name="activation_log_close">关闭</string>
+    <string name="activation_log_copied">调试日志已复制</string>
+    <string name="activation_log_cleared">调试日志已清空</string>
     <string name="device_info_format">设备号：%1$s    App：V%2$s</string>
     <string name="status_request_sent">已请求控制板状态，等待响应</string>
     <string name="board_not_connected">控制板串口未连接</string>
