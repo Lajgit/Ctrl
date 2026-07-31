@@ -96,11 +96,17 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(CoinInput_GPIO_Port, &GPIO_InitStruct);
 
-  /* 两路电机光眼反馈：PD3 为吐珠，PD4 为存珠。 */
-  GPIO_InitStruct.Pin = HoolleOutput_Pin|CardFeedback_Pin;
+  /* PD3：吐珠光眼遮挡时拉低，改为下降沿触发。 */
+  GPIO_InitStruct.Pin = HoolleOutput_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(HoolleOutput_GPIO_Port, &GPIO_InitStruct);
+
+  /* PD4：存珠光眼保持原上升沿触发。 */
+  GPIO_InitStruct.Pin = CardFeedback_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+  HAL_GPIO_Init(CardFeedback_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SPI1_CS_Pin SPI3_OE_Pin */
   GPIO_InitStruct.Pin = SPI1_CS_Pin|SPI3_OE_Pin;
