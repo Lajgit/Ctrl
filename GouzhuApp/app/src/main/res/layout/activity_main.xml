@@ -59,6 +59,7 @@
         </LinearLayout>
 
         <TextView
+            android:id="@+id/text_package_section_title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="28dp"
@@ -68,6 +69,7 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/text_package_section_hint"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="7dp"
@@ -82,12 +84,12 @@
             android:columnCount="3"
             android:rowCount="2">
 
-            <Button android:id="@+id/button_package_1" style="@style/Widget.Gouzhu.PackageButton" android:text="1珠\n1元" />
-            <Button android:id="@+id/button_package_5" style="@style/Widget.Gouzhu.PackageButton" android:text="5珠\n5元" />
-            <Button android:id="@+id/button_package_10" style="@style/Widget.Gouzhu.PackageButton" android:text="10珠\n10元" />
-            <Button android:id="@+id/button_package_20" style="@style/Widget.Gouzhu.PackageButton" android:text="20珠\n20元" />
-            <Button android:id="@+id/button_package_50" style="@style/Widget.Gouzhu.PackageButton" android:text="50珠\n50元" />
-            <Button android:id="@+id/button_package_100" style="@style/Widget.Gouzhu.PackageButton" android:text="100珠\n100元" />
+            <Button android:id="@+id/button_package_1" style="@style/Widget.Gouzhu.PackageButton" android:text="--" />
+            <Button android:id="@+id/button_package_5" style="@style/Widget.Gouzhu.PackageButton" android:text="--" />
+            <Button android:id="@+id/button_package_10" style="@style/Widget.Gouzhu.PackageButton" android:text="--" />
+            <Button android:id="@+id/button_package_20" style="@style/Widget.Gouzhu.PackageButton" android:text="--" />
+            <Button android:id="@+id/button_package_50" style="@style/Widget.Gouzhu.PackageButton" android:text="--" />
+            <Button android:id="@+id/button_package_100" style="@style/Widget.Gouzhu.PackageButton" android:text="--" />
         </GridLayout>
 
         <TextView
