@@ -26,13 +26,17 @@ import com.gouzhu.util.DeviceUtil;
  * 首次设备报到后的扫码认领界面。
  *
  * <p>二维码内容和认领码只使用服务端 enroll 响应，不在设备端自行拼接。
- * 设备服务继续在后台轮询 activateWithIdentity；认领成功后本页自动关闭并返回首页。</p>
+ * 当平台尚未登记设备身份公钥时，本页显示设备号和 X.509 公钥，供平台先完成身份登记；
+ * 身份登记成功后服务会自动重试 enroll，并在本页切换为服务端返回的认领二维码。</p>
  */
 public final class ActivationActivity extends AppCompatActivity {
 
     public static final String EXTRA_CLAIM_QR_CONTENT = "claimQrContent";
     public static final String EXTRA_CLAIM_CODE = "claimCode";
     public static final String EXTRA_ACTIVATION_STATUS = "activationStatus";
+    public static final String EXTRA_IDENTITY_REGISTRATION_REQUIRED =
+            "identityRegistrationRequired";
+    public static final String EXTRA_IDENTITY_PUBLIC_KEY = "identityPublicKey";
 
     private static final long SUCCESS_CLOSE_DELAY_MS = 1_200L;
 
@@ -42,6 +46,8 @@ public final class ActivationActivity extends AppCompatActivity {
     private TextView qrUnavailableText;
     private TextView claimCodeText;
     private TextView activationStatusText;
+    private TextView identityRegistrationText;
+    private String deviceNo;
     private boolean receiverRegistered;
     private boolean completing;
 
@@ -54,16 +60,27 @@ public final class ActivationActivity extends AppCompatActivity {
                 return;
             }
 
-            String qrContent = intent.getStringExtra(EXTRA_CLAIM_QR_CONTENT);
-            String claimCode = intent.getStringExtra(EXTRA_CLAIM_CODE);
-            if (notBlank(qrContent) || notBlank(claimCode)) {
-                renderClaim(qrContent, claimCode);
+            String status = intent.getStringExtra("value");
+            boolean identityRegistrationRequired = intent.getBooleanExtra(
+                    EXTRA_IDENTITY_REGISTRATION_REQUIRED,
+                    false
+            );
+            if (identityRegistrationRequired) {
+                renderIdentityRegistration(
+                        intent.getStringExtra(EXTRA_IDENTITY_PUBLIC_KEY),
+                        status
+                );
+            } else {
+                String qrContent = intent.getStringExtra(EXTRA_CLAIM_QR_CONTENT);
+                String claimCode = intent.getStringExtra(EXTRA_CLAIM_CODE);
+                if (notBlank(qrContent) || notBlank(claimCode)) {
+                    renderClaim(qrContent, claimCode);
+                }
+                if (notBlank(status)) {
+                    activationStatusText.setText(status);
+                }
             }
 
-            String status = intent.getStringExtra("value");
-            if (notBlank(status)) {
-                activationStatusText.setText(status);
-            }
             if (status != null && status.contains("认证成功")) {
                 completeActivation();
             }
@@ -80,15 +97,14 @@ public final class ActivationActivity extends AppCompatActivity {
         qrUnavailableText = findViewById(R.id.text_activation_qr_unavailable);
         claimCodeText = findViewById(R.id.text_activation_claim_code);
         activationStatusText = findViewById(R.id.text_activation_status);
+        identityRegistrationText = findViewById(R.id.text_activation_identity_registration);
 
+        deviceNo = DeviceUtil.getDeviceId(this);
         TextView deviceText = findViewById(R.id.text_activation_device);
-        deviceText.setText(getString(
-                R.string.activation_device_format,
-                DeviceUtil.getDeviceId(this)
-        ));
+        deviceText.setText(getString(R.string.activation_device_format, deviceNo));
 
         applyIntent(getIntent());
-        ActivationLogStore.append(this, "注册/激活界面", "已显示设备扫码认领界面");
+        ActivationLogStore.append(this, "注册/激活界面", "已显示设备注册激活界面");
     }
 
     @Override
@@ -146,17 +162,28 @@ public final class ActivationActivity extends AppCompatActivity {
         if (intent == null) {
             return;
         }
+
+        String status = intent.getStringExtra(EXTRA_ACTIVATION_STATUS);
+        if (intent.getBooleanExtra(EXTRA_IDENTITY_REGISTRATION_REQUIRED, false)) {
+            renderIdentityRegistration(
+                    intent.getStringExtra(EXTRA_IDENTITY_PUBLIC_KEY),
+                    status
+            );
+            return;
+        }
+
         renderClaim(
                 intent.getStringExtra(EXTRA_CLAIM_QR_CONTENT),
                 intent.getStringExtra(EXTRA_CLAIM_CODE)
         );
-        String status = intent.getStringExtra(EXTRA_ACTIVATION_STATUS);
         if (notBlank(status)) {
             activationStatusText.setText(status);
         }
     }
 
     private void renderClaim(String qrContent, String claimCode) {
+        identityRegistrationText.setVisibility(View.GONE);
+
         Bitmap bitmap = QrCodeUtil.create(qrContent, 520);
         if (bitmap != null) {
             claimQrImage.setImageBitmap(bitmap);
@@ -165,12 +192,31 @@ public final class ActivationActivity extends AppCompatActivity {
         } else {
             claimQrImage.setImageDrawable(null);
             claimQrImage.setVisibility(View.GONE);
+            qrUnavailableText.setText(R.string.activation_qr_waiting);
             qrUnavailableText.setVisibility(View.VISIBLE);
         }
 
         claimCodeText.setText(notBlank(claimCode)
                 ? getString(R.string.activation_claim_code_format, claimCode)
                 : getString(R.string.activation_claim_code_waiting));
+    }
+
+    private void renderIdentityRegistration(String publicKey, String status) {
+        claimQrImage.setImageDrawable(null);
+        claimQrImage.setVisibility(View.GONE);
+        qrUnavailableText.setText(R.string.activation_identity_not_registered);
+        qrUnavailableText.setVisibility(View.VISIBLE);
+        claimCodeText.setText(R.string.activation_claim_code_unavailable);
+
+        identityRegistrationText.setText(getString(
+                R.string.activation_identity_info_format,
+                deviceNo == null ? "" : deviceNo,
+                notBlank(publicKey) ? publicKey : getString(R.string.activation_identity_key_unavailable)
+        ));
+        identityRegistrationText.setVisibility(View.VISIBLE);
+        activationStatusText.setText(notBlank(status)
+                ? status
+                : getString(R.string.activation_identity_registration_hint));
     }
 
     private void completeActivation() {
