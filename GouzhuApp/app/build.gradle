@@ -34,6 +34,13 @@ android {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
     }
+
+    packaging {
+        resources {
+            // 新版 MQTT JAR 与宿主 Paho 都携带根目录 bundle.properties；仅保留一份。
+            pickFirsts += ['bundle.properties']
+        }
+    }
 }
 
 androidComponents {
