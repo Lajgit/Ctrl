@@ -5,18 +5,25 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.util.Log;
 
-import com.gouzhu.mqtt.MqttManager;
-import com.gouzhu.util.DeviceUtil;
+import com.gouzhu.sdk.DeviceSdkManager;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult;
 
 import org.json.JSONObject;
 
+import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
- * 顾客支付和扫码入口。
+ * 设备屏购珠、会员取珠和内部套餐核销。
  *
- * <p>支付页面或支付结果本身不得直接驱动控制板。正式物理出珠只由平台通过
- * MQTT 下发 dispense_marbles，再由设备指令管理器执行。</p>
+ * <p>HTTP 创建/查询统一调用服务端 SDK。支付或核销接口只更新界面状态，绝不
+ * 直接发送串口；真实出珠仍必须等待 MQTT dispense_marbles 指令。</p>
  */
 public final class PaymentManager {
 
@@ -34,20 +41,33 @@ public final class PaymentManager {
     public static final String EVENT_SCANNER_REPORTED = "scannerReported";
 
     private static final String TAG = "GouzhuPayment";
-    private static final String PREF = "payment_state";
-    private static final String KEY_CURRENT_ORDER_ID = "currentOrderId";
+    private static final String PREF = "payment_state_sdk_v1";
+    private static final String KEY_CURRENT_REQUEST_NO = "currentRequestNo";
     private static final String KEY_CURRENT_BEAD_COUNT = "currentBeadCount";
     private static final String KEY_CURRENT_PRICE_FEN = "currentPriceFen";
-    private static final String KEY_PAYMENT_CONFIRMED_ORDER_ID = "paymentConfirmedOrderId";
+    private static final String KEY_CURRENT_RULE_ID = "currentRuleId";
+    private static final String KEY_CURRENT_TIER_ID = "currentTierId";
     private static final String KEY_LAST_REQUEST_JSON = "lastRequestJson";
     private static final String KEY_LAST_SCANNER_JSON = "lastScannerJson";
-    private static final String KEY_SCANNER_REQUEST_ID = "scannerRequestId";
+    private static final String KEY_SCANNER_REQUEST_NO = "scannerRequestNo";
+
+    private static final long QUERY_INTERVAL_SECONDS = 2L;
+    private static final long MAX_QUERY_DURATION_MS = 5L * 60L * 1000L;
 
     private static volatile PaymentManager instance;
+
     private final Context context;
+    private final DeviceSdkManager sdkManager;
+    private final ScheduledExecutorService executor =
+            Executors.newSingleThreadScheduledExecutor();
+
+    private ScheduledFuture<?> purchaseQueryTask;
+    private long purchaseQueryDeadline;
+    private boolean qrBroadcasted;
 
     private PaymentManager(Context context) {
         this.context = context.getApplicationContext();
+        this.sdkManager = DeviceSdkManager.get(this.context);
     }
 
     public static PaymentManager get(Context context) {
@@ -61,150 +81,256 @@ public final class PaymentManager {
         return instance;
     }
 
-    public PaymentRequest startPayment(int beadCount, int priceFen) {
+    /** 使用 bootstrap 返回的规则 ID 和档位 ID 创建聚合扫码订单。 */
+    public PaymentRequest startPayment(
+            long purchaseRuleId,
+            long priceTierId,
+            int beadCount,
+            int priceFen
+    ) {
+        return startPayment(
+                purchaseRuleId,
+                priceTierId,
+                null,
+                beadCount,
+                priceFen
+        );
+    }
+
+    public synchronized PaymentRequest startPayment(
+            long purchaseRuleId,
+            Long priceTierId,
+            Integer purchaseQuantity,
+            int beadCount,
+            int priceFen
+    ) {
+        boolean hasTier = priceTierId != null && priceTierId > 0L;
+        boolean hasQuantity = purchaseQuantity != null && purchaseQuantity > 0;
+        if (purchaseRuleId <= 0L || hasTier == hasQuantity) {
+            throw new IllegalArgumentException(
+                    "购珠规则ID必须有效，档位ID和自定义数量必须二选一"
+            );
+        }
         if (beadCount <= 0 || priceFen <= 0) {
             throw new IllegalArgumentException("套餐数量和金额必须大于0");
         }
 
-        String orderId = DeviceUtil.requireDeviceNo(context)
-                + "-" + System.currentTimeMillis()
-                + "-" + UUID.randomUUID().toString().substring(0, 8);
-
+        cancelPurchaseQuery();
+        String requestNo = newRequestNo("pay");
         JSONObject json = new JSONObject();
         try {
-            json.put("type", "paymentRequest");
-            json.put("deviceNo", DeviceUtil.requireDeviceNo(context));
-            json.put("orderId", orderId);
+            json.put("clientRequestNo", requestNo);
+            json.put("purchaseRuleId", purchaseRuleId);
+            if (hasTier) {
+                json.put("priceTierId", priceTierId);
+            } else {
+                json.put("purchaseQuantity", purchaseQuantity);
+            }
             json.put("beadCount", beadCount);
-            json.put("amountFen", priceFen);
-            json.put("timestamp", System.currentTimeMillis());
+            json.put("priceFen", priceFen);
         } catch (Throwable error) {
-            throw new IllegalStateException("组装支付请求失败", error);
+            throw new IllegalStateException("组装SDK购珠请求失败", error);
         }
 
-        preferences().edit()
-                .putString(KEY_CURRENT_ORDER_ID, orderId)
+        if (!preferences().edit()
+                .putString(KEY_CURRENT_REQUEST_NO, requestNo)
                 .putInt(KEY_CURRENT_BEAD_COUNT, beadCount)
                 .putInt(KEY_CURRENT_PRICE_FEN, priceFen)
+                .putLong(KEY_CURRENT_RULE_ID, purchaseRuleId)
+                .putLong(KEY_CURRENT_TIER_ID, hasTier ? priceTierId : 0L)
                 .putString(KEY_LAST_REQUEST_JSON, json.toString())
-                .commit();
-
-        broadcast(EVENT_REQUEST_CREATED, "等待服务器返回付款二维码", orderId, null);
-        return new PaymentRequest(orderId, beadCount, priceFen, json.toString());
-    }
-
-    public boolean handleServerQrString(String orderId, String qrContent) {
-        if (!isCurrentOrder(orderId) || qrContent == null || qrContent.trim().isEmpty()) {
-            return false;
+                .commit()) {
+            throw new IllegalStateException("购珠请求持久化失败");
         }
-        broadcast(EVENT_QR_READY, "请扫码完成支付", orderId, qrContent);
-        return true;
+
+        qrBroadcasted = false;
+        purchaseQueryDeadline = System.currentTimeMillis() + MAX_QUERY_DURATION_MS;
+        broadcast(EVENT_REQUEST_CREATED, "正在向服务端创建付款订单", requestNo, null);
+
+        executor.execute(() -> {
+            try {
+                DeviceAppNativePurchaseResult result = sdkManager.createNativePurchase(
+                        requestNo,
+                        purchaseRuleId,
+                        hasTier ? priceTierId : null,
+                        hasQuantity ? purchaseQuantity : null
+                );
+                handlePurchaseResult(requestNo, result);
+            } catch (Throwable error) {
+                Log.e(TAG, "SDK创建购珠订单失败", error);
+                broadcast(EVENT_FAILED, messageOf(error), requestNo, null);
+            }
+        });
+
+        return new PaymentRequest(
+                requestNo,
+                purchaseRuleId,
+                hasTier ? priceTierId : null,
+                hasQuantity ? purchaseQuantity : null,
+                beadCount,
+                priceFen,
+                json.toString()
+        );
     }
 
-    /**
-     * 支付结果只更新页面状态，不能直接发串口吐珠命令。
-     */
-    public synchronized boolean handleServerPaymentResult(
-            String orderId,
-            boolean success,
-            int beadCount,
-            String message
+    private synchronized void handlePurchaseResult(
+            String requestNo,
+            DeviceAppNativePurchaseResult result
     ) {
-        if (!isCurrentOrder(orderId)) {
-            return false;
+        if (!requestNo.equals(getCurrentOrderId()) || result == null) {
+            return;
         }
 
-        if (!success) {
+        String qrContent = firstNonBlank(result.getScanUrl(), result.getCodeUrl());
+        if (!qrBroadcasted && !qrContent.isEmpty()) {
+            qrBroadcasted = true;
+            broadcast(EVENT_QR_READY, "请扫码完成支付", requestNo, qrContent);
+        }
+
+        String status = safe(result.getPurchaseStatus());
+        String message = firstNonBlank(result.getMessage(), status);
+        if (!result.isTerminal()) {
+            if (!message.isEmpty()) {
+                broadcast(EVENT_WAITING, message, requestNo, null);
+            }
+            schedulePurchaseQuery(requestNo);
+            return;
+        }
+
+        cancelPurchaseQuery();
+        if (isFailureStatus(status)) {
             broadcast(
                     EVENT_FAILED,
-                    message == null || message.trim().isEmpty() ? "支付未成功" : message,
-                    orderId,
+                    message.isEmpty() ? "订单未支付成功" : message,
+                    requestNo,
                     null
             );
-            return true;
+        } else {
+            // 这里只表示服务端业务进入非失败终态；物理出珠仍等待 MQTT 指令。
+            broadcast(
+                    EVENT_SUCCESS,
+                    message.isEmpty() ? "支付已确认，等待平台下发出珠指令" : message,
+                    requestNo,
+                    null
+            );
         }
+    }
 
-        if (beadCount <= 0) {
-            broadcast(EVENT_FAILED, "服务器返回的吐珠数量无效", orderId, null);
-            return true;
+    private synchronized void schedulePurchaseQuery(String requestNo) {
+        if (purchaseQueryTask != null && !purchaseQueryTask.isDone()) {
+            return;
         }
+        purchaseQueryTask = executor.schedule(() -> {
+            synchronized (PaymentManager.this) {
+                purchaseQueryTask = null;
+            }
+            if (!requestNo.equals(getCurrentOrderId())) {
+                return;
+            }
+            if (System.currentTimeMillis() >= purchaseQueryDeadline) {
+                broadcast(EVENT_FAILED, "支付状态查询超时", requestNo, null);
+                return;
+            }
+            try {
+                handlePurchaseResult(
+                        requestNo,
+                        sdkManager.queryNativePurchase(requestNo)
+                );
+            } catch (Throwable error) {
+                Log.w(TAG, "SDK查询购珠订单失败，将继续重试", error);
+                broadcast(EVENT_WAITING, "网络波动，正在继续查询支付状态", requestNo, null);
+                schedulePurchaseQuery(requestNo);
+            }
+        }, QUERY_INTERVAL_SECONDS, TimeUnit.SECONDS);
+    }
 
-        String confirmed = preferences().getString(KEY_PAYMENT_CONFIRMED_ORDER_ID, "");
-        if (orderId.equals(confirmed)) {
-            return true;
+    private synchronized void cancelPurchaseQuery() {
+        if (purchaseQueryTask != null) {
+            purchaseQueryTask.cancel(false);
+            purchaseQueryTask = null;
         }
-        preferences().edit().putString(KEY_PAYMENT_CONFIRMED_ORDER_ID, orderId).commit();
-
-        broadcast(
-                EVENT_SUCCESS,
-                "支付已确认，等待平台下发出珠指令",
-                orderId,
-                null
-        );
-        return true;
     }
 
     /**
-     * 扫码模块读取六位取珠码后，上报 redemption-request。
-     * 同一次失败重试复用相同 requestId。
+     * 扫码器读取六位内部套餐取珠码后，调用 SDK 创建核销。
+     * 创建结果只表示后端受理，真实出珠仍等待 MQTT 指令。
      */
     public String submitScannerQrString(String scanContent) {
-        if (scanContent == null || scanContent.trim().isEmpty()) {
+        String pickupCode = scanContent == null ? "" : scanContent.trim();
+        if (!pickupCode.matches("\\d{6}")) {
+            broadcast(EVENT_FAILED, "内部取珠码必须为6位数字", getCurrentOrderId(), null);
             return "";
         }
-        String pickupCode = scanContent.trim();
-        String requestId = preferences().getString(KEY_SCANNER_REQUEST_ID, "");
-        if (requestId.isEmpty()) {
-            requestId = "scan-" + System.currentTimeMillis() + "-"
-                    + UUID.randomUUID().toString().substring(0, 6);
-            preferences().edit().putString(KEY_SCANNER_REQUEST_ID, requestId).commit();
+
+        String requestNo = preferences().getString(KEY_SCANNER_REQUEST_NO, "");
+        if (requestNo.isEmpty()) {
+            requestNo = newRequestNo("redeem");
+            preferences().edit().putString(KEY_SCANNER_REQUEST_NO, requestNo).commit();
         }
 
+        final String finalRequestNo = requestNo;
         JSONObject json = new JSONObject();
         try {
-            json.put("requestId", requestId);
+            json.put("clientRequestNo", finalRequestNo);
             json.put("pickupCode", pickupCode);
         } catch (Throwable error) {
-            Log.e(TAG, "组装扫码核销请求失败", error);
             return "";
         }
-
         preferences().edit().putString(KEY_LAST_SCANNER_JSON, json.toString()).commit();
-        boolean sent = MqttManager.get(context).reportRedemptionRequest(requestId, pickupCode);
-        broadcast(
-                sent ? EVENT_SCANNER_REPORTED : EVENT_FAILED,
-                sent ? "取珠码已上报，等待平台处理" : "网络未连接，取珠码将在重试时复用",
-                getCurrentOrderId(),
-                null
-        );
+
+        executor.execute(() -> {
+            try {
+                DeviceAppInternalRedemptionResult result = sdkManager.createInternalRedemption(
+                        finalRequestNo,
+                        pickupCode
+                );
+                String message = firstNonBlank(
+                        result.getMessage(),
+                        result.getRedemptionStatus(),
+                        "取珠码已受理，等待平台处理"
+                );
+                broadcast(EVENT_SCANNER_REPORTED, message, getCurrentOrderId(), null);
+            } catch (Throwable error) {
+                broadcast(EVENT_FAILED, messageOf(error), getCurrentOrderId(), null);
+            }
+        });
         return json.toString();
     }
 
-    public boolean handleServerMessage(String payload) {
-        try {
-            JSONObject json = new JSONObject(payload);
-            String type = json.optString("type", "");
-            String orderId = json.optString("orderId", "");
-            if ("paymentQr".equals(type)) {
-                return handleServerQrString(orderId, json.optString("qrContent", ""));
-            }
-            if ("paymentResult".equals(type)) {
-                return handleServerPaymentResult(
-                        orderId,
-                        json.optBoolean("success", false),
-                        json.optInt("beadCount", 0),
-                        json.optString("message", "")
-                );
-            }
-            return false;
-        } catch (Throwable error) {
-            Log.e(TAG, "解析服务器支付消息失败", error);
-            return false;
+    /** 创建会员取珠请求；取珠码由会员流程提供，必须以 W 开头且其余为数字。 */
+    public String submitMemberWithdrawal(String withdrawalCode) {
+        String code = withdrawalCode == null ? "" : withdrawalCode.trim();
+        if (!code.matches("W\\d+")) {
+            broadcast(EVENT_FAILED, "会员取珠码格式无效", getCurrentOrderId(), null);
+            return "";
         }
+        String requestNo = newRequestNo("withdraw");
+        executor.execute(() -> {
+            try {
+                DeviceAppMemberWithdrawalResult result = sdkManager.createMemberWithdrawal(
+                        requestNo,
+                        code
+                );
+                String message = firstNonBlank(
+                        result.getMessage(),
+                        result.getWithdrawalStatus(),
+                        "会员取珠请求已受理，等待平台处理"
+                );
+                broadcast(EVENT_SCANNER_REPORTED, message, getCurrentOrderId(), null);
+            } catch (Throwable error) {
+                broadcast(EVENT_FAILED, messageOf(error), getCurrentOrderId(), null);
+            }
+        });
+        return requestNo;
+    }
+
+    /** 旧的临时服务器消息入口不再使用，保留签名避免其他代码编译中断。 */
+    public boolean handleServerMessage(String payload) {
+        return false;
     }
 
     public String getCurrentOrderId() {
-        return preferences().getString(KEY_CURRENT_ORDER_ID, "");
+        return preferences().getString(KEY_CURRENT_REQUEST_NO, "");
     }
 
     public String getLastPaymentRequestJson() {
@@ -213,12 +339,6 @@ public final class PaymentManager {
 
     public String getLastScannerReportJson() {
         return preferences().getString(KEY_LAST_SCANNER_JSON, "");
-    }
-
-    private boolean isCurrentOrder(String orderId) {
-        return orderId != null
-                && !orderId.trim().isEmpty()
-                && orderId.equals(getCurrentOrderId());
     }
 
     private SharedPreferences preferences() {
@@ -237,14 +357,69 @@ public final class PaymentManager {
         context.sendBroadcast(intent);
     }
 
+    private static boolean isFailureStatus(String status) {
+        String value = safe(status).toUpperCase(Locale.ROOT);
+        return value.contains("FAIL")
+                || value.contains("CANCEL")
+                || value.contains("CLOSE")
+                || value.contains("EXPIRE")
+                || value.contains("REFUND")
+                || value.contains("REJECT");
+    }
+
+    private static String newRequestNo(String prefix) {
+        String uuid = UUID.randomUUID().toString().replace("-", "");
+        return prefix + "-" + System.currentTimeMillis() + "-" + uuid.substring(0, 12);
+    }
+
+    private static String messageOf(Throwable error) {
+        if (error == null) {
+            return "未知错误";
+        }
+        String message = error.getMessage();
+        return message == null || message.trim().isEmpty()
+                ? error.getClass().getSimpleName()
+                : message;
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        return "";
+    }
+
     public static final class PaymentRequest {
         public final String orderId;
+        public final long purchaseRuleId;
+        public final Long priceTierId;
+        public final Integer purchaseQuantity;
         public final int beadCount;
         public final int priceFen;
         public final String requestJson;
 
-        PaymentRequest(String orderId, int beadCount, int priceFen, String requestJson) {
+        PaymentRequest(
+                String orderId,
+                long purchaseRuleId,
+                Long priceTierId,
+                Integer purchaseQuantity,
+                int beadCount,
+                int priceFen,
+                String requestJson
+        ) {
             this.orderId = orderId;
+            this.purchaseRuleId = purchaseRuleId;
+            this.priceTierId = priceTierId;
+            this.purchaseQuantity = purchaseQuantity;
             this.beadCount = beadCount;
             this.priceFen = priceFen;
             this.requestJson = requestJson;
