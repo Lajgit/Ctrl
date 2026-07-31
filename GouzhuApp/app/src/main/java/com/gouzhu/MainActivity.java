@@ -28,13 +28,19 @@ import com.gouzhu.network.WifiConfigActivity;
 import com.gouzhu.network.WifiSupport;
 import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.payment.QrCodeUtil;
+import com.gouzhu.sdk.DeviceSdkManager;
 import com.gouzhu.service.DeviceService;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 购珠机顾客主界面。
  *
- * <p>顾客页隐藏内部设备状态；K2 或调试按钮进入后台。会员存珠任务到达后，
- * 用户倒完珠子并点击“开始存珠”，才启动控制板存珠电机。</p>
+ * <p>套餐、价格、购珠区标题和说明来自 SDK bootstrap。设备只提交服务端返回的
+ * purchaseRuleId/priceTierId，不自行上传自定义金额或租户信息。支付结果本身不
+ * 直接驱动控制板，真实出珠只等待 MQTT dispense_marbles。</p>
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -43,20 +49,25 @@ public class MainActivity extends AppCompatActivity {
     private static final int CODE_BEAD_EMPTY = 0x25;
     private static final int CODE_BEAD_REFILLED = 0x26;
 
+    private final List<PackageOption> packageOptions = new ArrayList<>();
+
+    private TextView packageSectionTitle;
+    private TextView packageSectionHint;
     private TextView selectedPackageText;
     private TextView paymentStatusText;
     private Button paymentButton;
     private ImageView paymentQrImage;
+    private Button[] packageButtons;
 
     private LinearLayout collectionLayout;
     private TextView collectionStatusText;
     private Button collectionStartButton;
     private Button collectionFinishButton;
 
-    private int selectedBeadCount;
-    private int selectedPriceFen;
+    private PackageOption selectedOption;
     private boolean receiverRegistered;
     private boolean backendOpening;
+    private boolean bootstrapLoading;
 
     private final BroadcastReceiver appReceiver = new BroadcastReceiver() {
         @Override
@@ -69,14 +80,20 @@ public class MainActivity extends AppCompatActivity {
                 handleBoardEvent(intent.getIntExtra("code2", -1));
                 return;
             }
-
             if (PaymentManager.ACTION_PAYMENT_EVENT.equals(intent.getAction())) {
                 handlePaymentEvent(intent);
                 return;
             }
-
             if (AppConfig.ACTION_COLLECTION_EVENT.equals(intent.getAction())) {
                 handleCollectionEvent(intent);
+                return;
+            }
+            if (AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())
+                    && "mqtt".equals(intent.getStringExtra("key"))) {
+                String value = intent.getStringExtra("value");
+                if (value != null && value.contains("已连接")) {
+                    loadBootstrap(false);
+                }
             }
         }
     };
@@ -107,6 +124,7 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         backendOpening = false;
         hideSystemUi();
+        loadBootstrap(false);
         if (DeviceCommandManager.get(this).hasPendingCollection()) {
             collectionLayout.setVisibility(View.VISIBLE);
             collectionStatusText.setText(R.string.collection_ready_hint);
@@ -133,10 +151,24 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void bindViews() {
+        packageSectionTitle = findViewById(R.id.text_package_section_title);
+        packageSectionHint = findViewById(R.id.text_package_section_hint);
         selectedPackageText = findViewById(R.id.text_selected_package);
         paymentStatusText = findViewById(R.id.text_payment_status);
         paymentButton = findViewById(R.id.button_start_payment);
         paymentQrImage = findViewById(R.id.image_payment_qr);
+
+        packageButtons = new Button[]{
+                findViewById(R.id.button_package_1),
+                findViewById(R.id.button_package_5),
+                findViewById(R.id.button_package_10),
+                findViewById(R.id.button_package_20),
+                findViewById(R.id.button_package_50),
+                findViewById(R.id.button_package_100)
+        };
+        for (Button button : packageButtons) {
+            button.setEnabled(false);
+        }
         paymentButton.setEnabled(false);
 
         collectionLayout = findViewById(R.id.layout_collection);
@@ -146,12 +178,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void bindActions() {
-        bindPackageButton(R.id.button_package_1, 1, 100);
-        bindPackageButton(R.id.button_package_5, 5, 500);
-        bindPackageButton(R.id.button_package_10, 10, 1000);
-        bindPackageButton(R.id.button_package_20, 20, 2000);
-        bindPackageButton(R.id.button_package_50, 50, 5000);
-        bindPackageButton(R.id.button_package_100, 100, 10000);
+        for (int index = 0; index < packageButtons.length; index++) {
+            final int optionIndex = index;
+            packageButtons[index].setOnClickListener(view -> selectPackage(optionIndex));
+        }
 
         paymentButton.setOnClickListener(view -> startPayment());
         findViewById(R.id.button_backend_settings).setOnClickListener(
@@ -168,38 +198,188 @@ public class MainActivity extends AppCompatActivity {
         );
     }
 
-    private void bindPackageButton(int viewId, int beadCount, int priceFen) {
-        findViewById(viewId).setOnClickListener(view -> {
-            selectedBeadCount = beadCount;
-            selectedPriceFen = priceFen;
-            selectedPackageText.setText(getString(
-                    R.string.package_selected_format,
-                    beadCount,
-                    priceFen / 100
-            ));
-            paymentStatusText.setText(R.string.payment_ready);
-            paymentQrImage.setImageDrawable(null);
-            paymentQrImage.setVisibility(View.GONE);
-            paymentButton.setEnabled(true);
+    private void loadBootstrap(boolean force) {
+        if (bootstrapLoading || (!force && !packageOptions.isEmpty())) {
+            return;
+        }
+
+        bootstrapLoading = true;
+        paymentStatusText.setText(R.string.sdk_bootstrap_loading);
+        DeviceSdkManager.get(this).refreshBootstrap(new DeviceSdkManager.BootstrapCallback() {
+            @Override
+            public void onSuccess(DeviceAppBootstrapResult result) {
+                bootstrapLoading = false;
+                applyBootstrap(result);
+            }
+
+            @Override
+            public void onFailure(Throwable error) {
+                bootstrapLoading = false;
+                disablePackages();
+                paymentStatusText.setText(getString(
+                        R.string.sdk_bootstrap_failed_format,
+                        messageOf(error)
+                ));
+            }
         });
     }
 
+    private void applyBootstrap(DeviceAppBootstrapResult bootstrap) {
+        if (bootstrap == null) {
+            disablePackages();
+            paymentStatusText.setText(R.string.sdk_bootstrap_empty);
+            return;
+        }
+
+        DeviceAppBootstrapResult.PresentationInfo presentation = bootstrap.getPresentation();
+        if (presentation != null && presentation.getPurchaseSection() != null) {
+            DeviceAppBootstrapResult.PurchaseSectionInfo section =
+                    presentation.getPurchaseSection();
+            if (notBlank(section.getTitle())) {
+                packageSectionTitle.setText(section.getTitle());
+            }
+            if (notBlank(section.getDescription())) {
+                packageSectionHint.setText(section.getDescription());
+            }
+        }
+
+        packageOptions.clear();
+        List<DeviceAppBootstrapResult.PurchaseRule> rules = bootstrap.getPurchaseRules();
+        if (rules != null) {
+            for (DeviceAppBootstrapResult.PurchaseRule rule : rules) {
+                appendRuleOptions(rule);
+                if (packageOptions.size() >= packageButtons.length) {
+                    break;
+                }
+            }
+        }
+
+        selectedOption = null;
+        selectedPackageText.setText(R.string.package_not_selected);
+        paymentButton.setEnabled(false);
+        paymentQrImage.setImageDrawable(null);
+        paymentQrImage.setVisibility(View.GONE);
+
+        if (packageOptions.isEmpty()) {
+            disablePackages();
+            paymentStatusText.setText(R.string.sdk_no_purchase_tier);
+            return;
+        }
+
+        for (int index = 0; index < packageButtons.length; index++) {
+            Button button = packageButtons[index];
+            if (index < packageOptions.size()) {
+                PackageOption option = packageOptions.get(index);
+                button.setVisibility(View.VISIBLE);
+                button.setEnabled(true);
+                button.setText(getString(
+                        R.string.package_button_dynamic_format,
+                        option.quantity,
+                        option.priceFen / 100.0
+                ));
+            } else {
+                button.setEnabled(false);
+                button.setVisibility(View.GONE);
+            }
+        }
+        paymentStatusText.setText(R.string.payment_select_package);
+    }
+
+    private void appendRuleOptions(DeviceAppBootstrapResult.PurchaseRule rule) {
+        if (rule == null || rule.getPurchaseRuleId() == null
+                || rule.getPurchaseRuleId() <= 0L) {
+            return;
+        }
+
+        List<DeviceAppBootstrapResult.PriceTier> tiers = rule.getPriceTiers();
+        if (tiers != null && !tiers.isEmpty()) {
+            for (DeviceAppBootstrapResult.PriceTier tier : tiers) {
+                if (tier == null || tier.getId() == null || tier.getId() <= 0L
+                        || tier.getPurchaseQuantity() == null
+                        || tier.getPurchaseQuantity() <= 0
+                        || tier.getPriceAmount() == null
+                        || tier.getPriceAmount() <= 0) {
+                    continue;
+                }
+                packageOptions.add(new PackageOption(
+                        rule.getPurchaseRuleId(),
+                        tier.getId(),
+                        null,
+                        tier.getPurchaseQuantity(),
+                        tier.getPriceAmount()
+                ));
+                if (packageOptions.size() >= packageButtons.length) {
+                    return;
+                }
+            }
+            return;
+        }
+
+        if (rule.getPricingUnitQuantity() != null
+                && rule.getPricingUnitQuantity() > 0
+                && rule.getUnitPriceAmount() != null
+                && rule.getUnitPriceAmount() > 0) {
+            packageOptions.add(new PackageOption(
+                    rule.getPurchaseRuleId(),
+                    null,
+                    rule.getPricingUnitQuantity(),
+                    rule.getPricingUnitQuantity(),
+                    rule.getUnitPriceAmount()
+            ));
+        }
+    }
+
+    private void disablePackages() {
+        packageOptions.clear();
+        selectedOption = null;
+        for (Button button : packageButtons) {
+            button.setEnabled(false);
+        }
+        paymentButton.setEnabled(false);
+    }
+
+    private void selectPackage(int index) {
+        if (index < 0 || index >= packageOptions.size()) {
+            return;
+        }
+        selectedOption = packageOptions.get(index);
+        selectedPackageText.setText(getString(
+                R.string.package_selected_dynamic_format,
+                selectedOption.quantity,
+                selectedOption.priceFen / 100.0
+        ));
+        paymentStatusText.setText(R.string.payment_ready);
+        paymentQrImage.setImageDrawable(null);
+        paymentQrImage.setVisibility(View.GONE);
+        paymentButton.setEnabled(true);
+    }
+
     private void startPayment() {
-        if (selectedBeadCount <= 0 || selectedPriceFen <= 0) {
+        PackageOption option = selectedOption;
+        if (option == null) {
             Toast.makeText(this, R.string.package_not_selected, Toast.LENGTH_SHORT).show();
             return;
         }
 
-        PaymentManager.PaymentRequest request = PaymentManager.get(this).startPayment(
-                selectedBeadCount,
-                selectedPriceFen
-        );
-        paymentStatusText.setText(getString(
-                R.string.payment_waiting_qr_format,
-                request.orderId
-        ));
-        paymentQrImage.setImageDrawable(null);
-        paymentQrImage.setVisibility(View.GONE);
+        try {
+            PaymentManager.PaymentRequest request = PaymentManager.get(this).startPayment(
+                    option.purchaseRuleId,
+                    option.priceTierId,
+                    option.purchaseQuantity,
+                    option.quantity,
+                    option.priceFen
+            );
+            paymentStatusText.setText(getString(
+                    R.string.payment_waiting_qr_format,
+                    request.orderId
+            ));
+            paymentQrImage.setImageDrawable(null);
+            paymentQrImage.setVisibility(View.GONE);
+            paymentButton.setEnabled(false);
+        } catch (Throwable error) {
+            paymentStatusText.setText(messageOf(error));
+            paymentButton.setEnabled(true);
+        }
     }
 
     private void handlePaymentEvent(Intent intent) {
@@ -223,6 +403,8 @@ public class MainActivity extends AppCompatActivity {
         if (PaymentManager.EVENT_SUCCESS.equals(event)) {
             paymentButton.setEnabled(false);
             paymentQrImage.setVisibility(View.GONE);
+        } else if (PaymentManager.EVENT_FAILED.equals(event) && selectedOption != null) {
+            paymentButton.setEnabled(true);
         }
     }
 
@@ -258,7 +440,7 @@ public class MainActivity extends AppCompatActivity {
                 break;
             case CODE_BEAD_REFILLED:
                 paymentStatusText.setText(R.string.machine_ready);
-                paymentButton.setEnabled(selectedBeadCount > 0);
+                paymentButton.setEnabled(selectedOption != null);
                 break;
             default:
                 break;
@@ -289,6 +471,7 @@ public class MainActivity extends AppCompatActivity {
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(AppConfig.ACTION_BOARD_EVENT);
+        filter.addAction(AppConfig.ACTION_SERVICE_STATUS);
         filter.addAction(PaymentManager.ACTION_PAYMENT_EVENT);
         filter.addAction(AppConfig.ACTION_COLLECTION_EVENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -329,6 +512,42 @@ public class MainActivity extends AppCompatActivity {
                             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             );
+        }
+    }
+
+    private static boolean notBlank(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
+    private static String messageOf(Throwable error) {
+        if (error == null) {
+            return "未知错误";
+        }
+        String message = error.getMessage();
+        return message == null || message.trim().isEmpty()
+                ? error.getClass().getSimpleName()
+                : message;
+    }
+
+    private static final class PackageOption {
+        final long purchaseRuleId;
+        final Long priceTierId;
+        final Integer purchaseQuantity;
+        final int quantity;
+        final int priceFen;
+
+        PackageOption(
+                long purchaseRuleId,
+                Long priceTierId,
+                Integer purchaseQuantity,
+                int quantity,
+                int priceFen
+        ) {
+            this.purchaseRuleId = purchaseRuleId;
+            this.priceTierId = priceTierId;
+            this.purchaseQuantity = purchaseQuantity;
+            this.quantity = quantity;
+            this.priceFen = priceFen;
         }
     }
 }
