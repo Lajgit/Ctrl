@@ -8,7 +8,7 @@
 #define Android_USART USART1
 
 #define VERSION_MAJOR 1U
-#define VERSION_MINOR 3U
+#define VERSION_MINOR 0U
 #define VERSION_PATCH 0U
 #define VERSION_BUILD 0U
 #define VERSION ((VERSION_MAJOR << 24) | (VERSION_MINOR << 16) | \
