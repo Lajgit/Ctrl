@@ -102,9 +102,9 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(HoolleOutput_GPIO_Port, &GPIO_InitStruct);
 
-  /* PD4：存珠光眼保持原上升沿触发。 */
+  /* PD4：存珠光眼改为下降沿触发。 */
   GPIO_InitStruct.Pin = CardFeedback_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(CardFeedback_GPIO_Port, &GPIO_InitStruct);
 
