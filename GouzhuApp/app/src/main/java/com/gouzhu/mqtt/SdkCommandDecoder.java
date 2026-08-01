@@ -89,12 +89,11 @@ public final class SdkCommandDecoder {
         }
 
         public EncodedResult acknowledgement(String eventNo, long nowMillis) {
-            DeviceCommandResult result = DeviceCommandResult.acknowledgement(
+            return encode(DeviceCommandResult.acknowledgement(
                     sdkCommand,
                     eventNo,
                     nowMillis
-            );
-            return encode(result);
+            ));
         }
 
         public EncodedResult physicalTerminal(
@@ -112,37 +111,60 @@ public final class SdkCommandDecoder {
                             resultCode,
                             resultMessage
                     );
-            DeviceCommandResult result = hardwareMapper.toTerminalResult(
+            return encode(hardwareMapper.toTerminalResult(
                     sdkCommand,
                     eventNo,
                     hardwareResult,
                     nowMillis
-            );
+            ));
+        }
+
+        public EncodedResult configurationTerminal(
+                String eventNo,
+                boolean success,
+                long configVersion,
+                String resultCode,
+                String resultMessage,
+                long nowMillis
+        ) {
+            DeviceCommandResult result = DeviceCommandResult.builder(
+                            sdkCommand.getMessageId(),
+                            sdkCommand.getCommandType(),
+                            success ? "success" : "failed",
+                            eventNo,
+                            nowMillis
+                    )
+                    .operationNo(sdkCommand.getOperationNo())
+                    .configurationVersion(configVersion)
+                    .resultCode(resultCode)
+                    .resultMessage(resultMessage)
+                    .build();
+            return encode(result);
+        }
+
+        public EncodedResult genericTerminal(
+                String eventNo,
+                boolean success,
+                String resultCode,
+                String resultMessage,
+                long nowMillis
+        ) {
+            DeviceCommandResult result = DeviceCommandResult.builder(
+                            sdkCommand.getMessageId(),
+                            sdkCommand.getCommandType(),
+                            success ? "success" : "failed",
+                            eventNo,
+                            nowMillis
+                    )
+                    .operationNo(sdkCommand.getOperationNo())
+                    .resultCode(resultCode)
+                    .resultMessage(resultMessage)
+                    .build();
             return encode(result);
         }
 
         public CashEventResponseCommandData requireCashEventResponse() {
             return sdkCommand.requireData(CashEventResponseCommandData.class);
-        }
-
-        public boolean invokeCashStatus(String methodName) {
-            CashEventResponseCommandData data = requireCashEventResponse();
-            switch (methodName) {
-                case "isPending":
-                    return data.isPending();
-                case "isProcessing":
-                    return data.isProcessing();
-                case "isCompleted":
-                    return data.isCompleted();
-                case "isManualReview":
-                    return data.isManualReview();
-                case "isRejected":
-                    return data.isRejected();
-                case "isUnknown":
-                    return data.isUnknown();
-                default:
-                    throw new IllegalArgumentException("未知现金响应状态方法：" + methodName);
-            }
         }
 
         private EncodedResult encode(DeviceCommandResult result) {
