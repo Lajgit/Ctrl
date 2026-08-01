@@ -1,11 +1,13 @@
-# 购珠机控制板与安卓通信协议
+# 购珠机控制板与 Android 通信协议 V2
 
-当前协议版本：**1.3.0.0**。
+当前控制板协议/固件版本：**2.0.0.0**。
+
+本版本是断代升级，不兼容 1.x。控制板已删除本地现金计价、余额累计、欠吐队列、现金自动出珠和退币兼容命令。所有出珠，包括现金购珠、扫码购珠、会员取珠和内部核销，均只能由平台下发的 `dispense_marbles.quantity` 授权。
 
 适用工程：
 
 - Android：`GouzhuApp`，包名 `com.gouzhu`
-- Android 串口：`/dev/ttyS5`
+- Android 控制板串口：`/dev/ttyS5`
 - 控制板：`Control`
 - MCU：APM32F407VGT6
 
@@ -34,158 +36,194 @@
 | 6 | Data2 | 32 位数据次高字节 |
 | 7 | Data3 | 32 位数据次低字节 |
 | 8 | Data4 | 32 位数据最低字节 |
-| 9 | ACKbyte | `0x00` 不要求确认，`0x01` 要求原样确认 |
-| 10 | ExpandCode | 扩展状态 |
+| 9 | ACKbyte | `0x00` 不要求线路确认；`0x01` 要求原样确认 |
+| 10 | ExpandCode | 结果码或扩展字节 |
 | 11 | CRC16_H | CRC16 高字节 |
 | 12 | CRC16_L | CRC16 低字节 |
 | 13 | Tail | 固定 `0x55` |
 
-CRC16 计算范围为字节 0～10，初值 `0xFFFF`，反向多项式 `0xA001`。
+CRC16 计算字节 0～10，初值 `0xFFFF`，反向多项式 `0xA001`。
 
-## 3. 方向码
+方向码：
 
 | Code1 | 方向 |
 |---|---|
 | `0x00` | 控制板 → Android |
 | `0x01` | Android → 控制板 |
 
-同一个 `Code2` 可以在不同方向表示不同含义，解析时必须同时判断 `Code1`。
+## 3. 两级确认
 
-## 4. 金额单位
+V2 明确区分两种确认：
 
-本协议区分两类金额：
+1. **线路原样 ACK**：只证明 UART 收到帧，不代表 Android 已持久化，也不代表平台已确认。
+2. **业务持久化确认**：Android 写入 SQLite 成功后，另发 `CashEventStored` 或 `BoardEventStored`。
 
-1. **现金事实金额**：使用整数人民币元。`1` 表示 1 元，`100` 表示 100 元。
-2. **控制板本地单价和余额**：继续使用人民币分，避免 MCU 使用浮点数。`100` 表示 1 元。
+控制板对现金事实、硬件启动和硬件终态持续重发，直到收到业务持久化确认。普通状态帧仍可在原样 ACK 或重试次数达到上限后停止。
 
-现金事实帧使用以下 32 位打包：
+## 4. 通用操作数据
+
+出珠和存珠操作使用：
 
 ```text
-Data1       = 现金介质：0=硬币，1=纸币
-Data2:Data4 = 24 位无符号整数金额，单位人民币元
+Data1       = boardToken，1..255
+Data2:Data4 = 24 位数量或真实累计数量
+ExpandCode  = 硬件结果码
 ```
 
-示例：收到 5 元纸币时，Data1:Data4=`01 00 00 05`。
+`boardToken` 只是 Android 与控制板之间关联当前操作的短令牌；平台幂等仍以完整 MQTT `messageId`、`operationNo` 和 `operationToken` 为准。
 
-## 5. Android 发给控制板
+硬件结果码：
+
+| 值 | 名称 | 含义 |
+|---:|---|---|
+| `0x00` | OK | 完成 |
+| `0x01` | BUSY | 控制板存在其他物理动作 |
+| `0x02` | NO_BEAD | 无珠 |
+| `0x03` | INVALID_QUANTITY | 数量无效 |
+| `0x04` | SENSOR_TIMEOUT | 光眼超时，可能部分完成 |
+| `0x05` | ABORTED | 紧急停止 |
+| `0x06` | NOT_ACTIVE | 当前操作不存在或 token 不匹配 |
+
+## 5. Android → 控制板
 
 | Code2 | 名称 | Data1:Data4 | 说明 |
 |---|---|---|---|
 | `0x00` | VersionRequest | 忽略 | 查询固件版本 |
-| `0x01` | BeadMotor1Output | Data3:Data4=数量 | 维护调试直接吐珠 |
-| `0x02` | BeadMotor2Output | Data3:Data4=最大剩余数量 | 用户点击“开始存珠”后启动存珠电机 |
-| `0x03` | BeadMotor2Stop | 忽略 | 用户点击“完成存珠”后仅停止存珠电机 |
+| `0x01` | DispenseStart | Data1=token；Data2:4=平台授权数量 | 启动出珠；不得由现金金额、本地价格或支付页面直接调用 |
+| `0x02` | CollectStart | Data1=token；Data2:4=最大数量 | 用户确认现场后启动存珠 |
+| `0x03` | CollectStop | Data1=token | 停止当前存珠并形成真实终态 |
 | `0x10` | Unlock | 忽略 | 电子锁动作 |
-| `0x19` | BillCurrencyModeSet | Data4=`0/1` | 人民币/外币模式 |
-| `0x1A` | BillEnable | 忽略 | 启用纸钞机 |
-| `0x1B` | BillDisable | 忽略 | 禁用纸钞机 |
-| `0x1C` | BillReset | 忽略 | 复位纸钞机 |
-| `0x1D` | CoinEnable | 忽略 | 启用投币器接收 |
-| `0x1E` | CoinDisable | 忽略 | 禁用投币器接收 |
-| `0x1F` | CashReturnRequest | 现金事实打包格式 | 请求真实退币；仅硬件动作成功才上报 returned |
-| `0x20` | BeadPriceSet | 32 位单价，单位分 | 设置控制板本地现金单颗价格 |
-| `0x21` | PurchaseStatusRequest | 忽略 | 查询价格、库存、欠吐和余额 |
-| `0x27` | PaidPurchaseOutput | 32 位吐珠数量 | 平台 MQTT `dispense_marbles` 转发；现金购珠不使用 |
-| `0xF0` | BoardRestart | `0x424F5441` 进入 Bootloader | 重启控制板 |
-| `0xFF` | StopAllDevice | 忽略 | 立即停止全部执行机构 |
+| `0x18` | CashAcceptanceApply | Data1=启用掩码；Data2:4=configVersion | 应用已经完整持久化并验证成功的现金配置 |
+| `0x19` | BillReset | 忽略 | 复位纸钞机 |
+| `0x1A` | CashEventStored | Data3:4=16 位现金序号 | Android 已把现金事实和原始 payload 写入 SQLite/outbox |
+| `0x1B` | BoardEventStored | Data1=原事件 Code2；Data2=token | Android 已持久化关键硬件启动/终态 |
+| `0x20` | HardwareStatusRequest | 忽略 | 查询库存、现金接收状态和当前操作状态 |
+| `0xF0` | BoardRestart | `0x424F5441` 表示进入 Bootloader | 重启控制板 |
+| `0xFF` | EmergencyStop | 忽略 | 立即停止物理动作并关闭现金接收 |
 
-控制板收到合法 Android 帧后先原样回传，再执行业务。相同消息 ID 在 5 秒内只执行一次。
+现金启用掩码：
 
-## 6. 控制板发给 Android
+```text
+bit0 = 纸币接收
+bit1 = 硬币接收
+```
 
-| Code2 | 名称 | Data | ACK | 说明 |
+上电固定为 `0`。只有平台 `sync_cash_configuration` 完整校验、SQLite 持久化和控制板应用均成功后，Android 才能下发非零掩码。
+
+## 6. 控制板 → Android
+
+| Code2 | 名称 | Data/Expand | 持续重发条件 | 说明 |
 |---|---|---|---|---|
-| `0x00` | VersionRequest | `0xMMNNPPBB` | 是 | 当前为 `1.3.0.0` |
-| `0x01` | BeadMotor1Feedback | `1` | 否 | PD3 确认吐出一颗 |
-| `0x02` | CoinInput | `1` | 否 | 保留的 1 元硬币脉冲事件 |
-| `0x03` | BeadMotor2Feedback | `1` | 否 | PD4 确认存入一颗 |
-| `0x04` | BillAccepted | ICT 类型和状态 | 是 | 原始纸钞诊断事件 |
-| `0x05` | RemainingBead | 两路电机剩余数量 | 否 | Data1:2=吐珠，Data3:4=存珠 |
-| `0x07` | BeadMotor1Timeout | 剩余数量 | 是 | 吐珠超时 |
-| `0x08` | BeadMotor2Timeout | 剩余数量 | 是 | 存珠超时 |
-| `0x0D` | AlreadyUnlock | `0` | 否 | 已执行开锁 |
-| `0x0F` | Encoder | `1/2/3` | 否 | CCW/CW/DOWN |
-| `0x12` | BillStatus | ICT 状态 | 否 | 纸钞机状态或错误 |
-| `0x13` | BillCurrencyModeStatus | Data4=模式 | 否 | 当前币种模式 |
-| `0x20` | BeadPriceStatus | 单价，单位分 | 否 | 本地现金单价 |
-| `0x21` | BeadStockStatus | 当前库存 | 否 | 库存状态 |
-| `0x22` | PurchasePendingStatus | 欠吐数量 | 否 | 本地现金或平台任务尚未完成的数量 |
-| `0x23` | PurchaseCreditStatus | 余额，单位分 | 否 | 本地现金余额 |
-| `0x24` | BeadLowStock | 当前库存 | 是 | 低库存 |
-| `0x25` | BeadEmpty | 欠吐数量 | 是 | 无珠 |
-| `0x26` | BeadRefilled | 新库存 | 是 | K1 补珠确认 |
-| `0x27` | BackendSettingsRequest | `1` | 是 | K2 请求进入后台 |
-| `0x28` | CashAcceptedAmount | 现金事实打包格式 | 是 | 现金不可逆接收后，上报介质和整数元金额 |
-| `0x29` | CashReturnedAmount | 现金事实打包格式 | 是 | 真实退币机构动作成功后上报 |
-| `0x2A` | CashReturnFailed | 现金事实打包格式 | 是 | 真实退币动作失败，ExpandCode=`1` |
+| `0x00` | VersionReport | `0x02000000` | 普通确认 | 当前协议版本 2.0.0.0 |
+| `0x01` | DispenseStarted | token + 目标数量 | 收到 `BoardEventStored` | 电机已经启动 |
+| `0x02` | DispenseProgress | token + actualQuantity | 否 | PD3 每个有效光眼脉冲后的累计真实数量 |
+| `0x03` | DispenseCompleted | token + actualQuantity；Expand=`0` | 收到 `BoardEventStored` | 全量完成 |
+| `0x04` | DispenseFailed | token + actualQuantity；Expand=结果码 | 收到 `BoardEventStored` | 部分、零出珠或失败，数量必须是真实值 |
+| `0x05` | CollectStarted | token + 最大数量 | 收到 `BoardEventStored` | 存珠电机已经启动 |
+| `0x06` | CollectProgress | token + actualQuantity | 否 | PD4 累计真实数量 |
+| `0x07` | CollectCompleted | token + actualQuantity | 收到 `BoardEventStored` | 正常停止或达到上限 |
+| `0x08` | CollectFailed | token + actualQuantity；Expand=结果码 | 收到 `BoardEventStored` | 存珠失败或部分完成 |
+| `0x0D` | AlreadyUnlock | 0 | 普通确认 | 已执行开锁 |
+| `0x10` | CashAccepted | 见下节 | 收到 `CashEventStored` | 一笔现金已经不可逆进入钱箱 |
+| `0x11` | CashAcceptanceStatus | Data1=实际掩码；Data2:4=configVersion | 普通确认 | 控制板应用现金配置结果 |
+| `0x12` | CashDeviceStatus | 纸钞类型、状态及实际启用位 | 否 | 仅诊断，不产生订单 |
+| `0x20` | BeadStockStatus | 当前库存估计值 | 否 | 由真实 PD3 光眼和 K1 补珠维护 |
+| `0x21` | BeadLowStock | 当前库存 | 普通确认 | 低库存告警 |
+| `0x22` | BeadEmpty | 当前库存 | 普通确认 | 无珠并关闭现金接收 |
+| `0x23` | BeadRefilled | 新库存 | 普通确认 | K1 补珠，只恢复库存，不自动启用现金 |
+| `0x27` | BackendSettingsRequest | 1 | 普通确认 | K2（PD13）进入后台设置 |
 
-## 7. 现金购珠流程
+## 7. 现金事实编码
 
-现金购珠完全由控制板负责，不等待服务器授权：
+`CashAccepted` 使用：
 
 ```text
-纸币或硬币有效接收
-→ 控制板按本地单价累计金额并计算数量
-→ 控制板保存欠吐状态
-→ 控制板驱动吐珠并按 PD3 扣减
-→ 控制板另外发送 0x28 金额事实
-→ Android 将现金事实通过 MQTT 上报服务器
+Data1       = 现金介质：0=coin，1=banknote
+Data2:Data3 = 面额，单位分，16 位无符号整数
+Data4       = 现金序号高 8 位
+ExpandCode  = 现金序号低 8 位
 ```
 
-Android 或服务器不得根据 `0x28` 再次发送一遍现金吐珠命令，否则会重复吐珠。
-
-现金接收开关由 Android 通过 `BillEnable/BillDisable` 和 `CoinEnable/CoinDisable` 同步。投币器 inhibit 引脚及真实退币机构的具体驱动必须由量产硬件适配代码实现；当前公共任务代码不会猜测未确认引脚。
-
-## 8. 平台固定数量出珠
+示例：5 元纸币、序号 `0x1234`：
 
 ```text
-MQTT收到 dispense_marbles
-→ Android持久化messageId和操作数据
-→ Android上报ack
-→ Android发送0x27数量
-→ 控制板执行并逐颗上报0x01
-→ Android生成真实actualQuantity终态
-→ 收到平台command_result_ack.recorded后删除待补发回执
+Data1:Data4 = 01 01 F4 12
+ExpandCode  = 34
 ```
 
-支付页面、二维码字符串、支付结果和核销响应本身均不能直接发 `0x27`。
+同一笔不可逆现金在控制板 Flash 中永久复用同一个介质、面额和序号，直到 Android 先把事件和稳定 `eventNo` 写入 SQLite/outbox，再发送 `0x1A` 确认。普通原样 ACK 不会删除这笔现金事实。
 
-## 9. 会员存珠流程
+控制板一次只允许一笔未确认现金事实；现金进入钱箱后立即同时关闭纸币和硬币接收。
+
+## 8. 现金与平台完整时序
 
 ```text
-MQTT收到 collect_marbles
-→ Android持久化任务并上报ack
-→ 页面提示用户先倒珠
-→ 用户点击“开始存珠”
-→ Android发送0x02，控制板启动存珠电机
-→ PD4每确认一颗，控制板发送0x03
-→ Android每颗更新并持久化actualQuantity
-→ 用户点击“完成存珠”或达到上限
-→ Android发送0x03停止电机
-→ Android上报唯一终态
+平台下发 sync_cash_configuration
+→ App 用新版 SDK 校验命令
+→ App 完整校验现金档位并写入 SQLite
+→ App 写入配置 ACK outbox
+→ App 发送 0x18 应用配置
+→ 控制板回 0x11，成功后才实际开启验钞器
+→ 现金不可逆进入钱箱
+→ 控制板先写 Flash，再持续发送 0x10 CashAccepted
+→ App 按配置快照生成稳定 eventNo 和完全相同 payload
+→ App 在同一数据库事务写 cash_events + cash outbox
+→ App 发送 0x1A，控制板才删除 pending cash
+→ App 发布 report/cash-event
+→ 平台返回 cash_event_response
+→ App 只更新事件状态，不按 requestedQuantity 出珠
+→ 平台另发通过 SDK 校验的 dispense_marbles
+→ App 持久化完整命令和“可能启动硬件”状态
+→ App 持久化/发布 ACK
+→ App 发送 0x01 平台授权数量
+→ 控制板回启动、进度和真实终态
+→ App 持久化终态并发送 0x1B
+→ App 发布真实 actualQuantity
+→ 平台 command_result_ack.recorded
+→ App 删除对应 command-result outbox
 ```
 
-应用重启后从本地任务记录恢复页面和已确认数量，不自动重复启动存珠电机；必须由用户重新确认现场后继续。
+任何 `cash_event_response` 状态都不能直接启动电机。`unknown` 使用原 `eventNo` 和原 payload 重发；`manual_review`、`rejected` 和物理结果未知均关闭现金接收。
 
-## 10. 硬件适配边界
+## 9. 幂等与掉电恢复
 
-`KeyTask.c` 提供两个弱函数：
+- MQTT 相同 `messageId`：只重发已保存 ACK/终态，绝不能再次发 `DispenseStart`。
+- Android 在发送 `DispenseStart` 前，先持久化“可能已启动”状态。
+- Android 进程在启动请求后崩溃：恢复时禁止自动重启电机，关闭现金并转人工核实。
+- 控制板关键启动/终态在收到 `BoardEventStored` 前持续重发。
+- MQTT PUBACK 只证明 Broker 收到，不能删除业务 outbox。
+- 只有平台 `command_result_ack.recorded` 才删除命令结果 outbox。
+- 现金事件只有非 `unknown` 平台响应才移除现金 outbox。
+- 旧 1.x Flash 记录不迁移，升级到 2.0.0.0 时擦除本地价格、余额、欠吐和旧订单状态。
 
-```c
-bool CashHardware_SetCoinEnable(bool enable);
-bool CashHardware_DoReturn(uint8_t medium, uint32_t amount_yuan);
-```
+## 10. 已删除的 1.x 能力
 
-量产工程必须根据最终原理图和退币机构协议提供同名强实现。默认退币弱实现返回失败，避免误驱动未确认 GPIO。
+V2 不再定义或接受：
 
-## 11. 联调重点
+- 本地 `BeadPriceSet`；
+- 本地现金余额和累计支付；
+- 本地现金按价格换算珠数；
+- `PaidPurchaseOutput` 与现金专用出珠的区分；
+- 本地欠吐队列自动恢复出珠；
+- 单独 Bill/Coin Enable/Disable 兼容命令；
+- CashReturnRequest 以及旧退币兼容路径；
+- 旧 `0x25/0x26` 等事件编号。
 
-1. 确认 `/dev/ttyS5` 为 115200、8N1。
-2. 现金 1/5/10/20/50/100 元上报金额必须为整数元。
-3. `0x28` 仅上报现金事实，不能触发 Android 二次吐珠。
-4. 禁用现金时纸钞机和投币器均不得继续收现。
-5. 真实退币成功才允许发送 `0x29`。
-6. 存珠必须由用户点击按钮后启动，PD4 每个有效脉冲只计一颗。
-7. App 重启后能恢复未完成存珠任务和已确认数量，但不得自动再次启动电机。
-8. 相同 MQTT `messageId` 不得产生第二次物理动作。
-9. 所有要求 ACK 的串口帧必须原样确认。
+Android 2.0.0 必须与控制板 2.0.0.0 成套升级，禁止新旧版本混用。
+
+## 11. 联调验收
+
+至少验证：
+
+1. 上电现金默认关闭；
+2. 配置禁用、非法、找零开启或控制板未确认时现金保持关闭；
+3. 每个面额只上报一次稳定现金事实，不本地出珠；
+4. `cash_event_response.requestedQuantity` 不启动电机；
+5. 只有 `dispense_marbles.quantity` 能启动出珠；
+6. 相同 MQTT `messageId` 只启动一次电机；
+7. 全量、部分、零出珠均上报真实 `actualQuantity`；
+8. Android 在持久化前断电时，控制板重发同一现金事实；
+9. Android 在启动硬件后崩溃时不会自动重启电机；
+10. 控制板启动/终态在收到 `0x1B` 前持续重发；
+11. MQTT 重连后先订阅，再重发 SQLite outbox；
+12. 旧 App 或旧控制板与 V2 混用时应拒绝投入生产。
