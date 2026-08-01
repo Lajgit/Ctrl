@@ -16,16 +16,17 @@ import com.pinball.xiaoda.device.sdk.client.DeviceEnrollResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceLifecycleClient;
 import com.pinball.xiaoda.device.sdk.core.MqttCredential;
 
-import java.security.PrivateKey;
+import java.security.KeyPair;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 服务端设备 SDK 生命周期状态机。
  *
- * <p>首次无凭证时执行 enroll -> identity activation；日常启动使用当前 MQTT
- * password 执行 reactivate。凭证丢失时不会自动恢复，必须由平台开启一次性恢复
- * 窗口后显式调用 recoverCredential。</p>
+ * <p>首次无凭证时使用完整身份 KeyPair 执行 enroll，SDK 自动携带
+ * identityPublicKey，平台按配置完成首次身份自动登记；随后继续执行身份激活。
+ * 日常启动使用当前 MQTT password 执行 reactivate。凭证丢失时不会自动恢复，
+ * 必须由平台开启一次性恢复窗口后显式调用 recoverCredential。</p>
  */
 public final class ActivationManager {
 
@@ -155,9 +156,15 @@ public final class ActivationManager {
     }
 
     private void enrollAndActivate(Callback callback) throws Exception {
-        PrivateKey privateKey = DeviceIdentityStore.getPrivateKey(context);
+        KeyPair identityKeyPair = DeviceIdentityStore.getKeyPair(context);
+        ActivationLogStore.append(
+                context,
+                "首次报到",
+                "使用完整身份KeyPair调用enroll，SDK将自动携带identityPublicKey"
+        );
+
         DeviceEnrollResult enroll = lifecycleClient.enroll(
-                privateKey,
+                identityKeyPair,
                 firmwareVersion(),
                 apkVersion()
         );
@@ -167,6 +174,11 @@ public final class ActivationManager {
             );
         }
 
+        ActivationLogStore.append(
+                context,
+                "首次报到",
+                "设备报到已被平台接受，继续进入认领和身份激活流程"
+        );
         lastClaimCode = safe(enroll.getClaimCode());
         lastQrContent = safe(enroll.getClaimQrContent());
         if (!lifecyclePreferences().edit()
