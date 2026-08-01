@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">购珠机</string>
     <string name="header_title">点击屏幕套餐\n扫码购珠</string>
-    <string name="header_subtitle">扫码业务等待平台出珠指令；现金由控制板独立吐珠</string>
+    <string name="header_subtitle">扫码与现金均由平台确认订单并统一下发出珠指令</string>
     <string name="package_section_title">购珠套餐</string>
     <string name="package_section_hint">套餐和价格正在从服务端同步</string>
     <string name="package_not_selected">请选择购珠套餐</string>
@@ -49,7 +49,7 @@
     <string name="collection_finish">结束存珠</string>
 
     <string name="backend_title">后台设置</string>
-    <string name="backend_hint">正式设备短按控制板 K2（PD13）进入本页；顾客首页不显示以下设备状态。</string>
+    <string name="backend_hint">正式设备短按控制板 K2（PD13）进入本页；V2 不保留本地现金计价、余额和欠吐状态。</string>
     <string name="exit_backend">退出后台设置</string>
     <string name="backend_entered_by_k2">最新事件：K2请求进入后台设置</string>
 
@@ -67,9 +67,6 @@
     <string name="reverse_scanner_disconnected_format">反扫模块：未连接 %1$s</string>
     <string name="reverse_scanner_event_unknown">反扫模块：收到未知状态</string>
     <string name="stock_unknown">库存：等待控制板上报</string>
-    <string name="pending_status_unknown">未吐珠：等待控制板上报</string>
-    <string name="pending_status_format">未吐珠：%1$d 珠</string>
-    <string name="pending_status_warning_format">未吐珠：%1$d 珠（需继续吐出）</string>
     <string name="latest_event_waiting">最新事件：等待设备事件</string>
     <string name="wifi_settings">网络设置</string>
     <string name="refresh_status">刷新设备状态</string>
@@ -82,19 +79,12 @@
     <string name="activation_log_copied">调试日志已复制</string>
     <string name="activation_log_cleared">调试日志已清空</string>
     <string name="device_info_format">设备号：%1$s    App：V%2$s</string>
-    <string name="status_request_sent">已请求控制板状态，等待响应</string>
+    <string name="status_request_sent">已请求控制板V2状态，等待响应</string>
     <string name="board_not_connected">控制板串口未连接</string>
     <string name="board_version_format">控制板：已连接，固件 V%1$s</string>
-    <string name="board_bead_output_feedback">最新事件：控制板确认吐出 1 珠</string>
-    <string name="board_coin_input">最新事件：检测到 1 元硬币</string>
-    <string name="board_bill_accepted_format">最新事件：纸币已接收，类型码 0x%1$02X，状态 0x%2$02X</string>
-    <string name="board_output_timeout_format">最新事件：吐珠超时，剩余 %1$d 珠</string>
-    <string name="board_price_format">最新事件：单珠价格 %.2f 元</string>
     <string name="stock_format">库存：%1$d 珠</string>
-    <string name="pending_bead_format">最新事件：已付款待吐 %1$d 珠</string>
-    <string name="credit_format">最新事件：累计余额 %.2f 元</string>
     <string name="low_stock_format">库存：%1$d 珠（库存偏低）</string>
-    <string name="board_empty">库存：无珠，购买已暂停</string>
+    <string name="board_empty">库存：无珠，现金接收已关闭</string>
     <string name="refilled_format">库存：已补充，当前 %1$d 珠</string>
     <string name="board_event_format">最新事件：Code2=0x%1$02X，Data=%2$d，Expand=%3$d</string>
 
