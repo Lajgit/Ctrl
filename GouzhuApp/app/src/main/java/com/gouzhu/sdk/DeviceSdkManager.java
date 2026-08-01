@@ -3,6 +3,7 @@ package com.gouzhu.sdk;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 
 import com.gouzhu.AppConfig;
 import com.gouzhu.util.DeviceUtil;
@@ -27,6 +28,9 @@ import java.util.concurrent.Executors;
  * 因此所有公开异步入口都在单线程执行器中运行，回调切回主线程。</p>
  */
 public final class DeviceSdkManager {
+
+    private static final String TAG = "GouzhuSdkBootstrap";
+    private static final int MAX_CAUSE_DEPTH = 8;
 
     private static volatile DeviceSdkManager instance;
 
@@ -92,14 +96,38 @@ public final class DeviceSdkManager {
 
     /** 获取设备屏动态首页、功能开关、套餐和现金配置。 */
     public void refreshBootstrap(BootstrapCallback callback) {
+        final String appVersion = DeviceUtil.getAppVersion(context);
+        final String deviceNo = DeviceUtil.requireDeviceNo(context);
+        Log.i(
+                TAG,
+                "开始读取首页/现金配置：deviceNo=" + deviceNo
+                        + "，appVersion=" + appVersion
+                        + "，apiBaseUrl=" + AppConfig.ACTIVATION_BASE_URL
+        );
+
         executor.execute(() -> {
+            long startedAt = System.currentTimeMillis();
             try {
-                DeviceAppBootstrapResult result = newAppClient().bootstrap(
-                        DeviceUtil.getAppVersion(context)
-                );
+                DeviceAppBootstrapResult result = newAppClient().bootstrap(appVersion);
                 lastBootstrap = result;
+                Log.i(
+                        TAG,
+                        "首页/现金配置读取成功：deviceNo=" + deviceNo
+                                + "，耗时=" + (System.currentTimeMillis() - startedAt) + "ms"
+                                + "，resultNull=" + (result == null)
+                );
                 mainHandler.post(() -> callback.onSuccess(result));
             } catch (Throwable error) {
+                long elapsed = System.currentTimeMillis() - startedAt;
+                Log.e(
+                        TAG,
+                        "首页/现金配置读取失败：deviceNo=" + deviceNo
+                                + "，appVersion=" + appVersion
+                                + "，apiBaseUrl=" + AppConfig.ACTIVATION_BASE_URL
+                                + "，耗时=" + elapsed + "ms"
+                                + "，异常链=" + describeThrowable(error),
+                        error
+                );
                 mainHandler.post(() -> callback.onFailure(error));
             }
         });
@@ -143,6 +171,28 @@ public final class DeviceSdkManager {
 
     public DeviceAppInternalRedemptionResult queryInternalRedemption(String clientRequestNo) {
         return newAppClient().queryInternalRedemption(clientRequestNo);
+    }
+
+    private static String describeThrowable(Throwable error) {
+        if (error == null) {
+            return "null";
+        }
+        StringBuilder builder = new StringBuilder();
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth < MAX_CAUSE_DEPTH) {
+            if (depth > 0) {
+                builder.append(" <- ");
+            }
+            builder.append(current.getClass().getName());
+            String message = current.getMessage();
+            if (message != null && !message.trim().isEmpty()) {
+                builder.append(": ").append(message.trim());
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return builder.toString();
     }
 
     public interface BootstrapCallback {
