@@ -130,14 +130,15 @@ public final class SdkCommandDecoder {
             DeviceCommandResult result = DeviceCommandResult.builder(
                             sdkCommand.getMessageId(),
                             sdkCommand.getCommandType(),
-                            success ? "success" : "failed",
+                            success
+                                    ? DeviceCommandResult.STATUS_SUCCESS
+                                    : DeviceCommandResult.STATUS_FAILED,
                             eventNo,
                             nowMillis
                     )
-                    .operationNo(sdkCommand.getOperationNo())
+                    .operation(sdkCommand.getOperationNo(), "")
+                    .terminal(0, resultCode, resultMessage)
                     .configurationVersion(configVersion)
-                    .resultCode(resultCode)
-                    .resultMessage(resultMessage)
                     .build();
             return encode(result);
         }
@@ -152,13 +153,14 @@ public final class SdkCommandDecoder {
             DeviceCommandResult result = DeviceCommandResult.builder(
                             sdkCommand.getMessageId(),
                             sdkCommand.getCommandType(),
-                            success ? "success" : "failed",
+                            success
+                                    ? DeviceCommandResult.STATUS_SUCCESS
+                                    : DeviceCommandResult.STATUS_FAILED,
                             eventNo,
                             nowMillis
                     )
-                    .operationNo(sdkCommand.getOperationNo())
-                    .resultCode(resultCode)
-                    .resultMessage(resultMessage)
+                    .operation(sdkCommand.getOperationNo(), "")
+                    .terminal(0, resultCode, resultMessage)
                     .build();
             return encode(result);
         }
