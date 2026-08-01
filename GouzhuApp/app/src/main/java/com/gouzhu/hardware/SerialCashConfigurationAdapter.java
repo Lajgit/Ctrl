@@ -20,8 +20,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * 新版 SDK CashConfigurationAdapter 的 ttyS5 实现。
  *
- * <p>硬币器只有12V、GND和脉冲三根线，无法由软件物理关闭，因此控制板
- * 状态中的硬币位始终为1。所谓disable只关闭纸钞机。</p>
+ * <p>服务端 cashSale.available=true 固定映射为纸钞机和硬币器同时开启，
+ * 即控制板现金掩码 0x03。硬币器只有12V、GND和脉冲三根线，无法由软件
+ * 物理关闭，因此 available=false 或 disable 只关闭纸钞机，硬币位保持1。</p>
  */
 public final class SerialCashConfigurationAdapter implements CashConfigurationAdapter {
 
@@ -31,6 +32,7 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
     private static final int EVT_CASH_ACCEPTANCE_STATUS = 0x11;
     private static final int BANKNOTE_MASK = 1;
     private static final int ALWAYS_ON_COIN_MASK = 2;
+    private static final int CASH_AVAILABLE_MASK = BANKNOTE_MASK | ALWAYS_ON_COIN_MASK;
     private static final long APPLY_TIMEOUT_MS = 5_000L;
 
     private final Context context;
@@ -123,8 +125,9 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
     public CashConfigurationResult apply(long configVersion, List<CashTier> tiers) {
         Log.i(
                 TAG,
-                "开始应用现金配置：configVersion=" + configVersion
+                "开始应用可用现金配置：configVersion=" + configVersion
                         + "，tierCount=" + (tiers == null ? -1 : tiers.size())
+                        + "，targetMask=0x03"
         );
 
         if (configVersion <= 0L || configVersion > 0x00FFFFFFL) {
@@ -133,11 +136,11 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
             return CashConfigurationResult.rejected("configVersion超出控制板24位范围");
         }
         if (tiers == null || tiers.isEmpty()) {
-            Log.w(TAG, "现金档位为空，仅保持三线硬币脉冲输入有效");
-            return applyMask(configVersion, ALWAYS_ON_COIN_MASK);
+            Log.e(TAG, "cashSale.available=true但现金档位为空，拒绝开启纸钞机");
+            disableCashAcceptance();
+            return CashConfigurationResult.rejected("可用现金配置的档位不能为空");
         }
 
-        int mask = ALWAYS_ON_COIN_MASK;
         for (int index = 0; index < tiers.size(); index++) {
             CashTier tier = tiers.get(index);
             if (tier == null
@@ -153,9 +156,8 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
                 disableCashAcceptance();
                 return CashConfigurationResult.rejected("现金档位不完整");
             }
-            if ("banknote".equals(tier.getMediumType())) {
-                mask |= BANKNOTE_MASK;
-            } else if (!"coin".equals(tier.getMediumType())) {
+            if (!"banknote".equals(tier.getMediumType())
+                    && !"coin".equals(tier.getMediumType())) {
                 Log.e(
                         TAG,
                         "现金介质不支持：index=" + index
@@ -166,11 +168,17 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
             }
             Log.d(TAG, "现金档位：index=" + index + "，" + summarizeTier(tier));
         }
-        return applyMask(configVersion, mask);
+
+        /* available=true是整体现金入口权威状态，不再按tiers介质推导开关。 */
+        return applyMask(configVersion, CASH_AVAILABLE_MASK);
     }
 
     public CashConfigurationResult applyDisabled(long configVersion) {
-        Log.i(TAG, "平台要求关闭可控现金入口：configVersion=" + configVersion);
+        Log.i(
+                TAG,
+                "平台现金入口不可用，关闭纸钞机并保留三线硬币脉冲：configVersion="
+                        + configVersion
+        );
         return applyMask(configVersion, ALWAYS_ON_COIN_MASK);
     }
 
