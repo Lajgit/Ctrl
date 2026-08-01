@@ -6,7 +6,6 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
-import com.gouzhu.mqtt.BootstrapCashSaleSynchronizer;
 import com.gouzhu.util.DeviceUtil;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppClient;
@@ -19,6 +18,8 @@ import com.pinball.xiaoda.device.sdk.client.DeviceSdkConfig;
 import com.pinball.xiaoda.device.sdk.client.HttpTransport;
 import com.pinball.xiaoda.device.sdk.client.HttpUrlConnectionTransport;
 
+import java.lang.reflect.Method;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -95,7 +96,7 @@ public final class DeviceSdkManager {
         );
     }
 
-    /** 获取设备屏动态首页、功能开关、套餐和现金配置。 */
+    /** 获取设备屏动态首页、功能开关、套餐和现金状态快照。 */
     public void refreshBootstrap(BootstrapCallback callback) {
         final String appVersion = DeviceUtil.getAppVersion(context);
         final String deviceNo = DeviceUtil.requireDeviceNo(context);
@@ -119,11 +120,11 @@ public final class DeviceSdkManager {
                 );
 
                 /*
-                 * bootstrap.cashSale是服务端已经确认应用的现金配置快照。
-                 * available=true固定同步为控制板mask=0x03，立即开启纸钞和硬币；
-                 * available=false同步为mask=0x02，只关闭可控纸钞机。
+                 * bootstrap.cashSale 只是服务端当前已确认状态的只读快照。
+                 * 它不能代替 sync_cash_configuration，也不得直接控制 ttyS5 纸钞机。
+                 * 唯一硬件配置入口是 PlatformCommandRuntime 收到的 MQTT 配置命令。
                  */
-                BootstrapCashSaleSynchronizer.get(context).synchronize(result);
+                logCashSaleSnapshot(result);
                 mainHandler.post(() -> callback.onSuccess(result));
             } catch (Throwable error) {
                 long elapsed = System.currentTimeMillis() - startedAt;
@@ -179,6 +180,66 @@ public final class DeviceSdkManager {
 
     public DeviceAppInternalRedemptionResult queryInternalRedemption(String clientRequestNo) {
         return newAppClient().queryInternalRedemption(clientRequestNo);
+    }
+
+    private static void logCashSaleSnapshot(DeviceAppBootstrapResult bootstrap) {
+        if (bootstrap == null) {
+            Log.w(TAG, "bootstrap为空，无法读取cashSale状态快照");
+            return;
+        }
+        try {
+            Object cashSale = invokeOptional(bootstrap, "getCashSale");
+            if (cashSale == null) {
+                Log.w(
+                        TAG,
+                        "bootstrap.cashSale为空；该结果仅用于状态展示，不下发现金硬件配置"
+                );
+                return;
+            }
+
+            Object available = invokeOptional(cashSale, "isAvailable", "getAvailable");
+            Object configurationVersion = invokeOptional(
+                    cashSale,
+                    "getConfigurationVersion"
+            );
+            Object unavailableReason = invokeOptional(
+                    cashSale,
+                    "getUnavailableReason"
+            );
+            Object tiers = invokeOptional(cashSale, "getTiers");
+            int tierCount = tiers instanceof List ? ((List<?>) tiers).size() : -1;
+
+            Log.i(
+                    TAG,
+                    "bootstrap.cashSale只读状态：available=" + available
+                            + "，configurationVersion=" + configurationVersion
+                            + "，tierCount=" + tierCount
+                            + "，unavailableReason=" + unavailableReason
+                            + "；不会直接控制纸钞机，等待MQTT sync_cash_configuration"
+            );
+        } catch (Throwable error) {
+            Log.w(TAG, "读取bootstrap.cashSale状态快照失败", error);
+        }
+    }
+
+    private static Object invokeOptional(Object target, String... methodNames)
+            throws Exception {
+        if (target == null || methodNames == null) {
+            return null;
+        }
+        NoSuchMethodException last = null;
+        for (String methodName : methodNames) {
+            try {
+                Method method = target.getClass().getMethod(methodName);
+                return method.invoke(target);
+            } catch (NoSuchMethodException error) {
+                last = error;
+            }
+        }
+        if (last != null) {
+            throw last;
+        }
+        return null;
     }
 
     private static String describeThrowable(Throwable error) {
