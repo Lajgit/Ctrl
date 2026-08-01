@@ -496,14 +496,52 @@ public final class com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResul
   public boolean isApplied();
   public java.lang.String getMessage();
 }
-=== JAVAP com.pinball.xiaoda.device.sdk.mqtt.MqttSessionManager ===
-Error: class not found: com.pinball.xiaoda.device.sdk.mqtt.MqttSessionManager
-=== JAVAP com.pinball.xiaoda.device.sdk.mqtt.PendingMessageStore ===
-Error: class not found: com.pinball.xiaoda.device.sdk.mqtt.PendingMessageStore
-=== JAVAP com.pinball.xiaoda.device.sdk.mqtt.PendingOutboundMessage ===
-Error: class not found: com.pinball.xiaoda.device.sdk.mqtt.PendingOutboundMessage
-=== JAVAP com.pinball.xiaoda.device.sdk.mqtt.MqttSessionListener ===
-Error: class not found: com.pinball.xiaoda.device.sdk.mqtt.MqttSessionListener
+=== JAVAP com.pinball.xiaoda.device.sdk.hardware.CashTier ===
+Compiled from "CashTier.java"
+public final class com.pinball.xiaoda.device.sdk.hardware.CashTier {
+  public com.pinball.xiaoda.device.sdk.hardware.CashTier(java.lang.String, int, int, java.lang.String);
+  public java.lang.String getMediumType();
+  public int getDenominationAmount();
+  public int getMarbleQuantity();
+  public java.lang.String getTierNo();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.client.MqttSessionManager ===
+Compiled from "MqttSessionManager.java"
+public final class com.pinball.xiaoda.device.sdk.client.MqttSessionManager implements java.lang.AutoCloseable {
+  public com.pinball.xiaoda.device.sdk.client.MqttSessionManager(com.pinball.xiaoda.device.sdk.client.MqttTransport, com.pinball.xiaoda.device.sdk.client.CredentialStore, com.pinball.xiaoda.device.sdk.client.PendingMessageStore, com.pinball.xiaoda.device.sdk.client.DeviceStatusPayloadProvider, com.pinball.xiaoda.device.sdk.client.MqttSessionListener);
+  public com.pinball.xiaoda.device.sdk.client.MqttSessionManager(com.pinball.xiaoda.device.sdk.client.MqttTransport, com.pinball.xiaoda.device.sdk.client.CredentialStore, com.pinball.xiaoda.device.sdk.client.PendingMessageStore, com.pinball.xiaoda.device.sdk.client.DeviceStatusPayloadProvider, com.pinball.xiaoda.device.sdk.client.MqttSessionListener, com.pinball.xiaoda.device.sdk.client.MqttRetryPolicy);
+  public com.pinball.xiaoda.device.sdk.client.MqttSessionState getState();
+  public void start();
+  public void reconnectWithLatestCredential();
+  public void publishDurable(com.pinball.xiaoda.device.sdk.client.PendingOutboundMessage);
+  public void markBusinessConfirmed(com.pinball.xiaoda.device.sdk.core.MqttReceiptKey);
+  public void stop();
+  public void close();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.client.PendingMessageStore ===
+Compiled from "PendingMessageStore.java"
+public interface com.pinball.xiaoda.device.sdk.client.PendingMessageStore {
+  public abstract void save(com.pinball.xiaoda.device.sdk.client.PendingOutboundMessage);
+  public abstract com.pinball.xiaoda.device.sdk.client.PendingMessagePage listPendingPage(java.lang.String, int);
+  public abstract void markConfirmed(com.pinball.xiaoda.device.sdk.core.MqttReceiptKey);
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.client.PendingOutboundMessage ===
+Compiled from "PendingOutboundMessage.java"
+public final class com.pinball.xiaoda.device.sdk.client.PendingOutboundMessage {
+  public com.pinball.xiaoda.device.sdk.client.PendingOutboundMessage(java.lang.String, java.lang.String, byte[], long);
+  public com.pinball.xiaoda.device.sdk.client.PendingOutboundMessage(com.pinball.xiaoda.device.sdk.core.MqttReceiptKey, java.lang.String, byte[], long);
+  public java.lang.String getEventNo();
+  public com.pinball.xiaoda.device.sdk.core.MqttReceiptKey getReceiptKey();
+  public java.lang.String getTopic();
+  public byte[] getPayload();
+  public long getCreateTime();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.client.MqttSessionListener ===
+Compiled from "MqttSessionListener.java"
+public interface com.pinball.xiaoda.device.sdk.client.MqttSessionListener {
+  public abstract void onStateChanged(com.pinball.xiaoda.device.sdk.client.MqttSessionState, com.pinball.xiaoda.device.sdk.client.MqttFailureType, java.lang.Throwable);
+  public abstract void onMessage(java.lang.String, byte[]);
+}
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec ===
 Compiled from "DeviceMqttCommandCodec.java"
 public final class com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec {
@@ -538,6 +576,14 @@ public final class com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult {
   public long getTimestamp();
   public com.pinball.xiaoda.device.sdk.core.MqttReceiptKey getReceiptKey();
 }
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder ===
+Compiled from "DeviceCommandResult.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder {
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder operation(java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder terminal(int, java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder configurationVersion(long);
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult build();
+}
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand ===
 Compiled from "DeviceMqttCommand.java"
 public final class com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<T extends com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData> {
@@ -559,6 +605,25 @@ public final class com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandTypes
   public static final java.lang.String REDEMPTION_RESPONSE;
   public static final java.lang.String CASH_EVENT_RESPONSE;
 }
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.DispenseMarblesCommandData ===
+Compiled from "DispenseMarblesCommandData.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.DispenseMarblesCommandData implements com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData {
+  public com.pinball.xiaoda.device.sdk.protocol.DispenseMarblesCommandData();
+  public java.lang.String getOperationNo();
+  public java.lang.Integer getQuantity();
+  public java.lang.String getOperationToken();
+  public java.lang.String getExpireTime();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.CollectMarblesCommandData ===
+Compiled from "CollectMarblesCommandData.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.CollectMarblesCommandData implements com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData {
+  public com.pinball.xiaoda.device.sdk.protocol.CollectMarblesCommandData();
+  public java.lang.String getOperationNo();
+  public java.lang.Integer getMaximumQuantity();
+  public java.lang.Integer getSessionTimeoutSeconds();
+  public java.lang.String getOperationToken();
+  public java.lang.String getExpireTime();
+}
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData ===
 Compiled from "CashConfigurationCommandData.java"
 public final class com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData implements com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData {
@@ -569,6 +634,15 @@ public final class com.pinball.xiaoda.device.sdk.protocol.CashConfigurationComma
   public boolean isCashAcceptanceEnabled();
   public boolean isChangeEnabled();
   public java.util.List<com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData$CashSaleItem> getCashSaleItems();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData$CashSaleItem ===
+Compiled from "CashConfigurationCommandData.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData$CashSaleItem {
+  public com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData$CashSaleItem();
+  public java.lang.String getCashMediumType();
+  public java.lang.Integer getDenominationAmount();
+  public java.lang.Integer getMarbleQuantity();
+  public java.lang.String getCashSaleTierNo();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData ===
 Compiled from "CashEventResponseCommandData.java"
