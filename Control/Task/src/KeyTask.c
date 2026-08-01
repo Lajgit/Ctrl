@@ -1,6 +1,7 @@
 #include "KeyTask.h"
 #include "MesgTask.h"
 #include "CtrlTask.h"
+#include "FlashTask.h"
 #include "port_key.h"
 #include "usart.h"
 
@@ -26,28 +27,26 @@ typedef struct
     uint16_t pin;
     PulseState_t state;
     uint32_t tick;
-    event_bits_t event;
 } PulseInput_t;
 
 static Key_HandleTypeDef EncoderKey[3];
 static Key_HandleTypeDef *EncoderKeyList[3];
-
 static PulseInput_t CoinPulse;
+
 static uint8_t BillRxQueue[32];
 static volatile uint8_t BillRxHead = 0U;
 static volatile uint8_t BillRxTail = 0U;
 static uint8_t BillEscrowType = 0U;
-static bool BillEnableState = true;
-static bool CoinEnableState = true;
+static bool BillEnableState = false;
+static bool CoinEnableState = false;
 static BillRxState_t BillRxState = BILL_RX_IDLE;
 static uint32_t BillRxStateTick = 0U;
 static uint32_t BillPollTick = 0U;
 static uint8_t BillLastReportStatus = 0xFFU;
+static uint8_t BillLastType = 0U;
+static uint32_t CashConfigVersion = 0U;
+static uint8_t CashEnableMask = 0U;
 
-/* 最近一次现金事件：Data1=介质，Data2:Data4=整数人民币元。 */
-static volatile uint32_t CashEventPackedData = 0U;
-
-/* 启用、禁用命令只做有限次数重试，不再每秒永久发送。 */
 static bool BillStateCommandPending = false;
 static uint8_t BillStateCommand = 0U;
 static uint8_t BillExpectedStatus = 0U;
@@ -55,14 +54,12 @@ static uint8_t BillStateCommandRetryCount = 0U;
 static uint32_t BillStateCommandTick = 0U;
 
 uint8_t BillAcceptor_RxByte;
-uint8_t BillAcceptor_LastType = 0U;
-uint8_t BillAcceptor_LastStatus = 0U;
-uint8_t BillAcceptor_CurrencyMode = BILL_CURRENCY_RMB;
 
 extern Event_Handle_t Mesg_event;
-extern Tx_HandleTypeDef Tx1;
+extern Setting_TypeDef Setting;
 
 #define ICT_CMD_ACCEPT 0x02U
+#define ICT_CMD_REJECT 0x0FU
 #define ICT_CMD_POLL 0x0CU
 #define ICT_CMD_ENABLE 0x3EU
 #define ICT_CMD_DISABLE 0x5EU
@@ -81,204 +78,31 @@ extern Tx_HandleTypeDef Tx1;
 #define ICT_STATE_COMMAND_RETRY_TIME 1000U
 #define ICT_STATE_COMMAND_MAX_RETRY 3U
 
-/**
- * 量产硬件适配点：控制投币器 inhibit/enable 引脚。
- *
- * 当前控制板源码未给出真实 inhibit 引脚，默认弱实现只保留软件状态；
- * 硬件引脚确认后在其他源文件提供同名强实现覆盖本函数。
- */
 __weak bool CashHardware_SetCoinEnable(bool enable)
 {
     (void)enable;
     return true;
 }
 
-/**
- * 量产硬件适配点：执行真实退币动作。
- *
- * medium：0=硬币，1=纸币；amount_yuan：整数人民币元。
- * 当前原理图未标注退币机构控制引脚或串口协议，因此弱实现返回失败，
- * 防止在未确认硬件接口时误驱动其他输出。
- */
-__weak bool CashHardware_DoReturn(uint8_t medium, uint32_t amount_yuan)
-{
-    (void)medium;
-    (void)amount_yuan;
-    return false;
-}
-
-static uint32_t BillTypeToYuan(uint8_t bill_type)
+static uint16_t BillTypeToFen(uint8_t bill_type)
 {
     switch (bill_type)
     {
     case 0x40U:
-        return 1U;
-    case 0x41U:
-        return 5U;
-    case 0x42U:
-        return 10U;
-    case 0x43U:
-        return 20U;
-    case 0x44U:
-        return 50U;
-    case 0x45U:
         return 100U;
+    case 0x41U:
+        return 500U;
+    case 0x42U:
+        return 1000U;
+    case 0x43U:
+        return 2000U;
+    case 0x44U:
+        return 5000U;
+    case 0x45U:
+        return 10000U;
     default:
         return 0U;
     }
-}
-
-static void CashEvent_Set(uint8_t medium, uint32_t amount_yuan)
-{
-    if ((amount_yuan == 0U) || (amount_yuan > 0x00FFFFFFUL))
-    {
-        return;
-    }
-
-    CashEventPackedData = ((uint32_t)medium << 24U) |
-                          (amount_yuan & 0x00FFFFFFUL);
-}
-
-uint32_t CashEvent_GetPackedData(void)
-{
-    return CashEventPackedData;
-}
-
-void CoinAcceptor_SetEnable(bool enable)
-{
-    CoinEnableState = enable;
-    (void)CashHardware_SetCoinEnable(enable);
-}
-
-bool CoinAcceptor_IsEnabled(void)
-{
-    return CoinEnableState;
-}
-
-bool CashHardware_RequestReturn(uint8_t medium, uint32_t amount_yuan)
-{
-    if (((medium != CASH_MEDIUM_COIN) &&
-         (medium != CASH_MEDIUM_BANKNOTE)) ||
-        (amount_yuan == 0U) ||
-        (amount_yuan > 0x00FFFFFFUL))
-    {
-        EventGroupSetBits(&Mesg_event, MesgEvent_CashReturnFailed);
-        return false;
-    }
-
-    CashEvent_Set(medium, amount_yuan);
-
-    if (CashHardware_DoReturn(medium, amount_yuan) == false)
-    {
-        EventGroupSetBits(&Mesg_event, MesgEvent_CashReturnFailed);
-        return false;
-    }
-
-    CashEvent_Set(medium, amount_yuan);
-    EventGroupSetBits(&Mesg_event, MesgEvent_CashReturnedAmount);
-    return true;
-}
-
-static void Encoder_ShortCallback(uint16_t id)
-{
-    /* id: 0=CCW, 1=CW, 2=DOWN；K1 编码器按键对应 DOWN。 */
-    if (id == 2U)
-    {
-        /* K1 表示已补充珠子：恢复库存、启用纸钞机，并延时处理欠吐珠子。 */
-        Purchase_Refill();
-    }
-
-    Comm_SendMesg_FillData(&Tx1, Board_to_Android, Encoder, (uint32_t)id + 1U, 0x00U);
-}
-
-static void PulseInput_Init(PulseInput_t *input,
-                            GPIO_TypeDef *gpio,
-                            uint16_t pin,
-                            event_bits_t event)
-{
-    input->gpio = gpio;
-    input->pin = pin;
-    input->state = PULSE_IDLE;
-    input->tick = HAL_GetTick();
-    input->event = event;
-}
-
-static void PulseInput_Scan(PulseInput_t *input)
-{
-    GPIO_PinState pin_state = HAL_GPIO_ReadPin(input->gpio, input->pin);
-    uint32_t current_tick = HAL_GetTick();
-
-    switch (input->state)
-    {
-    case PULSE_IDLE:
-        if (pin_state == GPIO_PIN_RESET)
-        {
-            input->tick = current_tick;
-            input->state = PULSE_LOW_FILTER;
-        }
-        break;
-
-    case PULSE_LOW_FILTER:
-        if (pin_state == GPIO_PIN_SET)
-        {
-            input->state = PULSE_IDLE;
-        }
-        else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
-        {
-            input->state = PULSE_WAIT_RELEASE;
-        }
-        break;
-
-    case PULSE_WAIT_RELEASE:
-        if (pin_state == GPIO_PIN_SET)
-        {
-            input->tick = current_tick;
-            input->state = PULSE_HIGH_FILTER;
-        }
-        break;
-
-    case PULSE_HIGH_FILTER:
-        if (pin_state == GPIO_PIN_RESET)
-        {
-            input->state = PULSE_WAIT_RELEASE;
-        }
-        else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
-        {
-            if ((input->event != MesgEvent_CoinInput) ||
-                (CoinEnableState == true))
-            {
-                EventGroupSetBits(&Mesg_event, input->event);
-            }
-
-            if ((input->event == MesgEvent_CoinInput) &&
-                (CoinEnableState == true))
-            {
-                /* 1 个有效硬币脉冲固定为 1 元，由控制板独立计价和吐珠。 */
-                Purchase_AddCoinPayment();
-                CashEvent_Set(CASH_MEDIUM_COIN, 1U);
-                EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptedAmount);
-            }
-
-            input->state = PULSE_IDLE;
-        }
-        break;
-
-    default:
-        input->state = PULSE_IDLE;
-        break;
-    }
-}
-
-static bool BillAcceptor_ReadByte(uint8_t *data)
-{
-    if (BillRxHead == BillRxTail)
-    {
-        return false;
-    }
-
-    *data = BillRxQueue[BillRxTail];
-    BillRxTail = (uint8_t)((BillRxTail + 1U) % sizeof(BillRxQueue));
-    return true;
 }
 
 static void BillAcceptor_SendCommand(uint8_t cmd)
@@ -302,6 +126,233 @@ static void BillAcceptor_StartStateCommand(uint8_t cmd)
     BillAcceptor_SendCommand(cmd);
 }
 
+static void BillAcceptor_SetEnableInternal(bool enable)
+{
+    BillEnableState = enable;
+    BillAcceptor_StartStateCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
+}
+
+static void CoinAcceptor_SetEnableInternal(bool enable)
+{
+    CoinEnableState = enable;
+    (void)CashHardware_SetCoinEnable(enable);
+}
+
+static void CashEvent_RecordAccepted(uint8_t medium, uint16_t amount_fen)
+{
+    uint16_t sequence;
+
+    if ((amount_fen == 0U) ||
+        ((medium != CASH_MEDIUM_COIN) && (medium != CASH_MEDIUM_BANKNOTE)))
+    {
+        return;
+    }
+
+    /* 一次只允许一笔不可逆现金事实等待 Android 持久化。 */
+    if ((Setting.HardwareFlags & HARDWARE_FLAG_PENDING_CASH) != 0U)
+    {
+        CashAcceptance_Disable();
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+        return;
+    }
+
+    sequence = (uint16_t)((Setting.PendingCashSequence + 1U) & 0xFFFFU);
+    if (sequence == 0U)
+    {
+        sequence = 1U;
+    }
+
+    Setting.PendingCashSequence = sequence;
+    Setting.PendingCashMedium = medium;
+    Setting.PendingCashAmountFen = amount_fen;
+    Setting.HardwareFlags |= HARDWARE_FLAG_PENDING_CASH;
+
+    /* 先关闭现金入口，再请求 Flash 保存；Mesg_Task 在 FlashTask 之后发送事实。 */
+    CashAcceptance_Disable();
+    FlashTask_RequestSave();
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashAccepted);
+}
+
+bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
+{
+    uint8_t valid_mask = CASH_ACCEPT_BANKNOTE_MASK | CASH_ACCEPT_COIN_MASK;
+
+    if ((config_version == 0U) || (config_version > 0x00FFFFFFUL) ||
+        ((enable_mask & (uint8_t)(~valid_mask)) != 0U) ||
+        ((Setting.HardwareFlags & HARDWARE_FLAG_PENDING_CASH) != 0U) ||
+        Hardware_IsNoBead() || Hardware_IsDispenseActive() || Hardware_IsCollectActive())
+    {
+        CashAcceptance_Disable();
+        return false;
+    }
+
+    CashConfigVersion = config_version;
+    CashEnableMask = enable_mask & valid_mask;
+    BillAcceptor_SetEnableInternal(
+        (CashEnableMask & CASH_ACCEPT_BANKNOTE_MASK) != 0U);
+    CoinAcceptor_SetEnableInternal(
+        (CashEnableMask & CASH_ACCEPT_COIN_MASK) != 0U);
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+    return true;
+}
+
+void CashAcceptance_Disable(void)
+{
+    CashEnableMask = 0U;
+    BillAcceptor_SetEnableInternal(false);
+    CoinAcceptor_SetEnableInternal(false);
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+}
+
+void CashAcceptance_RequestStatus(void)
+{
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+}
+
+uint8_t CashAcceptance_GetEnableMask(void)
+{
+    return CashEnableMask;
+}
+
+uint32_t CashAcceptance_GetConfigVersion(void)
+{
+    return CashConfigVersion;
+}
+
+uint32_t CashDevice_GetStatusData(void)
+{
+    return ((uint32_t)BillLastType << 16U) |
+           ((uint32_t)BillLastReportStatus << 8U) |
+           ((BillEnableState ? 1UL : 0UL) << 1U) |
+           (CoinEnableState ? 1UL : 0UL);
+}
+
+bool CashEvent_HasPending(void)
+{
+    return (Setting.HardwareFlags & HARDWARE_FLAG_PENDING_CASH) != 0U;
+}
+
+uint8_t CashEvent_GetPendingMedium(void)
+{
+    return (uint8_t)Setting.PendingCashMedium;
+}
+
+uint16_t CashEvent_GetPendingAmountFen(void)
+{
+    return (uint16_t)Setting.PendingCashAmountFen;
+}
+
+uint16_t CashEvent_GetPendingSequence(void)
+{
+    return (uint16_t)Setting.PendingCashSequence;
+}
+
+void CashEvent_ConfirmTransport(uint16_t sequence)
+{
+    if (!CashEvent_HasPending() ||
+        (sequence == 0U) ||
+        (sequence != (uint16_t)Setting.PendingCashSequence))
+    {
+        return;
+    }
+
+    Setting.HardwareFlags &= ~HARDWARE_FLAG_PENDING_CASH;
+    Setting.PendingCashAmountFen = 0U;
+    Setting.PendingCashMedium = 0U;
+    FlashTask_RequestSave();
+}
+
+void CashEvent_RestorePending(void)
+{
+    if (CashEvent_HasPending())
+    {
+        CashAcceptance_Disable();
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashAccepted);
+    }
+}
+
+static void Encoder_ShortCallback(uint16_t id)
+{
+    /* K1 编码器按键对应 DOWN，只恢复库存事实。 */
+    if (id == 2U)
+    {
+        Hardware_Refill();
+    }
+}
+
+static void PulseInput_Init(PulseInput_t *input,
+                            GPIO_TypeDef *gpio,
+                            uint16_t pin)
+{
+    input->gpio = gpio;
+    input->pin = pin;
+    input->state = PULSE_IDLE;
+    input->tick = HAL_GetTick();
+}
+
+static void PulseInput_Scan(PulseInput_t *input)
+{
+    GPIO_PinState pin_state = HAL_GPIO_ReadPin(input->gpio, input->pin);
+    uint32_t current_tick = HAL_GetTick();
+
+    switch (input->state)
+    {
+    case PULSE_IDLE:
+        if (pin_state == GPIO_PIN_RESET)
+        {
+            input->tick = current_tick;
+            input->state = PULSE_LOW_FILTER;
+        }
+        break;
+    case PULSE_LOW_FILTER:
+        if (pin_state == GPIO_PIN_SET)
+        {
+            input->state = PULSE_IDLE;
+        }
+        else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
+        {
+            input->state = PULSE_WAIT_RELEASE;
+        }
+        break;
+    case PULSE_WAIT_RELEASE:
+        if (pin_state == GPIO_PIN_SET)
+        {
+            input->tick = current_tick;
+            input->state = PULSE_HIGH_FILTER;
+        }
+        break;
+    case PULSE_HIGH_FILTER:
+        if (pin_state == GPIO_PIN_RESET)
+        {
+            input->state = PULSE_WAIT_RELEASE;
+        }
+        else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
+        {
+            if (CoinEnableState)
+            {
+                CashEvent_RecordAccepted(CASH_MEDIUM_COIN, 100U);
+            }
+            input->state = PULSE_IDLE;
+        }
+        break;
+    default:
+        input->state = PULSE_IDLE;
+        break;
+    }
+}
+
+static bool BillAcceptor_ReadByte(uint8_t *data)
+{
+    if (BillRxHead == BillRxTail)
+    {
+        return false;
+    }
+    *data = BillRxQueue[BillRxTail];
+    BillRxTail = (uint8_t)((BillRxTail + 1U) % sizeof(BillRxQueue));
+    return true;
+}
+
 static bool BillAcceptor_IsDenomination(uint8_t data)
 {
     return (data == ICT_DENOM_UNKNOWN) ||
@@ -319,38 +370,23 @@ static bool BillAcceptor_IsStatus(uint8_t data)
 
 static void BillAcceptor_ReportStatus(uint8_t status)
 {
-    BillAcceptor_LastStatus = status;
-
-    if ((BillStateCommandPending == true) &&
-        (status == BillExpectedStatus))
+    BillLastReportStatus = status;
+    if (BillStateCommandPending && (status == BillExpectedStatus))
     {
         BillStateCommandPending = false;
     }
-
-    if (status != BillLastReportStatus)
-    {
-        BillLastReportStatus = status;
-        EventGroupSetBits(&Mesg_event, MesgEvent_BillStatus);
-    }
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
 }
 
 static void BillAcceptor_CompletePayment(uint8_t bill_type, uint8_t complete_status)
 {
-    uint32_t amount_yuan;
+    uint16_t amount_fen = BillTypeToFen(bill_type);
+    BillLastType = bill_type;
+    BillAcceptor_ReportStatus(complete_status);
 
-    BillAcceptor_LastType = bill_type;
-    BillAcceptor_LastStatus = complete_status;
-    EventGroupSetBits(&Mesg_event, MesgEvent_BillAccepted);
-
-    if (BillAcceptor_CurrencyMode == BILL_CURRENCY_RMB)
+    if ((amount_fen > 0U) && BillEnableState)
     {
-        Purchase_AddBillPayment(bill_type);
-        amount_yuan = BillTypeToYuan(bill_type);
-        if (amount_yuan > 0U)
-        {
-            CashEvent_Set(CASH_MEDIUM_BANKNOTE, amount_yuan);
-            EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptedAmount);
-        }
+        CashEvent_RecordAccepted(CASH_MEDIUM_BANKNOTE, amount_fen);
     }
 }
 
@@ -360,15 +396,11 @@ static void BillAcceptor_HandleByte(uint8_t data)
     {
         if (data == ICT_RESP_POWER_ON_2)
         {
-            BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
             BillAcceptor_SetRxState(BILL_RX_IDLE);
-            if (BillEnableState == false)
-            {
-                BillAcceptor_StartStateCommand(ICT_CMD_DISABLE);
-            }
+            BillAcceptor_StartStateCommand(
+                BillEnableState ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
             return;
         }
-
         if (data == ICT_RESP_POWER_ON_1)
         {
             BillRxStateTick = HAL_GetTick();
@@ -383,11 +415,18 @@ static void BillAcceptor_HandleByte(uint8_t data)
             BillRxStateTick = HAL_GetTick();
             return;
         }
-
         if (BillAcceptor_IsDenomination(data))
         {
             BillEscrowType = data;
-            BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
+            if (BillEnableState && !CashEvent_HasPending())
+            {
+                BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
+            }
+            else
+            {
+                BillAcceptor_SendCommand(ICT_CMD_REJECT);
+                BillEscrowType = 0U;
+            }
             BillAcceptor_SetRxState(BILL_RX_IDLE);
             return;
         }
@@ -410,12 +449,10 @@ static void BillAcceptor_HandleByte(uint8_t data)
     case ICT_RESP_POWER_ON_1:
         BillAcceptor_SetRxState(BILL_RX_WAIT_POWER_ON_2);
         break;
-
     case ICT_RESP_ESCROW:
         BillEscrowType = 0U;
         BillAcceptor_SetRxState(BILL_RX_WAIT_ESCROW_VALUE);
         break;
-
     case ICT_RESP_STACKING:
         if (BillAcceptor_IsDenomination(BillEscrowType))
         {
@@ -423,17 +460,14 @@ static void BillAcceptor_HandleByte(uint8_t data)
         }
         BillEscrowType = 0U;
         break;
-
     case ICT_RESP_REJECT:
         BillEscrowType = 0U;
         BillAcceptor_ReportStatus(ICT_RESP_REJECT);
         break;
-
     case ICT_RESP_JAM_STACKING:
         BillEscrowType = 0U;
         BillAcceptor_SetRxState(BILL_RX_WAIT_JAM_VALUE);
         break;
-
     default:
         if (BillAcceptor_IsStatus(data))
         {
@@ -448,16 +482,19 @@ static void BillAcceptor_Init(void)
     BillRxHead = 0U;
     BillRxTail = 0U;
     BillEscrowType = 0U;
-    BillEnableState = true;
-    CoinEnableState = true;
+    BillEnableState = false;
+    CoinEnableState = false;
+    CashEnableMask = 0U;
+    CashConfigVersion = 0U;
     BillRxState = BILL_RX_IDLE;
     BillLastReportStatus = 0xFFU;
+    BillLastType = 0U;
     BillPollTick = HAL_GetTick();
     BillStateCommandPending = false;
     HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
 
-    BillAcceptor_StartStateCommand(ICT_CMD_ENABLE);
-    (void)CashHardware_SetCoinEnable(true);
+    BillAcceptor_StartStateCommand(ICT_CMD_DISABLE);
+    (void)CashHardware_SetCoinEnable(false);
 }
 
 static void BillAcceptor_Task(void)
@@ -465,26 +502,23 @@ static void BillAcceptor_Task(void)
     uint8_t data;
     uint32_t now = HAL_GetTick();
 
-    while (BillAcceptor_ReadByte(&data) == true)
+    while (BillAcceptor_ReadByte(&data))
     {
         BillAcceptor_HandleByte(data);
     }
-
     if ((BillRxState != BILL_RX_IDLE) &&
         (now - BillRxStateTick >= ICT_SEQUENCE_TIMEOUT))
     {
         BillEscrowType = 0U;
         BillAcceptor_SetRxState(BILL_RX_IDLE);
     }
-
     if ((BillRxState == BILL_RX_IDLE) &&
         (now - BillPollTick >= ICT_POLL_INTERVAL))
     {
         BillAcceptor_SendCommand(ICT_CMD_POLL);
         BillPollTick = now;
     }
-
-    if ((BillStateCommandPending == true) &&
+    if (BillStateCommandPending &&
         (now - BillStateCommandTick >= ICT_STATE_COMMAND_RETRY_TIME))
     {
         if (BillStateCommandRetryCount < ICT_STATE_COMMAND_MAX_RETRY)
@@ -496,6 +530,7 @@ static void BillAcceptor_Task(void)
         else
         {
             BillStateCommandPending = false;
+            EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
         }
     }
 }
@@ -511,23 +546,10 @@ void BillAcceptor_RxCpltCallback(void)
     HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
 }
 
-void BillAcceptor_SetCurrencyMode(uint8_t mode)
-{
-    BillAcceptor_CurrencyMode =
-        (mode == BILL_CURRENCY_FOREIGN) ? BILL_CURRENCY_FOREIGN : BILL_CURRENCY_RMB;
-    EventGroupSetBits(&Mesg_event, MesgEvent_BillCurrencyMode);
-}
-
-void BillAcceptor_SetEnable(bool enable)
-{
-    BillEnableState = enable;
-    BillAcceptor_StartStateCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
-}
-
 void BillAcceptor_Reset(void)
 {
     BillEscrowType = 0U;
-    BillAcceptor_LastType = 0U;
+    BillLastType = 0U;
     BillStateCommandPending = false;
     BillAcceptor_SetRxState(BILL_RX_IDLE);
     BillAcceptor_SendCommand(ICT_CMD_RESET);
@@ -535,46 +557,22 @@ void BillAcceptor_Reset(void)
 
 void KeyAll_Init(void)
 {
-    Key_Init(&EncoderKey[0],
-             0U,
-             KeyBoard1_GPIO_Port,
-             KeyBoard1_Pin,
-             KEY_DEBOUNCE_TIME,
-             800U,
-             1U,
-             Encoder_ShortCallback,
-             NULL,
-             NULL,
-             GPIO_PIN_RESET);
+    Key_Init(&EncoderKey[0], 0U, KeyBoard1_GPIO_Port, KeyBoard1_Pin,
+             KEY_DEBOUNCE_TIME, 800U, 1U,
+             Encoder_ShortCallback, NULL, NULL, GPIO_PIN_RESET);
     EncoderKeyList[0] = &EncoderKey[0];
 
-    Key_Init(&EncoderKey[1],
-             1U,
-             KeyBoard2_GPIO_Port,
-             KeyBoard2_Pin,
-             KEY_DEBOUNCE_TIME,
-             800U,
-             1U,
-             Encoder_ShortCallback,
-             NULL,
-             NULL,
-             GPIO_PIN_RESET);
+    Key_Init(&EncoderKey[1], 1U, KeyBoard2_GPIO_Port, KeyBoard2_Pin,
+             KEY_DEBOUNCE_TIME, 800U, 1U,
+             Encoder_ShortCallback, NULL, NULL, GPIO_PIN_RESET);
     EncoderKeyList[1] = &EncoderKey[1];
 
-    Key_Init(&EncoderKey[2],
-             2U,
-             KeyBoard3_GPIO_Port,
-             KeyBoard3_Pin,
-             KEY_DEBOUNCE_TIME,
-             800U,
-             1U,
-             Encoder_ShortCallback,
-             NULL,
-             NULL,
-             GPIO_PIN_RESET);
+    Key_Init(&EncoderKey[2], 2U, KeyBoard3_GPIO_Port, KeyBoard3_Pin,
+             KEY_DEBOUNCE_TIME, 800U, 1U,
+             Encoder_ShortCallback, NULL, NULL, GPIO_PIN_RESET);
     EncoderKeyList[2] = &EncoderKey[2];
 
-    PulseInput_Init(&CoinPulse, CoinInput_GPIO_Port, CoinInput_Pin, MesgEvent_CoinInput);
+    PulseInput_Init(&CoinPulse, CoinInput_GPIO_Port, CoinInput_Pin);
     BillAcceptor_Init();
 }
 
