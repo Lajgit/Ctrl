@@ -31,20 +31,22 @@ void MainTaskInit(void)
     EventGroupCreate(&Mesg_event);
     EventGroupCreate(&Event);
 
-    /* 先恢复价格、库存、余额和欠吐数量，再初始化购买相关外设。 */
     FlashTask_Init();
     Device_Init();
     Communicate_Init();
     KeyAll_Init();
-    Purchase_Init();
+    Hardware_Init();
 
-    /* 上电后主动同步购买状态，避免安卓界面与控制板掉电状态不一致。 */
-    Purchase_RequestStatus();
-    if (Purchase_GetBeadStock() == 0U)
+    /* 新协议上电默认关闭现金；恢复尚未被 Android 确认的同一笔现金事实。 */
+    CashEvent_RestorePending();
+    Hardware_RequestStatus();
+    EventGroupSetBits(&Mesg_event, MesgEvent_VersionRequest);
+
+    if (Hardware_GetBeadStock() == 0U || Hardware_IsNoBead())
     {
         EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
     }
-    else if (Purchase_GetBeadStock() <= PURCHASE_LOW_STOCK_THRESHOLD)
+    else if (Hardware_GetBeadStock() <= HARDWARE_LOW_STOCK_THRESHOLD)
     {
         EventGroupSetBits(&Mesg_event, MesgEvent_BeadLowStock);
     }
@@ -58,23 +60,16 @@ void MainTask(void)
     Key_Task();
     HAL_IWDG_Refresh(&hiwdg);
 
-    /* 在主循环上下文处理 PD3 吐珠、PD4 存珠光眼反馈。 */
     InterruptTask_Process();
     HAL_IWDG_Refresh(&hiwdg);
 
-    /*
-     * 在启动下一次吐珠动作前，先保存本轮收款和光眼扣减结果，
-     * 尽量缩短“已经收款但尚未写入 Flash”的时间窗口。
-     */
+    /* 现金事实和真实光眼库存先落 Flash，再允许通过串口对外报告。 */
     FlashTask();
     HAL_IWDG_Refresh(&hiwdg);
 
-    /* 根据纸币、硬币、补珠延时和掉电恢复状态安排吐珠。 */
-    Purchase_Task();
     CtrlTask();
     HAL_IWDG_Refresh(&hiwdg);
 
-    /* 超时判定可能新增无珠状态和欠吐数量，再立即保存一次。 */
     FlashTask();
     HAL_IWDG_Refresh(&hiwdg);
 
