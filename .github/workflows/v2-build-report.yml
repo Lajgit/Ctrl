@@ -1,4 +1,4 @@
-name: V2 Build Report
+name: V2.1 Build Report
 on:
   push:
     paths:
@@ -17,7 +17,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Build and write report
+      - name: Build Android V2.1
         shell: bash
         run: |
           set +e
@@ -32,6 +32,8 @@ jobs:
             echo "source_commit=$(git rev-parse HEAD)"
             echo '--- log tail ---'
             tail -n 400 build-v2-report.log
+            echo '--- control static references ---'
+            grep -R -n -E 'PendingCashAmountFen|PendingCashSequence|PendingCashMedium|HARDWARE_FLAG_PENDING_CASH' Control || true
           } > docs/v2-build-report.txt
           exit 0
       - name: Commit report
@@ -40,6 +42,6 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git add docs/v2-build-report.txt
-          git commit -m '记录平台统一出珠V2编译结果' || exit 0
+          git commit -m '记录App V2.1连续现金累计编译结果' || exit 0
           git pull --rebase origin main
           git push origin HEAD:main
