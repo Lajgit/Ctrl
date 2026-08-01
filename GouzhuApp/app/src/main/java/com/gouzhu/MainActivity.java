@@ -45,9 +45,9 @@ import java.util.List;
 public class MainActivity extends AppCompatActivity {
 
     private static final int CODE_BACKEND_SETTINGS_REQUEST = 0x27;
-    private static final int CODE_BEAD_OUTPUT_TIMEOUT = 0x07;
-    private static final int CODE_BEAD_EMPTY = 0x25;
-    private static final int CODE_BEAD_REFILLED = 0x26;
+    private static final int CODE_DISPENSE_FAILED = 0x04;
+    private static final int CODE_BEAD_EMPTY = 0x22;
+    private static final int CODE_BEAD_REFILLED = 0x23;
 
     private final List<PackageOption> packageOptions = new ArrayList<>();
 
@@ -433,7 +433,7 @@ public class MainActivity extends AppCompatActivity {
             case CODE_BACKEND_SETTINGS_REQUEST:
                 openBackendSettings();
                 break;
-            case CODE_BEAD_OUTPUT_TIMEOUT:
+            case CODE_DISPENSE_FAILED:
             case CODE_BEAD_EMPTY:
                 paymentStatusText.setText(R.string.machine_temporarily_unavailable);
                 paymentButton.setEnabled(false);
