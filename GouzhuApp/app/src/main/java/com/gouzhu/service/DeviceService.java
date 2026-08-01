@@ -38,6 +38,7 @@ public class DeviceService extends Service {
 
     private static final String TAG = "GouzhuService";
     private static final long RETRY_DELAY_MS = 30_000L;
+    private static final int MAX_ERROR_DEPTH = 6;
 
     private final AtomicBoolean initializing = new AtomicBoolean(false);
     private final AtomicBoolean activationScreenLaunchRequested = new AtomicBoolean(false);
@@ -143,6 +144,7 @@ public class DeviceService extends Service {
                         claimCode,
                         text,
                         false,
+                        null,
                         null
                 );
             }
@@ -164,11 +166,21 @@ public class DeviceService extends Service {
                 );
 
                 String errorMessage = messageOf(error);
+                String errorDetail = errorDetailOf(error);
                 if (isIdentityNotRegistered(error)) {
-                    showIdentityRegistrationRequired(errorMessage);
+                    showIdentityRegistrationRequired(errorMessage, errorDetail);
                 } else {
-                    broadcastStatus("activation", "设备认证失败：" + errorMessage);
+                    String status = "设备认证失败：" + errorMessage;
+                    broadcastActivationError(status, errorDetail);
                     updateNotification("设备认证失败");
+                    launchActivationScreen(
+                            null,
+                            null,
+                            status,
+                            false,
+                            null,
+                            errorDetail
+                    );
                 }
                 scheduleRetry();
             }
@@ -244,8 +256,11 @@ public class DeviceService extends Service {
         sendBroadcast(intent);
     }
 
-    private void showIdentityRegistrationRequired(String errorMessage) {
-        String status = "设备身份未登记，请先在平台登记设备号和身份公钥";
+    private void showIdentityRegistrationRequired(
+            String errorMessage,
+            String errorDetail
+    ) {
+        String status = "首次身份自动登记未成功，服务端仍返回“设备身份未登记”";
         String publicKey = "";
         try {
             publicKey = ActivationManager.exportIdentityPublicKey(this);
@@ -257,26 +272,42 @@ public class DeviceService extends Service {
         ActivationLogStore.append(
                 this,
                 "注册/激活",
-                status + "；服务端错误：" + errorMessage
+                status + "；请检查服务端自动登记开关、服务端版本和请求环境；服务端错误："
+                        + errorMessage
         );
-        broadcastIdentityRegistrationRequired(status, publicKey);
-        updateNotification("等待平台登记设备身份");
+        broadcastIdentityRegistrationRequired(status, publicKey, errorDetail);
+        updateNotification("首次身份自动登记失败");
         launchActivationScreen(
                 null,
                 null,
                 status,
                 true,
-                publicKey
+                publicKey,
+                errorDetail
         );
     }
 
-    private void broadcastIdentityRegistrationRequired(String value, String publicKey) {
+    private void broadcastIdentityRegistrationRequired(
+            String value,
+            String publicKey,
+            String errorDetail
+    ) {
         Intent intent = new Intent(AppConfig.ACTION_SERVICE_STATUS);
         intent.setPackage(getPackageName());
         intent.putExtra("key", "activation");
         intent.putExtra("value", value);
         intent.putExtra(ActivationActivity.EXTRA_IDENTITY_REGISTRATION_REQUIRED, true);
         intent.putExtra(ActivationActivity.EXTRA_IDENTITY_PUBLIC_KEY, publicKey);
+        intent.putExtra(ActivationActivity.EXTRA_ACTIVATION_ERROR_DETAIL, errorDetail);
+        sendBroadcast(intent);
+    }
+
+    private void broadcastActivationError(String value, String errorDetail) {
+        Intent intent = new Intent(AppConfig.ACTION_SERVICE_STATUS);
+        intent.setPackage(getPackageName());
+        intent.putExtra("key", "activation");
+        intent.putExtra("value", value);
+        intent.putExtra(ActivationActivity.EXTRA_ACTIVATION_ERROR_DETAIL, errorDetail);
         sendBroadcast(intent);
     }
 
@@ -285,7 +316,8 @@ public class DeviceService extends Service {
             String claimCode,
             String status,
             boolean identityRegistrationRequired,
-            String identityPublicKey
+            String identityPublicKey,
+            String errorDetail
     ) {
         if (!activationScreenLaunchRequested.compareAndSet(false, true)) {
             return;
@@ -308,6 +340,10 @@ public class DeviceService extends Service {
             intent.putExtra(
                     ActivationActivity.EXTRA_IDENTITY_PUBLIC_KEY,
                     identityPublicKey
+            );
+            intent.putExtra(
+                    ActivationActivity.EXTRA_ACTIVATION_ERROR_DETAIL,
+                    errorDetail
             );
             startActivity(intent);
         } catch (Throwable error) {
@@ -362,6 +398,28 @@ public class DeviceService extends Service {
             current = current.getCause();
         }
         return false;
+    }
+
+    private static String errorDetailOf(Throwable error) {
+        if (error == null) {
+            return "未知异常";
+        }
+        StringBuilder builder = new StringBuilder();
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth < MAX_ERROR_DEPTH) {
+            if (depth > 0) {
+                builder.append(" <- ");
+            }
+            builder.append(current.getClass().getSimpleName());
+            String message = current.getMessage();
+            if (message != null && !message.trim().isEmpty()) {
+                builder.append(": ").append(message.trim());
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return builder.toString();
     }
 
     private static String stageName(String key) {
