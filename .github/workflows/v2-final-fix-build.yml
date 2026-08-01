@@ -1,0 +1,223 @@
+name: V2 Final Fix Build
+on:
+  push:
+    paths:
+      - '.github/workflows/v2-final-fix-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  final-fix-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Apply final source fixes
+        shell: bash
+        run: |
+          set +e
+          python3 - <<'PY' > final-fix.log 2>&1
+          from pathlib import Path
+
+          runtime = Path('GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java')
+          text = runtime.read_text(encoding='utf-8')
+          text = text.replace('.isSuccess()', '.isSuccessful()')
+
+          start_marker = '    private void reapplyCashConfiguration() {'
+          end_marker = '    private void restoreCashAcceptance() {'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start + 1)
+          if start < 0 or end < 0:
+              raise RuntimeError('reapplyCashConfiguration markers not found')
+          replacement = '''    private void reapplyCashConfiguration() {
+        DeviceCommandStore.CashConfigurationRecord record =
+                store.loadCashConfiguration();
+        if (record == null || record.changeEnabled || store.isCashBlocked()
+                || hasActiveOperation()) {
+            cashAdapter.disableCashAcceptance();
+            return;
+        }
+
+        JSONObject envelope = parseObject(record.snapshotJson);
+        JSONObject data = envelope == null ? null : envelope.optJSONObject("data");
+        org.json.JSONArray items = data == null
+                ? null
+                : data.optJSONArray("cashSaleItems");
+        if (data == null || items == null) {
+            store.setCashBlocked(true);
+            cashAdapter.disableCashAcceptance();
+            return;
+        }
+
+        List<CashTier> tiers = new ArrayList<>();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
+            if (item == null) {
+                store.setCashBlocked(true);
+                cashAdapter.disableCashAcceptance();
+                return;
+            }
+            tiers.add(new CashTier(
+                    item.optString("cashMediumType", ""),
+                    item.optInt("denominationAmount", 0),
+                    item.optInt("marbleQuantity", 0),
+                    item.optString("cashSaleTierNo", "")
+            ));
+        }
+
+        hardwareExecutor.execute(() -> {
+            CashConfigurationResult result = record.enabled
+                    ? cashAdapter.apply(record.configVersion, tiers)
+                    : cashAdapter.applyDisabled(record.configVersion);
+            if (!result.isApplied()) {
+                store.setCashBlocked(true);
+                cashAdapter.disableCashAcceptance();
+            }
+        });
+    }
+
+'''
+          text = text[:start] + replacement + text[end:]
+          runtime.write_text(text, encoding='utf-8')
+
+          key_header = Path('Control/Task/inc/KeyTask.h')
+          text = key_header.read_text(encoding='utf-8')
+          text = text.replace(
+              '#define CASH_ACCEPT_COIN_MASK (1U << 1)',
+              '/* 当前原理图/代码没有可验证的硬币 inhibit 输出，V2 默认禁止启用硬币。 */\n'
+              '#define CASH_ACCEPT_COIN_MASK 0U'
+          )
+          key_header.write_text(text, encoding='utf-8')
+
+          key_source = Path('Control/Task/src/KeyTask.c')
+          text = key_source.read_text(encoding='utf-8')
+          old = '''void CashAcceptance_RequestStatus(void)
+{
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+}'''
+          new = '''void CashAcceptance_RequestStatus(void)
+{
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+    if (CashEvent_HasPending())
+    {
+        /* Android 重启或串口恢复后，继续上报同一笔 Flash 现金事实。 */
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashAccepted);
+    }
+}'''
+          if old not in text:
+              raise RuntimeError('CashAcceptance_RequestStatus block not found')
+          text = text.replace(old, new, 1)
+          key_source.write_text(text, encoding='utf-8')
+
+          marble = Path('GouzhuApp/app/src/main/java/com/gouzhu/hardware/SerialMarbleHardwareAdapter.java')
+          text = marble.read_text(encoding='utf-8')
+          text = text.replace(
+              '''                if (!operation.latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                    return HardwareExecutionResult.failed(
+                            operation.actual,
+                            "CONTROLLER_RESULT_TIMEOUT",
+                            "控制板未在限定时间返回可靠终态"
+                    );
+                }''',
+              '''                if (!operation.latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                    if (operation.collect) {
+                        long stopData = (long) operation.token << 24;
+                        SerialManager.get(context).sendCommand(
+                                CMD_COLLECT_STOP,
+                                stopData,
+                                true
+                        );
+                        operation.latch.await(5_000L, TimeUnit.MILLISECONDS);
+                    }
+                    if (operation.terminalEvent == completedEvent
+                            && operation.resultCode == 0) {
+                        return HardwareExecutionResult.success(operation.actual);
+                    }
+                    return HardwareExecutionResult.failed(
+                            operation.actual,
+                            "CONTROLLER_RESULT_TIMEOUT",
+                            "控制板未在限定时间返回可靠终态"
+                    );
+                }'''
+          )
+          marble.write_text(text, encoding='utf-8')
+
+          print('final source fixes applied')
+          PY
+          rc=$?
+          mkdir -p docs
+          {
+            echo "fix_status=$rc"
+            cat final-fix.log
+          } > docs/v2-final-build-status.txt
+          exit 0
+
+      - name: Build Android V2
+        shell: bash
+        run: |
+          set +e
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:assembleDebug > ../android-v2-build.log 2>&1
+          rc=$?
+          cd ..
+          {
+            echo
+            echo "android_build_status=$rc"
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo '--- Android build tail ---'
+            tail -n 300 android-v2-build.log
+          } >> docs/v2-final-build-status.txt
+          exit 0
+
+      - name: Static control-board checks
+        shell: bash
+        run: |
+          set +e
+          {
+            echo
+            echo '--- Control-board static checks ---'
+            grep -R -n -E 'PendingBeads|PurchaseCredit|BeadPriceFen|Purchase_AddCash|Purchase_StartCashOutput|PaidPurchaseOutput|CashReturnRequest' Control/Task || true
+            echo '--- V2 version ---'
+            grep -n 'VERSION_MAJOR\|VERSION_MINOR\|VERSION_PATCH\|VERSION_BUILD' Control/Task/inc/MesgTask.h
+            echo '--- cash default safety ---'
+            grep -n 'CASH_ACCEPT_COIN_MASK\|CashAcceptance_Disable' Control/Task/inc/KeyTask.h Control/Task/src/MainTask.c Control/Task/src/CtrlTask.c
+          } >> docs/v2-final-build-status.txt
+          exit 0
+
+      - name: Remove temporary diagnostics workflows
+        shell: bash
+        run: |
+          rm -f \
+            .github/workflows/sdk-api-dump.yml \
+            .github/workflows/v2-integrate-build.yml \
+            .github/workflows/v2-build-fix.yml \
+            .github/workflows/v2-finalize.yml \
+            .github/workflows/v2-build-only.yml \
+            .github/workflows/fix-collect-int.yml \
+            .github/workflows/fix-sdk-success.yml \
+            .github/workflows/control-coin-safety.yml \
+            .github/workflows/fix-cash-reapply.yml \
+            .github/workflows/v2-final-fix-build.yml
+          rm -f docs/sdk-api-dump.txt docs/v2-finalize-status.txt docs/v2-build-only-status.txt
+
+      - name: Commit fixes and report
+        shell: bash
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -A
+          git commit -m '完成平台统一现金出珠V2修复并记录构建结果' || exit 0
+          git pull --rebase origin main
+          git push origin HEAD:main
