@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
 
+import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.PrivateKey;
@@ -49,21 +50,39 @@ public final class DeviceIdentityStore {
         generator.generateKeyPair();
     }
 
-    /** 导出 X.509 SubjectPublicKeyInfo 公钥，供平台登记。 */
-    public static String getPublicKeyBase64(Context context) throws Exception {
+    /**
+     * 返回同一个 AndroidKeyStore alias 对应的完整密钥对。
+     *
+     * <p>新版 SDK 首次报到需要同时使用公钥和私钥：私钥负责签名，公钥由 SDK
+     * 自动写入 identityPublicKey。私钥仍然只是不可导出的 KeyStore 句柄。</p>
+     */
+    public static KeyPair getKeyPair(Context context) throws Exception {
         ensureKeyPair(context);
-        PublicKey publicKey = loadKeyStore().getCertificate(KEY_ALIAS).getPublicKey();
+        KeyStore keyStore = loadKeyStore();
+        if (keyStore.getCertificate(KEY_ALIAS) == null) {
+            throw new IllegalStateException("设备身份公钥证书不存在");
+        }
+
+        PublicKey publicKey = keyStore.getCertificate(KEY_ALIAS).getPublicKey();
+        PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, null);
+        if (publicKey == null) {
+            throw new IllegalStateException("设备身份公钥不存在");
+        }
+        if (privateKey == null) {
+            throw new IllegalStateException("设备身份私钥不存在");
+        }
+        return new KeyPair(publicKey, privateKey);
+    }
+
+    /** 导出 X.509 SubjectPublicKeyInfo 公钥，供调试和预登记兼容流程使用。 */
+    public static String getPublicKeyBase64(Context context) throws Exception {
+        PublicKey publicKey = getKeyPair(context).getPublic();
         return Base64.encodeToString(publicKey.getEncoded(), Base64.NO_WRAP);
     }
 
     /** 返回 AndroidKeyStore 私钥句柄供服务端 SDK 签名，私钥材料不可导出。 */
     public static PrivateKey getPrivateKey(Context context) throws Exception {
-        ensureKeyPair(context);
-        PrivateKey privateKey = (PrivateKey) loadKeyStore().getKey(KEY_ALIAS, null);
-        if (privateKey == null) {
-            throw new IllegalStateException("设备身份私钥不存在");
-        }
-        return privateKey;
+        return getKeyPair(context).getPrivate();
     }
 
     /** 兼容现有工具代码的本地 SHA256withECDSA 签名入口。 */
