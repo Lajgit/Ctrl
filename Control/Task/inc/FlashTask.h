@@ -12,6 +12,7 @@
 #define Setting_End_Addr 0x0800C000U
 
 #define HARDWARE_FLAG_NO_BEAD (1UL << 0)
+#define HARDWARE_FLAG_CASH_QUEUE_OVERFLOW (1UL << 1)
 
 /*
  * Android 正常会在几十毫秒内确认一笔现金；16 项队列用于覆盖连续投币、
