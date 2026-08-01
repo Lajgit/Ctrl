@@ -6,50 +6,29 @@
 #include "string.h"
 
 /*
- * V3 是服务器统一控制出珠后的全新记录格式。
- * 旧 V1/V2 中的本地价格、余额和欠吐数据不再迁移，发现旧记录时直接擦除并
- * 写入 V3 默认硬件状态，避免旧现金逻辑在新版固件中复活。
+ * V4 保存多笔待确认现金事实。旧记录不迁移，避免旧的单笔阻塞或本地现金
+ * 购买状态进入新协议。
  */
-#define SETTING_RECORD_MAGIC_V3 0x475A0200UL
-#define SETTING_RECORD_WORDS 8U
-#define SETTING_RECORD_SIZE (SETTING_RECORD_WORDS * sizeof(uint32_t))
+#define SETTING_RECORD_MAGIC_V4 0x475A0400UL
 #define SETTING_CHECK_SEED 0xA55A5AA5UL
-
 #define DEFAULT_BEAD_STOCK 10000U
 
 typedef struct
 {
     uint32_t Magic;
     uint32_t Sequence;
-    uint32_t BeadStock;
-    uint32_t PendingCashAmountFen;
-    uint32_t PendingCashSequence;
-    uint32_t PendingCashMedium;
-    uint32_t PackedConfig;
+    Setting_TypeDef SettingData;
     uint32_t Checksum;
 } SettingRecord_t;
+
+#define SETTING_RECORD_WORDS ((uint32_t)(sizeof(SettingRecord_t) / sizeof(uint32_t)))
+#define SETTING_RECORD_SIZE ((uint32_t)sizeof(SettingRecord_t))
 
 Setting_TypeDef Setting;
 extern Event_Handle_t Event;
 
 static uint32_t SettingNextWriteAddress = Setting_Addr;
 static uint32_t SettingSequence = 0U;
-
-static uint32_t FlashTask_PackConfig(const Setting_TypeDef *setting)
-{
-    return ((setting->HardwareFlags & 0xFFU) << 24U) |
-           ((setting->Ctrl_Lightness & 0xFFU) << 16U) |
-           ((setting->LightBelt_Lightness & 0xFFU) << 8U) |
-           (setting->Board_Lightness & 0xFFU);
-}
-
-static void FlashTask_UnpackConfig(Setting_TypeDef *setting, uint32_t packed)
-{
-    setting->Board_Lightness = packed & 0xFFU;
-    setting->LightBelt_Lightness = (packed >> 8U) & 0xFFU;
-    setting->Ctrl_Lightness = (packed >> 16U) & 0xFFU;
-    setting->HardwareFlags = (packed >> 24U) & 0xFFU;
-}
 
 static uint32_t FlashTask_CalculateChecksum(const SettingRecord_t *record)
 {
@@ -65,42 +44,50 @@ static uint32_t FlashTask_CalculateChecksum(const SettingRecord_t *record)
     return checksum;
 }
 
+static bool FlashTask_IsQueueValid(const Setting_TypeDef *setting)
+{
+    uint32_t offset;
+
+    if ((setting->CashQueueHead >= CASH_EVENT_QUEUE_CAPACITY) ||
+        (setting->CashQueueCount > CASH_EVENT_QUEUE_CAPACITY))
+    {
+        return false;
+    }
+
+    for (offset = 0U; offset < setting->CashQueueCount; offset++)
+    {
+        uint32_t index = (setting->CashQueueHead + offset) % CASH_EVENT_QUEUE_CAPACITY;
+        uint32_t packed = setting->CashQueuePacked[index];
+        uint32_t sequence = setting->CashQueueSequence[index];
+        uint32_t medium = CASH_EVENT_PACKED_MEDIUM(packed);
+        uint32_t amount = CASH_EVENT_PACKED_AMOUNT(packed);
+        if ((sequence == 0U) || (sequence > 0xFFFFU) ||
+            (medium > 1U) || (amount == 0U))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool FlashTask_IsRecordValid(const SettingRecord_t *record)
 {
-    return (record->Magic == SETTING_RECORD_MAGIC_V3) &&
-           (record->Checksum == FlashTask_CalculateChecksum(record));
+    return (record->Magic == SETTING_RECORD_MAGIC_V4) &&
+           (record->Checksum == FlashTask_CalculateChecksum(record)) &&
+           FlashTask_IsQueueValid(&record->SettingData);
 }
 
 static void FlashTask_RecordToSetting(const SettingRecord_t *record)
 {
-    Setting.BeadStock = record->BeadStock;
-    Setting.PendingCashAmountFen = record->PendingCashAmountFen;
-    Setting.PendingCashSequence = record->PendingCashSequence;
-    Setting.PendingCashMedium = record->PendingCashMedium;
-    FlashTask_UnpackConfig(&Setting, record->PackedConfig);
-
-    if (((Setting.HardwareFlags & HARDWARE_FLAG_PENDING_CASH) != 0U) &&
-        ((Setting.PendingCashAmountFen == 0U) ||
-         (Setting.PendingCashAmountFen > 0xFFFFU) ||
-         (Setting.PendingCashMedium > 1U)))
-    {
-        Setting.HardwareFlags &= ~HARDWARE_FLAG_PENDING_CASH;
-        Setting.PendingCashAmountFen = 0U;
-        Setting.PendingCashMedium = 0U;
-        FlashTask_RequestSave();
-    }
+    Setting = record->SettingData;
 }
 
 static void FlashTask_SettingToRecord(SettingRecord_t *record)
 {
     memset(record, 0, sizeof(*record));
-    record->Magic = SETTING_RECORD_MAGIC_V3;
+    record->Magic = SETTING_RECORD_MAGIC_V4;
     record->Sequence = SettingSequence + 1U;
-    record->BeadStock = Setting.BeadStock;
-    record->PendingCashAmountFen = Setting.PendingCashAmountFen;
-    record->PendingCashSequence = Setting.PendingCashSequence;
-    record->PendingCashMedium = Setting.PendingCashMedium;
-    record->PackedConfig = FlashTask_PackConfig(&Setting);
+    record->SettingData = Setting;
     record->Checksum = FlashTask_CalculateChecksum(record);
 }
 
@@ -184,14 +171,11 @@ static int FlashTask_WriteRecord(void)
 
 void ResumeSetting(void)
 {
+    memset(&Setting, 0, sizeof(Setting));
     Setting.Board_Lightness = 5U;
     Setting.LightBelt_Lightness = 5U;
     Setting.Ctrl_Lightness = 5U;
     Setting.BeadStock = DEFAULT_BEAD_STOCK;
-    Setting.HardwareFlags = 0U;
-    Setting.PendingCashAmountFen = 0U;
-    Setting.PendingCashSequence = 0U;
-    Setting.PendingCashMedium = 0U;
 }
 
 void FlashTask_Init(void)
@@ -236,7 +220,6 @@ void FlashTask_Init(void)
         return;
     }
 
-    /* 不兼容旧现金购买记录：统一清空并初始化 V3。 */
     ResumeSetting();
     SettingSequence = 0U;
     SettingNextWriteAddress = Setting_Addr;
