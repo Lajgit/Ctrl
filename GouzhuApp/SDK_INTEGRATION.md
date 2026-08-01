@@ -1,8 +1,6 @@
-# 售珠机设备端 SDK 接入说明
+# 售珠机设备端 SDK 接入说明 V2
 
-## 1. JAR 放置位置
-
-Android 工程正式使用以下三个服务端交付包：
+## 1. 正式依赖
 
 ```text
 GouzhuApp/app/libs/xiaoda-device-sdk-0.1.0.jar
@@ -10,7 +8,7 @@ GouzhuApp/app/libs/xiaoda-device-mqtt-0.1.0.jar
 GouzhuApp/app/libs/xiaoda-device-hardware-0.1.0.jar
 ```
 
-Gradle 引用：
+Gradle：
 
 ```groovy
 implementation files('libs/xiaoda-device-sdk-0.1.0.jar')
@@ -18,82 +16,218 @@ implementation files('libs/xiaoda-device-mqtt-0.1.0.jar')
 implementation files('libs/xiaoda-device-hardware-0.1.0.jar')
 ```
 
-旧文件已删除，禁止重新加入：
+App 版本：`2.0.0`。控制板协议/固件版本：`2.0.0.0`。本版本不兼容旧的本地现金购买流程。
 
-```text
-pinball-device-sdk-client-0.1.0-SNAPSHOT-standalone.jar
-pinball-device-sdk-client-0.1.0-SNAPSHOT.jar
-```
+## 2. 生命周期与身份
 
-三个新 JAR 均为 Java 8 字节码；当前 App 继续使用 Java 11 编译配置。开启 R8/ProGuard 时保留：
-
-```proguard
--keepattributes RuntimeVisibleAnnotations,AnnotationDefault
-```
-
-## 2. 三个模块职责
-
-- `xiaoda-device-sdk`：core、protocol、client、HTTP 生命周期、设备屏 API、MQTT 协议模型和内部重定位 Gson。
-- `xiaoda-device-mqtt`：`MqttSessionManager`、`PahoMqttTransport`、断线重连、心跳、状态上报及 outbox 回放；内部 Paho 已重定位。
-- `xiaoda-device-hardware`：`MarbleHardwareAdapter`、`CashConfigurationAdapter`、`DispenseRequest`、`CollectRequest`、`HardwareExecutionResult` 和现金档位类型。
-
-## 3. 首次报到自动登记
-
-新版 `xiaoda-device-sdk-0.1.0.jar` 的首次报到接口改为接收完整 `KeyPair`：
+首次无凭证时：
 
 ```java
 lifecycleClient.enroll(identityKeyPair, firmwareVersion, apkVersion);
 ```
 
-SDK 使用同一个 `KeyPair` 完成以下工作：
-
-1. 使用私钥对报到请求签名；
-2. 自动把 X.509 SubjectPublicKeyInfo Base64 公钥写入 `identityPublicKey`；
-3. 调用 `/api/device/enroll`；
-4. 平台在 `device.identity.auto-registration-enabled=true` 时验证签名并自动登记首次身份公钥。
-
-设备端不得自行拼接 `identityPublicKey`，也不得生成临时报到密钥。报到、激活和凭证恢复必须继续使用 AndroidKeyStore 中同一个 alias 对应的密钥对。
-
-激活和凭证恢复接口不变，仍传私钥句柄：
+SDK 使用同一 AndroidKeyStore P-256 `KeyPair` 完成签名并携带 `identityPublicKey`。认领后继续：
 
 ```java
-lifecycleClient.activateWithIdentity(identityKeyPair.getPrivate(), firmwareVersion, apkVersion);
-lifecycleClient.recoverCredential(identityKeyPair.getPrivate(), firmwareVersion, apkVersion);
+lifecycleClient.activateWithIdentity(
+        identityKeyPair.getPrivate(),
+        firmwareVersion,
+        apkVersion
+);
 ```
 
-平台开关关闭时仍保留原来的预登记行为，未登记设备会返回 `设备身份未登记`。完整增量说明见：
+日常启动使用 `reactivate`；凭证丢失只允许平台开启恢复窗口后显式 `recoverCredential`。
+
+## 3. MQTT 命令协议
+
+控制和配置消息必须先通过：
+
+```java
+DeviceMqttCommand<?> command = commandCodec.decode(
+        topic,
+        payload,
+        deviceNo,
+        System.currentTimeMillis()
+);
+```
+
+禁止先用裸 JSON 决定是否启动硬件。`DeviceMqttCommandCodec` 负责联合校验 Topic、`deviceNo`、命令类型、字段、`operationNo`、`operationToken` 和有效期。
+
+当前入口：
 
 ```text
-docs/设备报到自动登记增量说明.md
+MqttManager
+→ DeviceCommandManager.handleCommand(topic, rawPayload)
+→ SdkCommandDecoder
+→ DeviceMqttCommandCodec
+→ DeviceHardwareCommandMapper
+→ SQLite 持久化
+→ ttyS5 控制板 V2
 ```
 
-## 4. 当前代码接入范围
+## 4. 统一出珠规则
 
-当前 App 已使用新 `xiaoda-device-sdk` 中的强类型接口：
+所有出珠来源统一为：
 
-- `DeviceLifecycleClient`：完整 `KeyPair` 首次报到、身份激活、日常 reactivate 和人工凭证恢复；
-- `DeviceCredentialManager` + `SdkCredentialStore`：原子保存完整 MQTT 凭证；
-- `DeviceAppClient.bootstrap()`：动态首页、功能配置、购珠规则和价格档位；
-- 原生购珠、会员取珠、内部核销的创建和查询接口。
+```text
+dispense_marbles.quantity
+```
 
-三个 JAR 均已加入正式构建依赖。现有生产逻辑暂时保留以下边界，避免在未完成数据库和真机闭环前改变物理动作：
+包括：
 
-- MQTT 仍由现有 `MqttManager` 和宿主 Paho 执行；新版 MQTT JAR 的内部 Paho 已重定位，不会产生重复类。
-- `/dev/ttyS5`、14 字节协议、真实光眼计数和控制板库存仍由现有 `SerialManager`、`DeviceCommandManager` 和控制板固件负责。
-- `MarbleHardwareAdapter`、`CashConfigurationAdapter` 已可引用，但只有在完成真实结果等待、掉电恢复和幂等数据库后才能作为正式执行入口，不能返回伪造的物理数量。
+- 现金购珠；
+- 扫码购珠；
+- 会员取珠；
+- 内部套餐核销；
+- 平台运营任务。
 
-## 5. 后续切换 MQTT 会话模块的前置条件
+以下内容绝不能直接驱动电机：
 
-切换到 `MqttSessionManager` 前必须先完成：
+- 本地现金档位的 `marbleQuantity`；
+- `cash_event_response.requestedQuantity`；
+- 二维码支付成功页面；
+- HTTP 核销成功响应；
+- 旧控制板余额、单价或欠吐状态。
 
-1. Android 数据库版 `PendingMessageStore`，使用稳定单调游标分页；
-2. 完整保存 `MqttReceiptKey`，只能在平台业务 ACK 后删除；
-3. 收到 MQTT 原始消息后先持久化，再使用 `DeviceMqttCommandCodec` 联合校验 Topic、deviceNo、类型和字段；
-4. 相同 `messageId` 只能重发已保存 ACK/终态，不得再次启动电机；
-5. `MarbleHardwareAdapter` 必须等待控制板真实光眼结果，再返回 `actualQuantity`；
-6. 现金配置完整保存并应用成功后才允许开启验钞，失败调用 `disableCashAcceptance()`。
+## 5. 现金配置
 
-## 6. 构建
+平台下发 `sync_cash_configuration` 后，App 必须：
+
+1. 使用 SDK 协议层验证命令；
+2. 验证 `configVersion`、`cashAcceptanceEnabled`、`changeEnabled=false` 和完整 `cashSaleItems`；
+3. 在 SQLite 保存完整配置快照；
+4. 保存并发布配置 ACK；
+5. 通过 ttyS5 `CashAcceptanceApply` 把配置版本和介质启用掩码交给控制板；
+6. 只有控制板返回相同版本和掩码后才发布成功终态。
+
+任何失败都关闭纸币和硬币接收。
+
+## 6. 现金事件
+
+现金不可逆进入钱箱后，控制板只上报：
+
+```text
+介质 + 面额（分）+ 稳定的板端现金序号
+```
+
+App 根据当时已经应用的同一现金配置快照生成：
+
+```json
+{
+  "eventNo": "稳定事件号",
+  "eventType": "accepted",
+  "cashMediumType": "banknote",
+  "denominationAmount": 500,
+  "cashCount": 1,
+  "cashSaleTierNo": "平台档位号",
+  "configVersion": 12,
+  "timestamp": 1785542400000
+}
+```
+
+App 必须先在同一 SQLite 事务写入 `cash_events` 与 cash outbox，再向控制板发送 `CashEventStored`。超时、断网和重启只能重发完全相同的 `eventNo` 和 payload。
+
+`CashEventResponseCommandData` 使用 SDK 自带方法判断：
+
+```java
+isPending();
+isProcessing();
+isCompleted();
+isManualReview();
+isRejected();
+isUnknown();
+```
+
+`unknown` 保留并重发原事件；其他状态表示平台已明确接收原现金事实，可移除现金 outbox。任何状态都不能按 `requestedQuantity` 出珠。
+
+## 7. 出珠与存珠硬件映射
+
+```java
+DispenseRequest request = hardwareCommandMapper.toDispenseRequest(
+        command,
+        System.currentTimeMillis()
+);
+
+CollectRequest request = hardwareCommandMapper.toCollectRequest(
+        command,
+        System.currentTimeMillis()
+);
+```
+
+App 在发送 ttyS5 启动命令前，必须已经持久化：
+
+- `messageId`；
+- `operationNo`；
+- `operationToken`；
+- 完整原始命令；
+- “可能已经启动硬件”状态；
+- SDK 编码的 ACK outbox。
+
+相同 `messageId` 只重发持久化 ACK/终态，不允许再次启动电机。
+
+控制板返回真实光眼数量后，使用：
+
+```java
+HardwareExecutionResult hardwareResult = success
+        ? HardwareExecutionResult.success(actualQuantity)
+        : HardwareExecutionResult.failed(actualQuantity, resultCode, resultMessage);
+
+DeviceCommandResult terminal = hardwareCommandMapper.toTerminalResult(
+        command,
+        terminalEventNo,
+        hardwareResult,
+        System.currentTimeMillis()
+);
+```
+
+再由 `DeviceCommandResultCodec` 编码并写入 command-result outbox。
+
+## 8. SQLite 与 outbox
+
+正式数据库：
+
+```text
+gouzhu_platform_control_v2.db
+```
+
+至少保存：
+
+- 完整命令和硬件启动/终态状态；
+- 完整现金配置快照；
+- 稳定现金事件；
+- command-result outbox；
+- cash-event outbox；
+- 当前可能未完成的物理操作。
+
+MQTT PUBACK 不能删除业务记录。只有平台 `command_result_ack.recorded` 才删除命令结果 outbox；现金事件按 `CashEventResponseCommandData` 状态处理。
+
+进程重启发现曾经请求过硬件但没有可靠终态时：关闭现金、禁止自动重启电机、上报物理结果未知并转人工处理。
+
+## 9. 控制板边界
+
+控制板 V2 只负责：
+
+- 纸钞机/投币器使能和不可逆现金事实；
+- 电机启动停止；
+- PD3/PD4 真实光眼计数；
+- 库存硬件事实；
+- 关键事件持续重发；
+- K1 补珠、K2 后台入口；
+- Bootloader 升级。
+
+控制板不再保存或计算：
+
+- 本地价格；
+- 现金余额；
+- 珠数换算；
+- 本地订单；
+- 欠吐队列；
+- 现金自动出珠；
+- 旧退币兼容状态。
+
+完整 ttyS5 协议见根目录 `ANDROID_COMMUNICATION_PROTOCOL.md`。
+
+## 10. 构建
 
 ```powershell
 cd GouzhuApp
@@ -103,17 +237,7 @@ cd GouzhuApp
 输出：
 
 ```text
-GouzhuApp/app/build/outputs/apk/release/GouzhuApp_V1.2.5.apk
+GouzhuApp/app/build/outputs/apk/release/GouzhuApp_V2.0.0.apk
 ```
 
-## 7. 联调重点
-
-1. 开启平台自动登记后，未登记设备首次报到不再返回 `设备身份未登记`；
-2. 首次报到返回认领二维码和认领码，商户认领后完成首次激活；
-3. 已登记设备继续按原公钥验签，不允许自动换钥；
-4. 重启后 reactivate、管理员恢复窗口及 MQTT 凭证原子替换保持不变；
-5. 动态首页、购珠档位、扫码订单创建和状态轮询；
-6. MQTT Broker、账号、Topic、QoS、心跳和 KeepAlive 全部以最新凭证为准；
-7. 出珠、收珠和现金配置必须使用平台合法命令和真实物理结果；
-8. 断网、进程重启和重复消息不能重复驱动电机；
-9. 日志不得输出私钥、MQTT 密码、签名、完整取珠码或 operationToken。
+Android 2.0.0 与控制板 2.0.0.0 必须成套发布，不允许新旧混用。
