@@ -22,6 +22,7 @@ import com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData;
 import com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData;
 import com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowledgement;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
@@ -38,10 +39,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 平台统一现金与物理操作运行时。
+ * 平台统一现金和物理操作状态机。
  *
- * <p>所有命令必须先通过新版 SDK；所有现金只形成事实；所有出珠只执行
- * dispense_marbles；所有物理结果只来自控制板真实光眼累计。</p>
+ * <p>每一张纸币或每一个投币脉冲都作为独立现金事实上报。设备不在本地按金额
+ * 计算珠数，也不等待上一笔现金业务完成后才接收下一笔。平台按设备现金会话累计
+ * 金额，并另行下发 dispense_marbles；只有该命令能够启动出珠电机。</p>
  */
 final class PlatformCommandRuntime {
 
@@ -53,7 +55,6 @@ final class PlatformCommandRuntime {
 
     private static final int EVT_VERSION = 0x00;
     private static final int EVT_DISPENSE_STARTED = 0x01;
-    private static final int EVT_DISPENSE_PROGRESS = 0x02;
     private static final int EVT_DISPENSE_COMPLETED = 0x03;
     private static final int EVT_DISPENSE_FAILED = 0x04;
     private static final int EVT_COLLECT_STARTED = 0x05;
@@ -78,6 +79,7 @@ final class PlatformCommandRuntime {
                 thread.setDaemon(true);
                 return thread;
             });
+
     private final ConcurrentHashMap<String, SdkCommandDecoder.DecodedCommand>
             liveCommands = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CollectRequest>
@@ -95,7 +97,9 @@ final class PlatformCommandRuntime {
                         int requested
                 ) {
                     JSONObject envelope = store.loadCommand(messageId);
-                    JSONObject data = envelope == null ? null : envelope.optJSONObject("data");
+                    JSONObject data = envelope == null
+                            ? null
+                            : envelope.optJSONObject("data");
                     if (data == null) {
                         return false;
                     }
@@ -118,21 +122,22 @@ final class PlatformCommandRuntime {
                         int actual
                 ) {
                     JSONObject envelope = store.loadCommand(messageId);
-                    JSONObject data = envelope == null ? null : envelope.optJSONObject("data");
-                    if (data == null) {
-                        return;
-                    }
-                    try {
-                        data.put("deviceActualQuantity", actual);
-                        store.saveCommand(envelope);
-                        if (eventCode == EVT_COLLECT_PROGRESS) {
-                            broadcastCollection(
-                                    DeviceCommandManager.COLLECTION_PROGRESS,
-                                    "已存入 " + actual + " 珠"
-                            );
+                    JSONObject data = envelope == null
+                            ? null
+                            : envelope.optJSONObject("data");
+                    if (data != null) {
+                        try {
+                            data.put("deviceActualQuantity", actual);
+                            store.saveCommand(envelope);
+                        } catch (Throwable error) {
+                            reportStorageFault("硬件进度保存失败：" + messageOf(error));
                         }
-                    } catch (Throwable error) {
-                        reportStorageFault("硬件进度保存失败：" + messageOf(error));
+                    }
+                    if (eventCode == EVT_COLLECT_PROGRESS) {
+                        broadcastCollection(
+                                DeviceCommandManager.COLLECTION_PROGRESS,
+                                "已存入 " + actual + " 珠"
+                        );
                     }
                 }
             };
@@ -143,7 +148,7 @@ final class PlatformCommandRuntime {
             if (intent == null || !AppConfig.ACTION_BOARD_EVENT.equals(intent.getAction())) {
                 return;
             }
-            onBoardEvent(
+            handleBoardEvent(
                     intent.getIntExtra("code2", -1),
                     intent.getLongExtra("data", 0L),
                     intent.getIntExtra("expandCode", 0)
@@ -163,18 +168,21 @@ final class PlatformCommandRuntime {
         if (!receiverRegistered) {
             IntentFilter filter = new IntentFilter(AppConfig.ACTION_BOARD_EVENT);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(boardReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+                context.registerReceiver(
+                        boardReceiver,
+                        filter,
+                        Context.RECEIVER_NOT_EXPORTED
+                );
             } else {
                 context.registerReceiver(boardReceiver, filter);
             }
             receiverRegistered = true;
         }
+
         marbleAdapter.start(hardwareObserver);
         cashAdapter.start();
-
-        SerialManager serial = SerialManager.get(context);
-        serial.sendCommand(CMD_VERSION, 0L, false);
-        serial.sendCommand(CMD_HARDWARE_STATUS, 0L, false);
+        SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
+        SerialManager.get(context).sendCommand(CMD_HARDWARE_STATUS, 0L, false);
         recoverWithoutRepeatingPhysicalAction();
         reapplyCashConfiguration();
     }
@@ -211,16 +219,10 @@ final class PlatformCommandRuntime {
             return;
         }
 
-        JSONObject envelope = decoded.envelope;
         String messageId = decoded.sdkCommand.getMessageId();
         String commandType = decoded.sdkCommand.getCommandType();
         if (blank(messageId) || blank(commandType)) {
             return;
-        }
-
-        try {
-            envelope.put("__topic", topic);
-        } catch (Throwable ignored) {
         }
 
         if ("command_result_ack".equals(commandType)) {
@@ -232,7 +234,7 @@ final class PlatformCommandRuntime {
             return;
         }
         if ("redemption_response".equals(commandType)) {
-            handleRedemptionResponse(envelope.optJSONObject("data"));
+            handleRedemptionResponse(decoded.envelope.optJSONObject("data"));
             return;
         }
 
@@ -252,13 +254,14 @@ final class PlatformCommandRuntime {
                 acceptCashConfiguration(decoded);
                 break;
             default:
-                store.saveCommand(envelope);
-                publishGenericTerminal(
-                        envelope,
-                        false,
-                        "UNSUPPORTED_COMMAND",
-                        "不支持的指令类型：" + commandType
-                );
+                if (store.saveCommand(decoded.envelope)) {
+                    publishSdkGenericTerminal(
+                            decoded,
+                            false,
+                            "UNSUPPORTED_COMMAND",
+                            "不支持的指令类型：" + commandType
+                    );
+                }
                 break;
         }
     }
@@ -269,18 +272,19 @@ final class PlatformCommandRuntime {
             request = decoded.toDispenseRequest(System.currentTimeMillis());
         } catch (Throwable error) {
             store.saveCommand(decoded.envelope);
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkGenericTerminal(
+                    decoded,
                     false,
                     "SDK_HARDWARE_MAPPING_FAILED",
                     messageOf(error)
             );
             return;
         }
+
         if (request.getQuantity() <= 0 || request.getQuantity() > 0xFFFF) {
             store.saveCommand(decoded.envelope);
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkGenericTerminal(
+                    decoded,
                     false,
                     "PARAM_INVALID",
                     "quantity必须为1..65535"
@@ -289,8 +293,8 @@ final class PlatformCommandRuntime {
         }
         if (hasActiveOperation()) {
             store.saveCommand(decoded.envelope);
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkGenericTerminal(
+                    decoded,
                     false,
                     "DEVICE_BUSY",
                     "设备存在未完成物理任务"
@@ -300,32 +304,19 @@ final class PlatformCommandRuntime {
 
         String messageId = request.getMessageId();
         int token = SerialMarbleHardwareAdapter.tokenForMessageId(messageId);
-        JSONObject data = decoded.envelope.optJSONObject("data");
-        try {
-            if (data != null) {
-                data.put("boardToken", token);
-                data.put("deviceStartRequested", true);
-                data.put("deviceStarted", false);
-                data.put("deviceTerminal", false);
-                data.put("deviceActualQuantity", 0);
-                data.put("deviceStartRequestedAt", System.currentTimeMillis());
-            }
-        } catch (Throwable error) {
-            return;
-        }
-
-        if (!store.saveCommand(decoded.envelope)) {
+        if (!preparePhysicalCommand(decoded.envelope, token, true)) {
             reportStorageFault("出珠指令无法持久化");
             return;
         }
+
         store.setActiveDispense(messageId);
-        store.setCashBlocked(true);
         liveCommands.put(messageId, decoded);
         if (!publishSdkAck(decoded)) {
-            reportStorageFault("出珠ACK无法写入outbox");
+            liveCommands.remove(messageId);
+            store.clearActiveDispense();
+            reportStorageFault("出珠ACK无法写入outbox，未启动电机");
             return;
         }
-        cashAdapter.disableCashAcceptance();
 
         hardwareExecutor.execute(() -> {
             HardwareExecutionResult result = marbleAdapter.dispense(request);
@@ -333,7 +324,9 @@ final class PlatformCommandRuntime {
                     decoded,
                     result,
                     false,
-                    result.isSuccess() ? EVT_DISPENSE_COMPLETED : EVT_DISPENSE_FAILED
+                    result.isSuccessful()
+                            ? EVT_DISPENSE_COMPLETED
+                            : EVT_DISPENSE_FAILED
             );
         });
     }
@@ -344,18 +337,20 @@ final class PlatformCommandRuntime {
             request = decoded.toCollectRequest(System.currentTimeMillis());
         } catch (Throwable error) {
             store.saveCommand(decoded.envelope);
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkGenericTerminal(
+                    decoded,
                     false,
                     "SDK_HARDWARE_MAPPING_FAILED",
                     messageOf(error)
             );
             return;
         }
-        if (request.getMaximumQuantity() <= 0 || request.getMaximumQuantity() > 0xFFFF) {
+
+        if (request.getMaximumQuantity() <= 0
+                || request.getMaximumQuantity() > 0xFFFF) {
             store.saveCommand(decoded.envelope);
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkGenericTerminal(
+                    decoded,
                     false,
                     "PARAM_INVALID",
                     "maximumQuantity必须为1..65535"
@@ -364,8 +359,8 @@ final class PlatformCommandRuntime {
         }
         if (hasActiveOperation()) {
             store.saveCommand(decoded.envelope);
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkGenericTerminal(
+                    decoded,
                     false,
                     "DEVICE_BUSY",
                     "设备存在未完成物理任务"
@@ -375,36 +370,50 @@ final class PlatformCommandRuntime {
 
         String messageId = request.getMessageId();
         int token = SerialMarbleHardwareAdapter.tokenForMessageId(messageId);
-        JSONObject data = decoded.envelope.optJSONObject("data");
-        try {
-            if (data != null) {
-                data.put("boardToken", token);
-                data.put("deviceStartRequested", false);
-                data.put("deviceStarted", false);
-                data.put("deviceTerminal", false);
-                data.put("deviceActualQuantity", 0);
-            }
-        } catch (Throwable error) {
-            return;
-        }
-
-        if (!store.saveCommand(decoded.envelope)) {
+        if (!preparePhysicalCommand(decoded.envelope, token, false)) {
             reportStorageFault("存珠指令无法持久化");
             return;
         }
+
         store.setActiveCollect(messageId);
-        store.setCashBlocked(true);
         liveCommands.put(messageId, decoded);
         pendingCollectRequests.put(messageId, request);
         if (!publishSdkAck(decoded)) {
-            reportStorageFault("存珠ACK无法写入outbox");
+            pendingCollectRequests.remove(messageId);
+            liveCommands.remove(messageId);
+            store.clearActiveCollect();
+            reportStorageFault("存珠ACK无法写入outbox，未启动电机");
             return;
         }
-        cashAdapter.disableCashAcceptance();
+
         broadcastCollection(
                 DeviceCommandManager.COLLECTION_READY,
                 "请倒入珠子，再点击开始存珠"
         );
+    }
+
+    private boolean preparePhysicalCommand(
+            JSONObject envelope,
+            int token,
+            boolean startRequested
+    ) {
+        JSONObject data = envelope.optJSONObject("data");
+        if (data == null || token <= 0) {
+            return false;
+        }
+        try {
+            data.put("boardToken", token);
+            data.put("deviceStartRequested", startRequested);
+            data.put("deviceStarted", false);
+            data.put("deviceTerminal", false);
+            data.put("deviceActualQuantity", 0);
+            if (startRequested) {
+                data.put("deviceStartRequestedAt", System.currentTimeMillis());
+            }
+            return store.saveCommand(envelope);
+        } catch (Throwable error) {
+            return false;
+        }
     }
 
     synchronized boolean startPendingCollection() {
@@ -412,11 +421,13 @@ final class PlatformCommandRuntime {
         CollectRequest request = pendingCollectRequests.get(messageId);
         SdkCommandDecoder.DecodedCommand decoded = liveCommands.get(messageId);
         JSONObject envelope = store.loadCommand(messageId);
-        JSONObject data = envelope == null ? null : envelope.optJSONObject("data");
+        JSONObject data = envelope == null
+                ? null
+                : envelope.optJSONObject("data");
         if (request == null || decoded == null || data == null) {
             broadcastCollection(
                     DeviceCommandManager.COLLECTION_FAILED,
-                    "存珠任务缺少当前SDK上下文，禁止自动恢复硬件"
+                    "存珠任务缺少当前SDK上下文，禁止恢复或重复启动硬件"
             );
             return false;
         }
@@ -424,10 +435,11 @@ final class PlatformCommandRuntime {
                 || data.optBoolean("deviceStarted", false)) {
             broadcastCollection(
                     DeviceCommandManager.COLLECTION_FAILED,
-                    "该任务已经请求过硬件，禁止重复启动"
+                    "该存珠任务已经请求过硬件，禁止重复启动"
             );
             return false;
         }
+
         try {
             data.put("deviceStartRequested", true);
             data.put("deviceStartRequestedAt", System.currentTimeMillis());
@@ -435,7 +447,10 @@ final class PlatformCommandRuntime {
                 throw new IllegalStateException("存珠启动状态保存失败");
             }
         } catch (Throwable error) {
-            broadcastCollection(DeviceCommandManager.COLLECTION_FAILED, messageOf(error));
+            broadcastCollection(
+                    DeviceCommandManager.COLLECTION_FAILED,
+                    messageOf(error)
+            );
             return false;
         }
 
@@ -445,7 +460,9 @@ final class PlatformCommandRuntime {
                     decoded,
                     result,
                     true,
-                    result.isSuccess() ? EVT_COLLECT_COMPLETED : EVT_COLLECT_FAILED
+                    result.isSuccessful()
+                            ? EVT_COLLECT_COMPLETED
+                            : EVT_COLLECT_FAILED
             );
         });
         broadcastCollection(
@@ -480,12 +497,13 @@ final class PlatformCommandRuntime {
     private void acceptCashConfiguration(SdkCommandDecoder.DecodedCommand decoded) {
         final CashConfigurationCommandData config;
         try {
-            config = decoded.sdkCommand.requireData(CashConfigurationCommandData.class);
+            config = decoded.sdkCommand.requireData(
+                    CashConfigurationCommandData.class
+            );
         } catch (Throwable error) {
             store.saveCommand(decoded.envelope);
-            cashAdapter.disableCashAcceptance();
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkGenericTerminal(
+                    decoded,
                     false,
                     "CASH_CONFIGURATION_INVALID",
                     messageOf(error)
@@ -496,65 +514,64 @@ final class PlatformCommandRuntime {
         String validationError = validateCashConfiguration(config);
         if (validationError != null) {
             store.saveCommand(decoded.envelope);
-            store.setCashBlocked(true);
-            cashAdapter.disableCashAcceptance();
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkConfigurationTerminal(
+                    decoded,
                     false,
+                    safeConfigVersion(config),
                     "CASH_CONFIGURATION_INVALID",
                     validationError
             );
             return;
         }
 
-        long configVersionLong = config.getConfigVersion();
-        int configVersion = (int) configVersionLong;
+        long configVersion = config.getConfigVersion();
         boolean enabled = config.isCashAcceptanceEnabled();
-        boolean changeEnabled = config.isChangeEnabled();
         List<CashTier> tiers = toCashTiers(config);
 
-        cashAdapter.disableCashAcceptance();
         if (!store.saveCashConfiguration(
-                configVersion,
+                (int) configVersion,
                 enabled,
-                changeEnabled,
+                config.isChangeEnabled(),
                 decoded.envelope.toString()
         ) || !store.saveCommand(decoded.envelope)) {
-            store.setCashBlocked(true);
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkConfigurationTerminal(
+                    decoded,
                     false,
+                    configVersion,
                     "LOCAL_STORAGE_ERROR",
                     "完整现金配置持久化失败"
             );
             return;
         }
-        store.setPendingConfigMessageId(decoded.sdkCommand.getMessageId());
-        liveCommands.put(decoded.sdkCommand.getMessageId(), decoded);
+
+        String messageId = decoded.sdkCommand.getMessageId();
+        store.setPendingConfigMessageId(messageId);
+        liveCommands.put(messageId, decoded);
         if (!publishSdkAck(decoded)) {
-            store.setCashBlocked(true);
+            liveCommands.remove(messageId);
+            store.clearPendingConfigMessageId();
             reportStorageFault("现金配置ACK无法写入outbox");
             return;
         }
 
         hardwareExecutor.execute(() -> {
             CashConfigurationResult result = enabled
-                    ? cashAdapter.apply(configVersionLong, tiers)
-                    : cashAdapter.applyDisabled(configVersionLong);
+                    ? cashAdapter.apply(configVersion, tiers)
+                    : cashAdapter.applyDisabled(configVersion);
             boolean success = result.isApplied();
-            store.setCashBlocked(!success);
-            publishGenericTerminal(
-                    decoded.envelope,
+            publishSdkConfigurationTerminal(
+                    decoded,
                     success,
+                    configVersion,
                     success
                             ? "CASH_CONFIGURATION_APPLIED"
                             : "CASH_CONFIGURATION_REJECTED",
                     success
                             ? "现金配置已完整持久化并由控制板应用"
-                            : result.getMessage()
+                            : safe(result.getMessage())
             );
             store.clearPendingConfigMessageId();
-            liveCommands.remove(decoded.sdkCommand.getMessageId());
+            liveCommands.remove(messageId);
         });
     }
 
@@ -567,11 +584,12 @@ final class PlatformCommandRuntime {
         if (config.isChangeEnabled()) {
             return "当前设备不支持找零，changeEnabled必须为false";
         }
-        List<CashConfigurationCommandData.CashSaleItem> items =
-                config.getCashSaleItems();
         if (!config.isCashAcceptanceEnabled()) {
             return null;
         }
+
+        List<CashConfigurationCommandData.CashSaleItem> items =
+                config.getCashSaleItems();
         if (items == null || items.isEmpty()) {
             return "启用现金时cashSaleItems不能为空";
         }
@@ -632,9 +650,13 @@ final class PlatformCommandRuntime {
     ) {
         String messageId = decoded.sdkCommand.getMessageId();
         JSONObject envelope = store.loadCommand(messageId);
-        JSONObject data = envelope == null ? null : envelope.optJSONObject("data");
-        int actual = hardwareResult == null ? 0 : hardwareResult.getActualQuantity();
-        boolean success = hardwareResult != null && hardwareResult.isSuccess();
+        JSONObject data = envelope == null
+                ? null
+                : envelope.optJSONObject("data");
+        int actual = hardwareResult == null
+                ? 0
+                : Math.max(0, hardwareResult.getActualQuantity());
+        boolean success = hardwareResult != null && hardwareResult.isSuccessful();
         String resultCode = hardwareResult == null
                 ? "HARDWARE_RESULT_MISSING"
                 : safe(hardwareResult.getResultCode());
@@ -644,17 +666,12 @@ final class PlatformCommandRuntime {
         int token = SerialMarbleHardwareAdapter.tokenForMessageId(messageId);
 
         if (data == null) {
-            store.setCashBlocked(true);
-            MqttManager.get(context).reportFault(
-                    "PHYSICAL_RESULT_UNPERSISTED",
-                    "物理终态无法关联持久化命令",
-                    3,
-                    "messageId=" + messageId + "，actual=" + actual
-            );
+            reportPhysicalUnknown(messageId, actual, "物理终态无法关联持久化命令");
             return;
         }
+
         try {
-            data.put("deviceActualQuantity", Math.max(0, actual));
+            data.put("deviceActualQuantity", actual);
             data.put("deviceTerminal", true);
             data.put("deviceTerminalAt", System.currentTimeMillis());
             data.put("deviceResultCode", resultCode);
@@ -663,7 +680,6 @@ final class PlatformCommandRuntime {
                 throw new IllegalStateException("物理终态保存失败");
             }
         } catch (Throwable error) {
-            store.setCashBlocked(true);
             reportStorageFault(messageOf(error));
             return;
         }
@@ -675,7 +691,6 @@ final class PlatformCommandRuntime {
                 resultCode,
                 resultMessage
         )) {
-            store.setCashBlocked(true);
             return;
         }
 
@@ -694,10 +709,13 @@ final class PlatformCommandRuntime {
             store.clearActiveDispense();
         }
         liveCommands.remove(messageId);
-        restoreCashAcceptance();
     }
 
-    private synchronized void onBoardEvent(int code2, long packed, int expandCode) {
+    private synchronized void handleBoardEvent(
+            int code2,
+            long packed,
+            int expandCode
+    ) {
         switch (code2) {
             case EVT_VERSION:
                 store.saveBoardVersion(packed);
@@ -716,14 +734,10 @@ final class PlatformCommandRuntime {
                 broadcastHardwareStatus("库存偏低：" + packed + " 珠");
                 break;
             case EVT_BEAD_EMPTY:
-                store.setCashBlocked(true);
-                cashAdapter.disableCashAcceptance();
-                broadcastHardwareStatus("无珠，现金接收已关闭");
+                broadcastHardwareStatus("无珠；现金仍按硬件事实上报，等待平台处理");
                 break;
             case EVT_BEAD_REFILLED:
-                store.setCashBlocked(false);
-                broadcastHardwareStatus("已补珠，等待平台现金配置重新应用");
-                reapplyCashConfiguration();
+                broadcastHardwareStatus("已补珠，库存：" + packed + " 珠");
                 break;
             case EVT_DISPENSE_STARTED:
             case EVT_DISPENSE_COMPLETED:
@@ -765,28 +779,31 @@ final class PlatformCommandRuntime {
             payload.put("cashMediumType", medium);
             payload.put("denominationAmount", amountFen);
             payload.put("cashCount", 1);
+            payload.put("boardSequence", sequence);
             payload.put("cashSaleTierNo", tier == null ? "" : tier.cashSaleTierNo);
-            payload.put("configVersion",
-                    tier == null ? store.getCashConfigVersion() : tier.configVersion);
+            payload.put(
+                    "configVersion",
+                    tier == null ? store.getCashConfigVersion() : tier.configVersion
+            );
             payload.put("timestamp", System.currentTimeMillis());
 
             if (!store.saveCashEvent(eventNo, sequence, payload.toString())) {
                 reportStorageFault("现金事实写入SQLite/outbox失败");
                 return;
             }
+
+            /* 先持久化，再确认控制板；确认后控制板可立即发送队列中的下一笔现金。 */
             confirmCashStored(sequence);
+            MqttManager.get(context).reportCashEvent(payload.toString());
+
             if (tier == null) {
-                store.setCashBlocked(true);
-                cashAdapter.disableCashAcceptance();
                 MqttManager.get(context).reportFault(
                         "CASH_TIER_NOT_FOUND",
                         "现金档位不匹配",
                         3,
                         medium + "，面额=" + amountFen + "分"
                 );
-                return;
             }
-            MqttManager.get(context).reportCashEvent(payload.toString());
         } catch (Throwable error) {
             reportStorageFault("现金事件组装失败：" + messageOf(error));
         }
@@ -817,12 +834,14 @@ final class PlatformCommandRuntime {
         store.removeCashOutbox(eventNo);
         store.updateCashEventStatus(eventNo, safe(response.getStatus()));
         if (response.isManualReview() || response.isRejected()) {
-            store.setCashBlocked(true);
-            cashAdapter.disableCashAcceptance();
-        } else if (response.isCompleted()) {
-            restoreCashAcceptance();
+            MqttManager.get(context).reportFault(
+                    "CASH_EVENT_" + safe(response.getStatus()).toUpperCase(Locale.ROOT),
+                    "现金事件需要处理",
+                    2,
+                    safe(response.getMessage())
+            );
         }
-        /* pending/processing/completed 都不读取 requestedQuantity，不启动电机。 */
+        /* 不读取 requestedQuantity；继续接收后续现金，等待平台统一下发出珠。 */
     }
 
     private void handleCommandResultAcknowledgement(
@@ -841,7 +860,9 @@ final class PlatformCommandRuntime {
     }
 
     private void handleRedemptionResponse(JSONObject data) {
-        String status = data == null ? "unknown" : data.optString("status", "unknown");
+        String status = data == null
+                ? "unknown"
+                : data.optString("status", "unknown");
         String message;
         if ("accepted".equals(status)) {
             message = "核销已受理，等待平台下发出珠指令";
@@ -860,20 +881,10 @@ final class PlatformCommandRuntime {
     private boolean publishSdkAck(SdkCommandDecoder.DecodedCommand decoded) {
         try {
             String messageId = decoded.sdkCommand.getMessageId();
-            SdkCommandDecoder.EncodedResult result = decoded.acknowledgement(
+            return saveAndPublish(decoded.acknowledgement(
                     messageId + "-ack",
                     System.currentTimeMillis()
-            );
-            if (!store.saveCommandResult(
-                    result.sourceMessageId,
-                    result.eventNo,
-                    result.resultStatus,
-                    result.payload
-            )) {
-                return false;
-            }
-            MqttManager.get(context).reportCommandResult(result.payload);
-            return true;
+            ));
         } catch (Throwable error) {
             Log.e(TAG, "SDK ACK生成失败", error);
             return false;
@@ -889,61 +900,75 @@ final class PlatformCommandRuntime {
     ) {
         try {
             String messageId = decoded.sdkCommand.getMessageId();
-            SdkCommandDecoder.EncodedResult result = decoded.physicalTerminal(
+            return saveAndPublish(decoded.physicalTerminal(
                     messageId + "-result",
                     success,
                     Math.max(0, actual),
                     resultCode,
                     resultMessage,
                     System.currentTimeMillis()
-            );
-            if (!store.saveCommandResult(
-                    result.sourceMessageId,
-                    result.eventNo,
-                    result.resultStatus,
-                    result.payload
-            )) {
-                return false;
-            }
-            MqttManager.get(context).reportCommandResult(result.payload);
-            return true;
+            ));
         } catch (Throwable error) {
             Log.e(TAG, "SDK物理终态生成失败", error);
             return false;
         }
     }
 
-    private boolean publishGenericTerminal(
-            JSONObject envelope,
+    private boolean publishSdkConfigurationTerminal(
+            SdkCommandDecoder.DecodedCommand decoded,
+            boolean success,
+            long configVersion,
+            String resultCode,
+            String resultMessage
+    ) {
+        try {
+            String messageId = decoded.sdkCommand.getMessageId();
+            return saveAndPublish(decoded.configurationTerminal(
+                    messageId + "-result",
+                    success,
+                    configVersion,
+                    resultCode,
+                    resultMessage,
+                    System.currentTimeMillis()
+            ));
+        } catch (Throwable error) {
+            Log.e(TAG, "SDK现金配置终态生成失败", error);
+            return false;
+        }
+    }
+
+    private boolean publishSdkGenericTerminal(
+            SdkCommandDecoder.DecodedCommand decoded,
             boolean success,
             String resultCode,
             String resultMessage
     ) {
         try {
-            String messageId = envelope.optString("messageId", "");
-            String status = success ? "success" : "failed";
-            String eventNo = messageId + "-result";
-            JSONObject result = new JSONObject();
-            result.put("messageId", messageId);
-            result.put("commandType", envelope.optString("commandType", ""));
-            result.put("status", status);
-            result.put("eventNo", eventNo);
-            result.put("resultCode", resultCode);
-            result.put("resultMessage", resultMessage);
-            result.put("timestamp", System.currentTimeMillis());
-            if (!store.saveCommandResult(
-                    messageId,
-                    eventNo,
-                    status,
-                    result.toString()
-            )) {
-                return false;
-            }
-            MqttManager.get(context).reportCommandResult(result.toString());
-            return true;
+            String messageId = decoded.sdkCommand.getMessageId();
+            return saveAndPublish(decoded.genericTerminal(
+                    messageId + "-result",
+                    success,
+                    resultCode,
+                    resultMessage,
+                    System.currentTimeMillis()
+            ));
         } catch (Throwable error) {
+            Log.e(TAG, "SDK通用终态生成失败", error);
             return false;
         }
+    }
+
+    private boolean saveAndPublish(SdkCommandDecoder.EncodedResult result) {
+        if (result == null || !store.saveCommandResult(
+                result.sourceMessageId,
+                result.eventNo,
+                result.resultStatus,
+                result.payload
+        )) {
+            return false;
+        }
+        MqttManager.get(context).reportCommandResult(result.payload);
+        return true;
     }
 
     private void resendCommandResults(String messageId) {
@@ -958,11 +983,9 @@ final class PlatformCommandRuntime {
         if (!hasActiveOperation()) {
             return;
         }
-        store.setCashBlocked(true);
-        cashAdapter.disableCashAcceptance();
         MqttManager.get(context).reportFault(
                 "PHYSICAL_RESULT_UNKNOWN",
-                "检测到进程重启前已请求的物理动作",
+                "检测到进程重启前已经请求的物理动作",
                 3,
                 "禁止自动重启电机；等待控制板终态或人工核实"
         );
@@ -974,42 +997,57 @@ final class PlatformCommandRuntime {
         }
     }
 
-    private void persistOrphanBoardEvent(int code2, long packed, int expandCode) {
+    private void persistOrphanBoardEvent(
+            int code2,
+            long packed,
+            int expandCode
+    ) {
         int token = (int) ((packed >>> 24) & 0xFF);
         int actual = (int) (packed & 0x00FFFFFFL);
-        boolean collect = code2 >= EVT_COLLECT_STARTED && code2 <= EVT_COLLECT_FAILED;
-        String messageId = collect ? store.getActiveCollect() : store.getActiveDispense();
+        boolean collect = code2 >= EVT_COLLECT_STARTED
+                && code2 <= EVT_COLLECT_FAILED;
+        String messageId = collect
+                ? store.getActiveCollect()
+                : store.getActiveDispense();
         if (blank(messageId) || liveCommands.containsKey(messageId)) {
             return;
         }
+
         JSONObject envelope = store.loadCommand(messageId);
-        JSONObject data = envelope == null ? null : envelope.optJSONObject("data");
+        JSONObject data = envelope == null
+                ? null
+                : envelope.optJSONObject("data");
         if (data == null || token != data.optInt("boardToken", -1)) {
             return;
         }
+
         try {
             data.put("deviceActualQuantity", actual);
             data.put("orphanBoardEventCode", code2);
             data.put("orphanBoardResultCode", expandCode);
             data.put("requiresManualReview", true);
-            if (code2 == EVT_DISPENSE_COMPLETED || code2 == EVT_DISPENSE_FAILED
-                    || code2 == EVT_COLLECT_COMPLETED || code2 == EVT_COLLECT_FAILED) {
-                data.put("deviceTerminal", true);
-                store.saveCommand(envelope);
-                marbleAdapter.confirmBoardEventStored(code2, token);
+            boolean terminal = code2 == EVT_DISPENSE_COMPLETED
+                    || code2 == EVT_DISPENSE_FAILED
+                    || code2 == EVT_COLLECT_COMPLETED
+                    || code2 == EVT_COLLECT_FAILED;
+            data.put("deviceTerminal", terminal);
+            data.put("deviceStarted", !terminal);
+            if (!store.saveCommand(envelope)) {
+                throw new IllegalStateException("恢复控制板事件保存失败");
+            }
+            marbleAdapter.confirmBoardEventStored(code2, token);
+
+            if (terminal) {
                 if (collect) {
                     store.clearActiveCollect();
                 } else {
                     store.clearActiveDispense();
                 }
-                MqttManager.get(context).reportFault(
-                        "PHYSICAL_RESULT_REQUIRES_MANUAL_REVIEW",
-                        "进程恢复后收到控制板物理终态",
-                        3,
-                        "messageId=" + messageId + "，actual=" + actual
+                reportPhysicalUnknown(
+                        messageId,
+                        actual,
+                        "进程恢复后收到控制板物理终态，需人工核对"
                 );
-            } else if (store.saveCommand(envelope)) {
-                marbleAdapter.confirmBoardEventStored(code2, token);
             }
         } catch (Throwable error) {
             reportStorageFault("恢复控制板事件失败：" + messageOf(error));
@@ -1019,50 +1057,53 @@ final class PlatformCommandRuntime {
     private void reapplyCashConfiguration() {
         DeviceCommandStore.CashConfigurationRecord record =
                 store.loadCashConfiguration();
-        if (record == null || record.changeEnabled || store.isCashBlocked()
-                || hasActiveOperation()) {
-            cashAdapter.disableCashAcceptance();
+        if (record == null || record.changeEnabled) {
             return;
         }
-        JSONObject envelope = parseObject(record.snapshotJson);
-        if (envelope == null) {
-            cashAdapter.disableCashAcceptance();
-            return;
-        }
-        try {
-            SdkCommandDecoder.DecodedCommand decoded = decoder.decode(
-                    envelope.optString("__topic", ""),
-                    envelope.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                    DeviceUtil.requireDeviceNo(context),
-                    System.currentTimeMillis()
-            );
-            CashConfigurationCommandData config =
-                    decoded.sdkCommand.requireData(CashConfigurationCommandData.class);
-            hardwareExecutor.execute(() -> {
-                CashConfigurationResult result = record.enabled
-                        ? cashAdapter.apply(record.configVersion, toCashTiers(config))
-                        : cashAdapter.applyDisabled(record.configVersion);
-                if (!result.isApplied()) {
-                    store.setCashBlocked(true);
-                }
-            });
-        } catch (Throwable error) {
-            /* 原命令可能已过期；不绕过 SDK 重放，等待平台重新下发完整配置。 */
-            store.setCashBlocked(true);
-            cashAdapter.disableCashAcceptance();
-        }
-    }
 
-    private void restoreCashAcceptance() {
-        if (!store.isCashEnabled() || hasActiveOperation()) {
-            cashAdapter.disableCashAcceptance();
+        JSONObject envelope = parseObject(record.snapshotJson);
+        JSONObject data = envelope == null
+                ? null
+                : envelope.optJSONObject("data");
+        JSONArray items = data == null
+                ? null
+                : data.optJSONArray("cashSaleItems");
+        if (data == null || items == null) {
             return;
         }
-        reapplyCashConfiguration();
+
+        List<CashTier> tiers = new ArrayList<>();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
+            if (item == null) {
+                return;
+            }
+            tiers.add(new CashTier(
+                    item.optString("cashMediumType", ""),
+                    item.optInt("denominationAmount", 0),
+                    item.optInt("marbleQuantity", 0),
+                    item.optString("cashSaleTierNo", "")
+            ));
+        }
+
+        hardwareExecutor.execute(() -> {
+            CashConfigurationResult result = record.enabled
+                    ? cashAdapter.apply(record.configVersion, tiers)
+                    : cashAdapter.applyDisabled(record.configVersion);
+            if (!result.isApplied()) {
+                MqttManager.get(context).reportFault(
+                        "CASH_CONFIGURATION_REAPPLY_FAILED",
+                        "现金配置恢复失败",
+                        2,
+                        safe(result.getMessage())
+                );
+            }
+        });
     }
 
     private boolean hasActiveOperation() {
-        return !blank(store.getActiveDispense()) || !blank(store.getActiveCollect());
+        return !blank(store.getActiveDispense())
+                || !blank(store.getActiveCollect());
     }
 
     private void broadcastCollection(String event, String message) {
@@ -1090,12 +1131,34 @@ final class PlatformCommandRuntime {
         );
     }
 
+    private void reportPhysicalUnknown(
+            String messageId,
+            int actual,
+            String description
+    ) {
+        MqttManager.get(context).reportFault(
+                "PHYSICAL_RESULT_REQUIRES_MANUAL_REVIEW",
+                "物理结果需要人工核对",
+                3,
+                description + "；messageId=" + messageId + "；actual=" + actual
+        );
+    }
+
     private String newCashEventNo(int sequence) {
-        SimpleDateFormat format = new SimpleDateFormat("yyyyMMddHHmmssSSS", Locale.ROOT);
+        SimpleDateFormat format = new SimpleDateFormat(
+                "yyyyMMddHHmmssSSS",
+                Locale.ROOT
+        );
         format.setTimeZone(TimeZone.getTimeZone("Asia/Shanghai"));
         return "CE-A-" + format.format(new Date()) + "-"
                 + String.format(Locale.ROOT, "%04X", sequence) + "-"
                 + UUID.randomUUID().toString().substring(0, 6);
+    }
+
+    private static long safeConfigVersion(CashConfigurationCommandData config) {
+        return config == null || config.getConfigVersion() == null
+                ? 0L
+                : config.getConfigVersion();
     }
 
     private static JSONObject parseObject(String value) {
