@@ -8,7 +8,7 @@
 #define Android_USART USART1
 
 #define VERSION_MAJOR 2U
-#define VERSION_MINOR 0U
+#define VERSION_MINOR 1U
 #define VERSION_PATCH 0U
 #define VERSION_BUILD 0U
 #define VERSION ((VERSION_MAJOR << 24) | (VERSION_MINOR << 16) | \
@@ -59,7 +59,10 @@
 #define OPERATION_DATA_TOKEN_SHIFT 24U
 #define OPERATION_DATA_VALUE_MASK 0x00FFFFFFUL
 
-/* 现金事实：Data1=介质，Data2:Data3=面额（分），Data4/Expand=16位现金序号。 */
+/*
+ * 现金事实：Data1=介质，Data2:Data3=本笔金额（分），Data4/Expand=16位序号。
+ * 多笔现金使用多个连续序号；平台按设备现金会话累计金额。
+ */
 
 #define MesgEvent_DispenseStarted (1u << 0)
 #define MesgEvent_DispenseProgress (1u << 1)
