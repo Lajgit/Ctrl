@@ -1,0 +1,38 @@
+Compiled from "DeviceAppBootstrapResult.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult();
+  public java.lang.String getProtocolVersion();
+  public java.lang.Long getServerTimestamp();
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$DeviceInfo getDevice();
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$StoreInfo getStore();
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$PresentationInfo getPresentation();
+  public java.util.List<com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$PurchaseRule> getPurchaseRules();
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$CashSaleInfo getCashSale();
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$MiniappEntryScene getMemberEntryScene();
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$MiniappEntryScene getPointsMallEntryScene();
+  public java.util.List<com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$FeatureInfo> getFeatures();
+  public java.util.List<java.lang.String> getDegradedMessages();
+  static java.util.List access$000(java.util.List);
+}
+Compiled from "DeviceAppBootstrapResult.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$CashSaleInfo {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$CashSaleInfo();
+  public boolean isAvailable();
+  public java.lang.String getUnavailableReason();
+  public java.lang.Long getConfigurationVersion();
+  public java.lang.Long getItemId();
+  public java.lang.String getItemCode();
+  public java.lang.String getItemName();
+  public java.lang.String getUnitName();
+  public java.util.List<com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$CashTierInfo> getTiers();
+}
+Compiled from "DeviceAppBootstrapResult.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$CashTierInfo {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$CashTierInfo();
+  public java.lang.Integer getCashMediumType();
+  public java.lang.String getCashMediumCode();
+  public java.lang.String getCashMediumName();
+  public java.lang.Integer getDenominationAmount();
+  public java.lang.Integer getMarbleQuantity();
+  public java.lang.String getTierNo();
+}
