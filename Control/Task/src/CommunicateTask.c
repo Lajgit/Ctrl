@@ -10,6 +10,7 @@
 static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg);
 static bool Board_WriteBootRequest(uint32_t request_magic);
 static void Board_SystemRestart(bool enter_bootloader);
+static void USART_RemoveCashResend(uint16_t sequence);
 
 ListHandle_t ResendList, DealList;
 static ListNode_t ResendList_buffer[100];
@@ -102,18 +103,41 @@ static uint32_t USART_GetValue24(Mesg_TypeDef *mesg)
            (uint32_t)mesg->Data4;
 }
 
+static uint16_t USART_GetCashSequence(const Mesg_TypeDef *mesg)
+{
+    return ((uint16_t)mesg->Data4 << 8U) |
+           (uint16_t)mesg->ExpandCode;
+}
+
 static void USART_ConfirmBoardEvent(Mesg_TypeDef *mesg)
 {
     Mesg_TypeDef *original = &MesgTable[mesg->ID];
 
-    /* 现金事实只有在 Android 已持久化并原样确认后才从控制板 Flash 删除。 */
+    /*
+     * 普通原样回传只确认 UART 链路。现金事实必须等 Android 写入持久化存储后，
+     * 再发送 CashEventStored；因此此处不能清除现金重发或控制板 Flash 记录。
+     */
     if (original->Code2 == CashAccepted)
     {
-        uint16_t sequence = ((uint16_t)original->Data4 << 8U) |
-                            (uint16_t)original->ExpandCode;
-        CashEvent_ConfirmTransport(sequence);
+        return;
     }
     List_DeleteNode(&ResendList, mesg->ID);
+}
+
+static void USART_RemoveCashResend(uint16_t sequence)
+{
+    ListNode_t *current = ResendList.Head;
+    while (current != NULL)
+    {
+        ListNode_t *next = current->Next;
+        Mesg_TypeDef *original = &MesgTable[current->ID];
+        if ((original->Code2 == CashAccepted) &&
+            (USART_GetCashSequence(original) == sequence))
+        {
+            List_DeleteNode(&ResendList, current->ID);
+        }
+        current = next;
+    }
 }
 
 static void USART1_Deal(void *rx_mesg)
@@ -125,7 +149,6 @@ static void USART1_Deal(void *rx_mesg)
 
     if (mesg->Code1 == Android_to_Board)
     {
-        /* 合法 Android 帧先原样应答；相同 ID 在 5 秒内不重复启动硬件。 */
         USART_RequestMesg(&Tx1, mesg);
         if (List_IsExistID(&DealList, mesg->ID) == false)
         {
@@ -136,46 +159,43 @@ static void USART1_Deal(void *rx_mesg)
             case VersionRequest:
                 EventGroupSetBits(&Mesg_event, MesgEvent_VersionRequest);
                 break;
-
             case DispenseStart:
                 (void)Hardware_StartDispense(token, value);
                 break;
-
             case CollectStart:
                 (void)Hardware_StartCollect(token, value);
                 break;
-
             case CollectStop:
                 Hardware_StopCollect(token);
                 break;
-
             case Unlock:
                 Lock.sw.state = DEVICE_STATE_START;
                 EventGroupSetBits(&Mesg_event, MesgEvent_Unlock);
                 break;
-
             case CashAcceptanceApply:
                 (void)CashAcceptance_Apply(mesg->Data1, value);
                 break;
-
             case BillReset:
                 BillAcceptor_Reset();
                 break;
-
+            case CashEventStored:
+            {
+                uint16_t sequence = (uint16_t)value;
+                CashEvent_ConfirmTransport(sequence);
+                USART_RemoveCashResend(sequence);
+                break;
+            }
             case HardwareStatusRequest:
                 Hardware_RequestStatus();
                 break;
-
             case BoardRestart:
                 data = USART_GetData32(mesg);
                 Board_SystemRestart(data == OTA_REQUEST_MAGIC);
                 break;
-
             case EmergencyStop:
                 Hardware_AbortAll();
                 CashAcceptance_Disable();
                 break;
-
             default:
                 break;
             }
@@ -256,10 +276,17 @@ static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
     uint16_t crc;
 
     mesg->ResendID++;
-    if (mesg->ResendID > Max_Resend_Times)
+    if ((mesg->ResendID > Max_Resend_Times) &&
+        (mesg->Code2 != CashAccepted))
     {
         return 1U;
     }
+    if (mesg->Code2 == CashAccepted &&
+        mesg->ResendID > Max_Resend_Times)
+    {
+        mesg->ResendID = 1U;
+    }
+
     data[0] = Mesg_Head;
     data[1] = mesg->ResendID;
     data[2] = mesg->ID;
@@ -313,7 +340,8 @@ void Resend_Task(void)
         {
             USART_ReSendMesg(&Tx1, &(MesgTable[current->ID]));
             current->Value = current_time;
-            if (MesgTable[current->ID].ResendID >= Max_Resend_Times)
+            if ((MesgTable[current->ID].Code2 != CashAccepted) &&
+                (MesgTable[current->ID].ResendID >= Max_Resend_Times))
             {
                 List_DeleteNode(&ResendList, current->ID);
             }
