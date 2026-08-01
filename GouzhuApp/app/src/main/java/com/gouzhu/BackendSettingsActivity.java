@@ -27,6 +27,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import com.gouzhu.activation.ActivationLogStore;
 import com.gouzhu.network.WifiConfigActivity;
 import com.gouzhu.network.WifiSupport;
+import com.gouzhu.scanner.ReverseScannerManager;
 import com.gouzhu.serial.SerialManager;
 import com.gouzhu.util.DeviceUtil;
 
@@ -49,6 +50,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
     private TextView networkStatusText;
     private TextView mqttStatusText;
     private TextView boardStatusText;
+    private TextView reverseScannerStatusText;
     private TextView stockText;
     private TextView pendingText;
     private TextView eventText;
@@ -70,6 +72,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
                 serial.sendCommand(0x00, 0L, false);
                 evaluateBoardResponseTimeout();
             }
+            refreshReverseScannerStatus();
             statusHandler.postDelayed(this, BOARD_POLL_INTERVAL_MS);
         }
     };
@@ -86,6 +89,11 @@ public class BackendSettingsActivity extends AppCompatActivity {
                         intent.getStringExtra("key"),
                         intent.getStringExtra("value")
                 );
+                return;
+            }
+
+            if (AppConfig.ACTION_REVERSE_SCANNER_EVENT.equals(intent.getAction())) {
+                handleReverseScannerEvent(intent);
                 return;
             }
 
@@ -108,6 +116,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
         networkStatusText = findViewById(R.id.text_network_status);
         mqttStatusText = findViewById(R.id.text_mqtt_status);
         boardStatusText = findViewById(R.id.text_board_status);
+        reverseScannerStatusText = findViewById(R.id.text_reverse_scanner_status);
         stockText = findViewById(R.id.text_stock_status);
         pendingText = findViewById(R.id.text_pending_status);
         eventText = findViewById(R.id.text_latest_event);
@@ -124,9 +133,11 @@ public class BackendSettingsActivity extends AppCompatActivity {
         findViewById(R.id.button_wifi_settings).setOnClickListener(
                 view -> startActivity(new Intent(this, WifiConfigActivity.class))
         );
-        findViewById(R.id.button_refresh_status).setOnClickListener(
-                view -> requestBoardStatus(true)
-        );
+        findViewById(R.id.button_refresh_status).setOnClickListener(view -> {
+            requestBoardStatus(true);
+            ReverseScannerManager.get(this).open();
+            refreshReverseScannerStatus();
+        });
         findViewById(R.id.button_activation_logs).setOnClickListener(
                 view -> showActivationLogs()
         );
@@ -152,6 +163,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
 
         startBoardStatusMonitor();
         requestBoardStatus(false);
+        refreshReverseScannerStatus();
     }
 
     @Override
@@ -215,6 +227,36 @@ public class BackendSettingsActivity extends AppCompatActivity {
         boardStatusText.setText(textResId);
     }
 
+    private void refreshReverseScannerStatus() {
+        ReverseScannerManager scanner = ReverseScannerManager.get(this);
+        if (scanner.isOpen()) {
+            reverseScannerStatusText.setText(getString(
+                    R.string.reverse_scanner_connected_format,
+                    AppConfig.REVERSE_SCANNER_DEVICE,
+                    AppConfig.REVERSE_SCANNER_BAUD_RATE
+            ));
+        } else {
+            reverseScannerStatusText.setText(getString(
+                    R.string.reverse_scanner_disconnected_format,
+                    AppConfig.REVERSE_SCANNER_DEVICE
+            ));
+        }
+    }
+
+    private void handleReverseScannerEvent(Intent intent) {
+        String event = intent.getStringExtra(ReverseScannerManager.EXTRA_EVENT);
+        String message = intent.getStringExtra(ReverseScannerManager.EXTRA_MESSAGE);
+        String safeMessage = message == null || message.trim().isEmpty()
+                ? getString(R.string.reverse_scanner_event_unknown)
+                : message;
+        reverseScannerStatusText.setText(safeMessage);
+
+        if (!ReverseScannerManager.EVENT_CONNECTED.equals(event)
+                && !ReverseScannerManager.EVENT_DISCONNECTED.equals(event)) {
+            eventText.setText(safeMessage);
+        }
+    }
+
     private void registerStatusReceiver() {
         if (receiverRegistered) {
             return;
@@ -222,6 +264,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
         IntentFilter filter = new IntentFilter();
         filter.addAction(AppConfig.ACTION_SERVICE_STATUS);
         filter.addAction(AppConfig.ACTION_BOARD_EVENT);
+        filter.addAction(AppConfig.ACTION_REVERSE_SCANNER_EVENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
