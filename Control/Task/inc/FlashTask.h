@@ -6,13 +6,14 @@
 
 /*
  * STM32F407 的 Sector 2：0x08008000~0x0800BFFF。
- * APP 从 0x0800C000 启动，因此该扇区专用于参数和购买状态掉电保存。
+ * APP 从 0x0800C000 启动，因此该扇区专用于控制板硬件状态掉电保存。
  */
 #define Setting_Addr 0x08008000U
 #define Setting_End_Addr 0x0800C000U
 
-/* 购买状态标志：检测到无珠后置位，补珠按钮按下后清除。 */
-#define PURCHASE_FLAG_NO_BEAD (1UL << 0)
+/* 仅保存硬件事实；控制板不再保存价格、余额、欠吐或本地订单。 */
+#define HARDWARE_FLAG_NO_BEAD (1UL << 0)
+#define HARDWARE_FLAG_PENDING_CASH (1UL << 1)
 
 typedef struct
 {
@@ -20,20 +21,19 @@ typedef struct
     uint32_t LightBelt_Lightness;
     uint32_t Ctrl_Lightness;
 
-    /* 安卓设置的单颗珠子价格，单位：人民币分；1 表示 0.01 元。 */
-    uint32_t BeadPriceFen;
-
-    /* 当前珠子库存，每成功吐出一颗减一。 */
+    /* 维护库存估计值，仅由真实 PD3 光眼和 K1 补珠动作修改。 */
     uint32_t BeadStock;
 
-    /* 已收款但尚未成功吐出的珠子数量，掉电后继续保留。 */
-    uint32_t PendingBeads;
+    /* HARDWARE_FLAG_*。 */
+    uint32_t HardwareFlags;
 
-    /* 尚不足以购买一颗珠子的累计余额，单位：人民币分。 */
-    uint32_t PurchaseCreditFen;
-
-    /* 购买状态标志，当前使用 PURCHASE_FLAG_NO_BEAD。 */
-    uint32_t PurchaseFlags;
+    /*
+     * 尚未被 Android 持久化确认的现金事实。
+     * 金额单位为人民币分；介质 0=硬币、1=纸币。
+     */
+    uint32_t PendingCashAmountFen;
+    uint32_t PendingCashSequence;
+    uint32_t PendingCashMedium;
 } Setting_TypeDef;
 
 void ResumeSetting(void);
