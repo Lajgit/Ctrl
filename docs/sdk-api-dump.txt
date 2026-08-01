@@ -1,0 +1,625 @@
+=== JAR GouzhuApp/app/libs/xiaoda-device-hardware-0.1.0.jar ===
+com/pinball/xiaoda/device/sdk/hardware/CashConfigurationAdapter.class
+com/pinball/xiaoda/device/sdk/hardware/CashConfigurationResult.class
+com/pinball/xiaoda/device/sdk/hardware/CashTier.class
+com/pinball/xiaoda/device/sdk/hardware/CollectRequest.class
+com/pinball/xiaoda/device/sdk/hardware/DeviceHardwareCommandMapper.class
+com/pinball/xiaoda/device/sdk/hardware/DispenseRequest.class
+com/pinball/xiaoda/device/sdk/hardware/HardwareExecutionResult.class
+com/pinball/xiaoda/device/sdk/hardware/MarbleHardwareAdapter.class
+=== JAR GouzhuApp/app/libs/xiaoda-device-mqtt-0.1.0.jar ===
+com/pinball/xiaoda/device/sdk/internal/paho/BufferedMessage.class
+com/pinball/xiaoda/device/sdk/internal/paho/DisconnectedBufferOptions.class
+com/pinball/xiaoda/device/sdk/internal/paho/IMqttActionListener.class
+com/pinball/xiaoda/device/sdk/internal/paho/IMqttAsyncClient.class
+com/pinball/xiaoda/device/sdk/internal/paho/IMqttClient.class
+com/pinball/xiaoda/device/sdk/internal/paho/IMqttDeliveryToken.class
+com/pinball/xiaoda/device/sdk/internal/paho/IMqttMessageListener.class
+com/pinball/xiaoda/device/sdk/internal/paho/IMqttToken.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttAsyncClient$MqttReconnectActionListener.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttAsyncClient$MqttReconnectCallback.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttAsyncClient$ReconnectTask.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttAsyncClient.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttCallback.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttCallbackExtended.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttClient.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttClientPersistence.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttConnectOptions.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttDeliveryToken.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttException.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttMessage.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttPersistable.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttPersistenceException.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttPingSender.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttSecurityException.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttToken.class
+com/pinball/xiaoda/device/sdk/internal/paho/MqttTopic.class
+com/pinball/xiaoda/device/sdk/internal/paho/ScheduledExecutorPingSender$PingRunnable.class
+com/pinball/xiaoda/device/sdk/internal/paho/ScheduledExecutorPingSender.class
+com/pinball/xiaoda/device/sdk/internal/paho/TimerPingSender$PingTask.class
+com/pinball/xiaoda/device/sdk/internal/paho/TimerPingSender.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ClientComms$ConnectBG.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ClientComms$DisconnectBG.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ClientComms$MessageDiscardedCallback.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ClientComms$ReconnectDisconnectedBufferCallback.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ClientComms.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ClientState.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/CommsCallback$State.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/CommsCallback.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/CommsReceiver$State.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/CommsReceiver.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/CommsSender$State.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/CommsSender.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/CommsTokenStore.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ConnectActionListener.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/DestinationProvider.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/DisconnectedMessageBuffer.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ExceptionHelper.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/FileLock.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/HighResolutionTimer.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/IDiscardedBufferMessageCallback.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/IDisconnectedBufferCallback.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/MessageCatalog.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/MqttPersistentData.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/NetworkModule.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/NetworkModuleService.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/ResourceBundleCatalog.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/SSLNetworkModule.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/SSLNetworkModuleFactory.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/SystemHighResolutionTimer.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/TCPNetworkModule.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/TCPNetworkModuleFactory.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/Token.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/security/SSLSocketFactoryFactory.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/security/SimpleBase64Encoder.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/Base64$Base64Encoder.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/Base64.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/ExtendedByteArrayOutputStream.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/HandshakeFailedException.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/WebSocketFrame.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/WebSocketHandshake.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/WebSocketNetworkModule.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/WebSocketNetworkModuleFactory.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/WebSocketReceiver.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/WebSocketSecureNetworkModule.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/websocket/WebSocketSecureNetworkModuleFactory.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/CountingInputStream.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttAck.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttConnack.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttConnect.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttDisconnect.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttInputStream.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttOutputStream.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttPersistableWireMessage.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttPingReq.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttPingResp.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttPubAck.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttPubComp.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttPubRec.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttPubRel.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttPublish.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttReceivedMessage.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttSuback.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttSubscribe.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttUnsubAck.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttUnsubscribe.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MqttWireMessage.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MultiByteArrayInputStream.class
+com/pinball/xiaoda/device/sdk/internal/paho/internal/wire/MultiByteInteger.class
+com/pinball/xiaoda/device/sdk/internal/paho/logging/JSR47Logger.class
+com/pinball/xiaoda/device/sdk/internal/paho/logging/Logger.class
+com/pinball/xiaoda/device/sdk/internal/paho/logging/LoggerFactory.class
+com/pinball/xiaoda/device/sdk/internal/paho/logging/SimpleLogFormatter.class
+com/pinball/xiaoda/device/sdk/internal/paho/persist/MemoryPersistence.class
+com/pinball/xiaoda/device/sdk/internal/paho/persist/MqttDefaultFilePersistence.class
+com/pinball/xiaoda/device/sdk/internal/paho/persist/PersistanceFileFilter.class
+com/pinball/xiaoda/device/sdk/internal/paho/persist/PersistanceFileNameFilter.class
+com/pinball/xiaoda/device/sdk/internal/paho/spi/NetworkModuleFactory.class
+com/pinball/xiaoda/device/sdk/internal/paho/spi/package-info.class
+com/pinball/xiaoda/device/sdk/internal/paho/util/Debug.class
+com/pinball/xiaoda/device/sdk/internal/paho/util/Strings.class
+com/pinball/xiaoda/device/sdk/mqtt/paho/PahoMqttTransport$1.class
+com/pinball/xiaoda/device/sdk/mqtt/paho/PahoMqttTransport.class
+=== JAR GouzhuApp/app/libs/xiaoda-device-sdk-0.1.0.jar ===
+com/pinball/xiaoda/device/sdk/client/CredentialStore.class
+com/pinball/xiaoda/device/sdk/client/DeviceActivationResult$MqttTopics.class
+com/pinball/xiaoda/device/sdk/client/DeviceActivationResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceApiException.class
+com/pinball/xiaoda/device/sdk/client/DeviceApiResponseParser$1.class
+com/pinball/xiaoda/device/sdk/client/DeviceApiResponseParser$ParsedEnvelope.class
+com/pinball/xiaoda/device/sdk/client/DeviceApiResponseParser.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$CashSaleInfo.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$CashTierInfo.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$DeviceInfo.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$FeatureInfo.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$HeroMediaInfo.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$MiniappEntryScene.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$PresentationInfo.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$PriceTier.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$PurchaseRule.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$PurchaseSectionInfo.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult$StoreInfo.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppBootstrapResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppClient$1.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppClient.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppInternalRedemptionResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppMemberWithdrawalResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppNativePurchaseResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceCredentialManager.class
+com/pinball/xiaoda/device/sdk/client/DeviceEnrollResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceLifecycleClient$1.class
+com/pinball/xiaoda/device/sdk/client/DeviceLifecycleClient.class
+com/pinball/xiaoda/device/sdk/client/DeviceSdkConfig$1.class
+com/pinball/xiaoda/device/sdk/client/DeviceSdkConfig$Builder.class
+com/pinball/xiaoda/device/sdk/client/DeviceSdkConfig.class
+com/pinball/xiaoda/device/sdk/client/DeviceSecretProvider.class
+com/pinball/xiaoda/device/sdk/client/DeviceStatusPayloadProvider.class
+com/pinball/xiaoda/device/sdk/client/HttpResponse.class
+com/pinball/xiaoda/device/sdk/client/HttpTransport.class
+com/pinball/xiaoda/device/sdk/client/HttpUrlConnectionTransport.class
+com/pinball/xiaoda/device/sdk/client/MqttFailureType.class
+com/pinball/xiaoda/device/sdk/client/MqttRetryPolicy.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionListener.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$1.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$2.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$3.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$4.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$5.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$6.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$7.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$8.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$MqttSessionThreadFactory.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$TransportListener$1.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$TransportListener$2.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager$TransportListener.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionManager.class
+com/pinball/xiaoda/device/sdk/client/MqttSessionState.class
+com/pinball/xiaoda/device/sdk/client/MqttTransport$MessageListener.class
+com/pinball/xiaoda/device/sdk/client/MqttTransport.class
+com/pinball/xiaoda/device/sdk/client/MqttTransportException.class
+com/pinball/xiaoda/device/sdk/client/PendingMessagePage.class
+com/pinball/xiaoda/device/sdk/client/PendingMessageStore.class
+com/pinball/xiaoda/device/sdk/client/PendingOutboundMessage.class
+com/pinball/xiaoda/device/sdk/client/TimeProvider.class
+com/pinball/xiaoda/device/sdk/core/Base64UrlEncoder.class
+com/pinball/xiaoda/device/sdk/core/DeviceActivationSigner.class
+com/pinball/xiaoda/device/sdk/core/DeviceAppSignatureScopes.class
+com/pinball/xiaoda/device/sdk/core/DeviceAppSigner.class
+com/pinball/xiaoda/device/sdk/core/DeviceBatchEnrollmentSigner.class
+com/pinball/xiaoda/device/sdk/core/DeviceCommandValidator.class
+com/pinball/xiaoda/device/sdk/core/DeviceIdentityPublicKeyEncoder.class
+com/pinball/xiaoda/device/sdk/core/DeviceIdentitySigner.class
+com/pinball/xiaoda/device/sdk/core/DeviceMqttTopics$CommandAction.class
+com/pinball/xiaoda/device/sdk/core/DeviceMqttTopics$ReportAction.class
+com/pinball/xiaoda/device/sdk/core/DeviceMqttTopics.class
+com/pinball/xiaoda/device/sdk/core/DeviceNumbers.class
+com/pinball/xiaoda/device/sdk/core/DeviceSdkException.class
+com/pinball/xiaoda/device/sdk/core/MqttCredential.class
+com/pinball/xiaoda/device/sdk/core/MqttReceiptKey.class
+com/pinball/xiaoda/device/sdk/core/RequestNonceGenerator.class
+com/pinball/xiaoda/device/sdk/internal/gson/ExclusionStrategy.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldAttributes.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy$3.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy$4.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy$5.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy$6.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy$7.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy.class
+com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingStrategy.class
+com/pinball/xiaoda/device/sdk/internal/gson/FormattingStyle.class
+com/pinball/xiaoda/device/sdk/internal/gson/Gson$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/Gson$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/Gson$3.class
+com/pinball/xiaoda/device/sdk/internal/gson/Gson$4.class
+com/pinball/xiaoda/device/sdk/internal/gson/Gson$5.class
+com/pinball/xiaoda/device/sdk/internal/gson/Gson$FutureTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/Gson.class
+com/pinball/xiaoda/device/sdk/internal/gson/GsonBuilder.class
+com/pinball/xiaoda/device/sdk/internal/gson/InstanceCreator.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonArray.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonDeserializationContext.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonDeserializer.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonElement.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonIOException.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonNull.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonObject.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonParseException.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonParser.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonPrimitive.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonSerializationContext.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonSerializer.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonStreamParser.class
+com/pinball/xiaoda/device/sdk/internal/gson/JsonSyntaxException.class
+com/pinball/xiaoda/device/sdk/internal/gson/LongSerializationPolicy$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/LongSerializationPolicy$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/LongSerializationPolicy.class
+com/pinball/xiaoda/device/sdk/internal/gson/ReflectionAccessFilter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/ReflectionAccessFilter$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/ReflectionAccessFilter$3.class
+com/pinball/xiaoda/device/sdk/internal/gson/ReflectionAccessFilter$4.class
+com/pinball/xiaoda/device/sdk/internal/gson/ReflectionAccessFilter$FilterResult.class
+com/pinball/xiaoda/device/sdk/internal/gson/ReflectionAccessFilter.class
+com/pinball/xiaoda/device/sdk/internal/gson/Strictness.class
+com/pinball/xiaoda/device/sdk/internal/gson/ToNumberPolicy$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/ToNumberPolicy$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/ToNumberPolicy$3.class
+com/pinball/xiaoda/device/sdk/internal/gson/ToNumberPolicy$4.class
+com/pinball/xiaoda/device/sdk/internal/gson/ToNumberPolicy.class
+com/pinball/xiaoda/device/sdk/internal/gson/ToNumberStrategy.class
+com/pinball/xiaoda/device/sdk/internal/gson/TypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/TypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/TypeAdapterFactory.class
+com/pinball/xiaoda/device/sdk/internal/gson/annotations/Expose.class
+com/pinball/xiaoda/device/sdk/internal/gson/annotations/JsonAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/annotations/SerializedName.class
+com/pinball/xiaoda/device/sdk/internal/gson/annotations/Since.class
+com/pinball/xiaoda/device/sdk/internal/gson/annotations/Until.class
+com/pinball/xiaoda/device/sdk/internal/gson/annotations/package-info.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/$Gson$Preconditions.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/$Gson$Types$GenericArrayTypeImpl.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/$Gson$Types$ParameterizedTypeImpl.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/$Gson$Types$WildcardTypeImpl.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/$Gson$Types.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$10.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$11.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$12.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$13.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$14.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$15.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$16.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$17.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$18.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$19.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$20.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$3.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$4.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$5.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$6.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$7.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$8.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor$9.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ConstructorConstructor.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/Excluder$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/Excluder.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/GsonBuildConfig.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/JavaVersion.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/JsonReaderInternalAccess.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LazilyParsedNumber.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LinkedTreeMap$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LinkedTreeMap$EntrySet$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LinkedTreeMap$EntrySet.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LinkedTreeMap$KeySet$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LinkedTreeMap$KeySet.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LinkedTreeMap$LinkedTreeMapIterator.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LinkedTreeMap$Node.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/LinkedTreeMap.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/NonNullElementWrapperList.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/NumberLimits.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ObjectConstructor.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/PreJava9DateFormatProvider.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/Primitives.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ReflectionAccessFilterHelper$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ReflectionAccessFilterHelper$AccessChecker$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ReflectionAccessFilterHelper$AccessChecker$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ReflectionAccessFilterHelper$AccessChecker.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/ReflectionAccessFilterHelper.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/Streams$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/Streams$AppendableWriter$CurrentWrite.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/Streams$AppendableWriter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/Streams.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/TroubleshootingGuide.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/UnsafeAllocator$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/UnsafeAllocator$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/UnsafeAllocator$3.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/UnsafeAllocator$4.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/UnsafeAllocator.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ArrayTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ArrayTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/CollectionTypeAdapterFactory$Adapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/CollectionTypeAdapterFactory.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/DefaultDateTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/DefaultDateTypeAdapter$DateType$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/DefaultDateTypeAdapter$DateType.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/DefaultDateTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/JsonAdapterAnnotationTypeAdapterFactory$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/JsonAdapterAnnotationTypeAdapterFactory$DummyTypeAdapterFactory.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/JsonAdapterAnnotationTypeAdapterFactory.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/JsonTreeReader$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/JsonTreeReader$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/JsonTreeReader.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/JsonTreeWriter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/JsonTreeWriter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/MapTypeAdapterFactory$Adapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/MapTypeAdapterFactory.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/NumberTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/NumberTypeAdapter$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/NumberTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ObjectTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ObjectTypeAdapter$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ObjectTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ReflectiveTypeAdapterFactory$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ReflectiveTypeAdapterFactory$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ReflectiveTypeAdapterFactory$Adapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ReflectiveTypeAdapterFactory$BoundField.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ReflectiveTypeAdapterFactory$FieldReflectionAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ReflectiveTypeAdapterFactory$FieldsData.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ReflectiveTypeAdapterFactory$RecordAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/ReflectiveTypeAdapterFactory.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/SerializationDelegatingTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TreeTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TreeTypeAdapter$GsonContextImpl.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TreeTypeAdapter$SingleTypeFactory.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TreeTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapterRuntimeTypeWrapper.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$10.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$11.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$12.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$13.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$14.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$15.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$16.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$17.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$18.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$19.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$20.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$21.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$22.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$23.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$24.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$25.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$26.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$27.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$28.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$29.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$3.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$30.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$31.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$32.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$33.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$34$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$34.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$4.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$42.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$5.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$6.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$7.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$8.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$9.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$EnumTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters$EnumTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/TypeAdapters.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/bind/util/ISO8601Utils.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/package-info.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/reflect/ReflectionHelper$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/reflect/ReflectionHelper$RecordHelper.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/reflect/ReflectionHelper$RecordNotSupportedHelper.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/reflect/ReflectionHelper$RecordSupportedHelper.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/reflect/ReflectionHelper.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlDateTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlDateTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlTimeTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlTimeTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlTimestampTypeAdapter$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlTimestampTypeAdapter.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlTypesSupport$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlTypesSupport$2.class
+com/pinball/xiaoda/device/sdk/internal/gson/internal/sql/SqlTypesSupport.class
+com/pinball/xiaoda/device/sdk/internal/gson/package-info.class
+com/pinball/xiaoda/device/sdk/internal/gson/reflect/TypeToken.class
+com/pinball/xiaoda/device/sdk/internal/gson/reflect/package-info.class
+com/pinball/xiaoda/device/sdk/internal/gson/stream/JsonReader$1.class
+com/pinball/xiaoda/device/sdk/internal/gson/stream/JsonReader.class
+com/pinball/xiaoda/device/sdk/internal/gson/stream/JsonScope.class
+com/pinball/xiaoda/device/sdk/internal/gson/stream/JsonToken.class
+com/pinball/xiaoda/device/sdk/internal/gson/stream/JsonWriter.class
+com/pinball/xiaoda/device/sdk/internal/gson/stream/MalformedJsonException.class
+com/pinball/xiaoda/device/sdk/internal/gson/stream/package-info.class
+com/pinball/xiaoda/device/sdk/protocol/CashConfigurationCommandData$CashSaleItem.class
+com/pinball/xiaoda/device/sdk/protocol/CashConfigurationCommandData.class
+com/pinball/xiaoda/device/sdk/protocol/CashEventResponseCommandData.class
+com/pinball/xiaoda/device/sdk/protocol/CollectMarblesCommandData.class
+com/pinball/xiaoda/device/sdk/protocol/CommandResultAcknowledgement.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceCommandResult$1.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceCommandResult$Builder.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceCommandResult.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceCommandResultCodec.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceMqttCommand.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceMqttCommandCodec.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceMqttCommandData.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceMqttCommandTypes.class
+com/pinball/xiaoda/device/sdk/protocol/DeviceMqttProtocolException.class
+com/pinball/xiaoda/device/sdk/protocol/DispenseMarblesCommandData.class
+com/pinball/xiaoda/device/sdk/protocol/RawCommandData.class
+com/pinball/xiaoda/device/sdk/protocol/RedemptionResponseCommandData.class
+=== JAVAP com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter ===
+Compiled from "MarbleHardwareAdapter.java"
+public interface com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter {
+  public abstract com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult dispense(com.pinball.xiaoda.device.sdk.hardware.DispenseRequest);
+  public abstract com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult collect(com.pinball.xiaoda.device.sdk.hardware.CollectRequest);
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.hardware.CashConfigurationAdapter ===
+Compiled from "CashConfigurationAdapter.java"
+public interface com.pinball.xiaoda.device.sdk.hardware.CashConfigurationAdapter {
+  public abstract com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult apply(long, java.util.List<com.pinball.xiaoda.device.sdk.hardware.CashTier>);
+  public abstract void disableCashAcceptance();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandMapper ===
+Compiled from "DeviceHardwareCommandMapper.java"
+public final class com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandMapper {
+  public com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandMapper();
+  public com.pinball.xiaoda.device.sdk.hardware.DispenseRequest toDispenseRequest(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, long);
+  public com.pinball.xiaoda.device.sdk.hardware.CollectRequest toCollectRequest(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, long);
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult toTerminalResult(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult, long);
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.hardware.DispenseRequest ===
+Compiled from "DispenseRequest.java"
+public final class com.pinball.xiaoda.device.sdk.hardware.DispenseRequest {
+  public com.pinball.xiaoda.device.sdk.hardware.DispenseRequest(java.lang.String, java.lang.String, int, java.lang.String, long, long);
+  public java.lang.String getMessageId();
+  public java.lang.String getOperationNo();
+  public int getQuantity();
+  public java.lang.String getOperationToken();
+  public long getExpireTime();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.hardware.CollectRequest ===
+Compiled from "CollectRequest.java"
+public final class com.pinball.xiaoda.device.sdk.hardware.CollectRequest {
+  public com.pinball.xiaoda.device.sdk.hardware.CollectRequest(java.lang.String, java.lang.String, int, int, java.lang.String, long, long);
+  public java.lang.String getMessageId();
+  public java.lang.String getOperationNo();
+  public int getMaximumQuantity();
+  public int getSessionTimeoutSeconds();
+  public java.lang.String getOperationToken();
+  public long getExpireTime();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult ===
+Compiled from "HardwareExecutionResult.java"
+public final class com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult {
+  public static com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult success(int);
+  public static com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult failed(int, java.lang.String, java.lang.String);
+  public boolean isSuccessful();
+  public int getActualQuantity();
+  public java.lang.String getResultCode();
+  public java.lang.String getResultMessage();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult ===
+Compiled from "CashConfigurationResult.java"
+public final class com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult {
+  public static com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult applied();
+  public static com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult rejected(java.lang.String);
+  public boolean isApplied();
+  public java.lang.String getMessage();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.mqtt.MqttSessionManager ===
+Error: class not found: com.pinball.xiaoda.device.sdk.mqtt.MqttSessionManager
+=== JAVAP com.pinball.xiaoda.device.sdk.mqtt.PendingMessageStore ===
+Error: class not found: com.pinball.xiaoda.device.sdk.mqtt.PendingMessageStore
+=== JAVAP com.pinball.xiaoda.device.sdk.mqtt.PendingOutboundMessage ===
+Error: class not found: com.pinball.xiaoda.device.sdk.mqtt.PendingOutboundMessage
+=== JAVAP com.pinball.xiaoda.device.sdk.mqtt.MqttSessionListener ===
+Error: class not found: com.pinball.xiaoda.device.sdk.mqtt.MqttSessionListener
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec ===
+Compiled from "DeviceMqttCommandCodec.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec {
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec();
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<? extends com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData> decode(java.lang.String, byte[], java.lang.String, long);
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResultCodec ===
+Compiled from "DeviceCommandResultCodec.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResultCodec {
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResultCodec();
+  public byte[] encode(com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult);
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult ===
+Compiled from "DeviceCommandResult.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult {
+  public static final java.lang.String STATUS_ACK;
+  public static final java.lang.String STATUS_SUCCESS;
+  public static final java.lang.String STATUS_FAILED;
+  public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder builder(java.lang.String, java.lang.String, java.lang.String, java.lang.String, long);
+  public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult acknowledgement(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, long);
+  public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult physicalTerminal(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, boolean, int, java.lang.String, java.lang.String, long);
+  public java.lang.String getMessageId();
+  public java.lang.String getCommandType();
+  public java.lang.String getStatus();
+  public java.lang.String getEventNo();
+  public java.lang.String getOperationNo();
+  public java.lang.Integer getActualQuantity();
+  public java.lang.String getOperationToken();
+  public java.lang.String getResultCode();
+  public java.lang.String getResultMessage();
+  public java.lang.Long getConfigVersion();
+  public long getTimestamp();
+  public com.pinball.xiaoda.device.sdk.core.MqttReceiptKey getReceiptKey();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand ===
+Compiled from "DeviceMqttCommand.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<T extends com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData> {
+  public java.lang.String getTopic();
+  public java.lang.String getMessageId();
+  public java.lang.String getDeviceNo();
+  public java.lang.String getCommandType();
+  public long getTimestamp();
+  public T getData();
+  public <D extends com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData> D requireData(java.lang.Class<D>);
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandTypes ===
+Compiled from "DeviceMqttCommandTypes.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandTypes {
+  public static final java.lang.String DISPENSE_MARBLES;
+  public static final java.lang.String COLLECT_MARBLES;
+  public static final java.lang.String SYNC_CASH_CONFIGURATION;
+  public static final java.lang.String COMMAND_RESULT_ACK;
+  public static final java.lang.String REDEMPTION_RESPONSE;
+  public static final java.lang.String CASH_EVENT_RESPONSE;
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData ===
+Compiled from "CashConfigurationCommandData.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData implements com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData {
+  public com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData();
+  public java.lang.Long getConfigVersion();
+  public java.lang.Boolean getCashAcceptanceEnabled();
+  public java.lang.Boolean getChangeEnabled();
+  public boolean isCashAcceptanceEnabled();
+  public boolean isChangeEnabled();
+  public java.util.List<com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData$CashSaleItem> getCashSaleItems();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData ===
+Compiled from "CashEventResponseCommandData.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData implements com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData {
+  public static final java.lang.String STATUS_PENDING;
+  public static final java.lang.String STATUS_PROCESSING;
+  public static final java.lang.String STATUS_COMPLETED;
+  public static final java.lang.String STATUS_MANUAL_REVIEW;
+  public static final java.lang.String STATUS_REJECTED;
+  public static final java.lang.String STATUS_UNKNOWN;
+  public com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData();
+  public java.lang.String getEventNo();
+  public java.lang.String getStatus();
+  public java.lang.String getCode();
+  public java.lang.String getMessage();
+  public java.lang.String getOrderNo();
+  public java.lang.String getOperationNo();
+  public java.lang.Integer getRequestedQuantity();
+  public boolean isPending();
+  public boolean isProcessing();
+  public boolean isCompleted();
+  public boolean isManualReview();
+  public boolean isRejected();
+  public boolean isUnknown();
+  public com.pinball.xiaoda.device.sdk.core.MqttReceiptKey getReceiptKey();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowledgement ===
+Compiled from "CommandResultAcknowledgement.java"
+public final class com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowledgement implements com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData {
+  public com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowledgement();
+  public java.lang.String getSourceMessageId();
+  public java.lang.String getEventNo();
+  public java.lang.String getCommandType();
+  public java.lang.String getResultStatus();
+  public java.lang.String getReceiptStatus();
+  public java.lang.String getCode();
+  public java.lang.String getMessage();
+  public boolean isRetryable();
+  public boolean isRecorded();
+  public com.pinball.xiaoda.device.sdk.core.MqttReceiptKey getReceiptKey();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.core.MqttReceiptKey ===
+Compiled from "MqttReceiptKey.java"
+public final class com.pinball.xiaoda.device.sdk.core.MqttReceiptKey {
+  public static com.pinball.xiaoda.device.sdk.core.MqttReceiptKey commandResult(java.lang.String, java.lang.String, java.lang.String);
+  public static com.pinball.xiaoda.device.sdk.core.MqttReceiptKey event(java.lang.String);
+  public java.lang.String getSourceMessageId();
+  public java.lang.String getEventNo();
+  public java.lang.String getResultStatus();
+  public boolean isCommandResult();
+  public boolean equals(java.lang.Object);
+  public int hashCode();
+  public java.lang.String toString();
+}
