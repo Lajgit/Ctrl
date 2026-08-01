@@ -11,6 +11,8 @@ static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg);
 static bool Board_WriteBootRequest(uint32_t request_magic);
 static void Board_SystemRestart(bool enter_bootloader);
 static void USART_RemoveCashResend(uint16_t sequence);
+static void USART_RemoveBoardEventResend(uint8_t event_code, uint8_t token);
+static bool USART_IsDurableBoardEvent(uint8_t code2);
 
 ListHandle_t ResendList, DealList;
 static ListNode_t ResendList_buffer[100];
@@ -49,7 +51,6 @@ static bool Board_WriteBootRequest(uint32_t request_magic)
     __HAL_RCC_RTC_ENABLE();
     __DSB();
     (void)RCC->BDCR;
-
     for (retry = 0U; retry < 3U; retry++)
     {
         RTC->BKP0R = request_magic;
@@ -109,15 +110,23 @@ static uint16_t USART_GetCashSequence(const Mesg_TypeDef *mesg)
            (uint16_t)mesg->ExpandCode;
 }
 
+static bool USART_IsDurableBoardEvent(uint8_t code2)
+{
+    return (code2 == DispenseStarted) ||
+           (code2 == DispenseCompleted) ||
+           (code2 == DispenseFailed) ||
+           (code2 == CollectStarted) ||
+           (code2 == CollectCompleted) ||
+           (code2 == CollectFailed);
+}
+
 static void USART_ConfirmBoardEvent(Mesg_TypeDef *mesg)
 {
     Mesg_TypeDef *original = &MesgTable[mesg->ID];
 
-    /*
-     * 普通原样回传只确认 UART 链路。现金事实必须等 Android 写入持久化存储后，
-     * 再发送 CashEventStored；因此此处不能清除现金重发或控制板 Flash 记录。
-     */
-    if (original->Code2 == CashAccepted)
+    /* 原样 ACK 只确认线路；现金和关键操作事件需业务层显式持久化确认。 */
+    if ((original->Code2 == CashAccepted) ||
+        USART_IsDurableBoardEvent(original->Code2))
     {
         return;
     }
@@ -133,6 +142,23 @@ static void USART_RemoveCashResend(uint16_t sequence)
         Mesg_TypeDef *original = &MesgTable[current->ID];
         if ((original->Code2 == CashAccepted) &&
             (USART_GetCashSequence(original) == sequence))
+        {
+            List_DeleteNode(&ResendList, current->ID);
+        }
+        current = next;
+    }
+}
+
+static void USART_RemoveBoardEventResend(uint8_t event_code, uint8_t token)
+{
+    ListNode_t *current = ResendList.Head;
+    while (current != NULL)
+    {
+        ListNode_t *next = current->Next;
+        Mesg_TypeDef *original = &MesgTable[current->ID];
+        if ((original->Code2 == event_code) &&
+            (original->Data1 == token) &&
+            USART_IsDurableBoardEvent(event_code))
         {
             List_DeleteNode(&ResendList, current->ID);
         }
@@ -185,6 +211,9 @@ static void USART1_Deal(void *rx_mesg)
                 USART_RemoveCashResend(sequence);
                 break;
             }
+            case BoardEventStored:
+                USART_RemoveBoardEventResend(mesg->Data1, mesg->Data2);
+                break;
             case HardwareStatusRequest:
                 Hardware_RequestStatus();
                 break;
@@ -274,15 +303,15 @@ static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
 {
     uint8_t data[14];
     uint16_t crc;
+    bool durable = (mesg->Code2 == CashAccepted) ||
+                   USART_IsDurableBoardEvent(mesg->Code2);
 
     mesg->ResendID++;
-    if ((mesg->ResendID > Max_Resend_Times) &&
-        (mesg->Code2 != CashAccepted))
+    if ((mesg->ResendID > Max_Resend_Times) && !durable)
     {
         return 1U;
     }
-    if (mesg->Code2 == CashAccepted &&
-        mesg->ResendID > Max_Resend_Times)
+    if (durable && mesg->ResendID > Max_Resend_Times)
     {
         mesg->ResendID = 1U;
     }
@@ -338,9 +367,11 @@ void Resend_Task(void)
         ListNode_t *next = current->Next;
         if (current_time - current->Value > ResendTrigger_Time)
         {
+            bool durable = (MesgTable[current->ID].Code2 == CashAccepted) ||
+                           USART_IsDurableBoardEvent(MesgTable[current->ID].Code2);
             USART_ReSendMesg(&Tx1, &(MesgTable[current->ID]));
             current->Value = current_time;
-            if ((MesgTable[current->ID].Code2 != CashAccepted) &&
+            if (!durable &&
                 (MesgTable[current->ID].ResendID >= Max_Resend_Times))
             {
                 List_DeleteNode(&ResendList, current->ID);
