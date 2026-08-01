@@ -1,0 +1,256 @@
+name: V2 Build Fix
+on:
+  push:
+    paths:
+      - '.github/workflows/v2-build-fix.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Patch V2 sources
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def sub(text, pattern, repl, name, flags=0):
+              new, count = re.subn(pattern, repl, text, count=1, flags=flags)
+              if count != 1:
+                  raise RuntimeError(f'{name}: {count} matches')
+              return new
+
+          path = Path('GouzhuApp/app/src/main/java/com/gouzhu/MainActivity.java')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('CODE_BEAD_OUTPUT_TIMEOUT = 0x07', 'CODE_DISPENSE_FAILED = 0x04')
+          text = text.replace('CODE_BEAD_EMPTY = 0x25', 'CODE_BEAD_EMPTY = 0x22')
+          text = text.replace('CODE_BEAD_REFILLED = 0x26', 'CODE_BEAD_REFILLED = 0x23')
+          text = text.replace('case CODE_BEAD_OUTPUT_TIMEOUT:', 'case CODE_DISPENSE_FAILED:')
+          path.write_text(text, encoding='utf-8')
+
+          path = Path('GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandManager.java')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('import com.gouzhu.util.DeviceUtil;\n',
+              'import com.gouzhu.util.DeviceUtil;\n'
+              'import com.pinball.xiaoda.device.sdk.hardware.CollectRequest;\n'
+              'import com.pinball.xiaoda.device.sdk.hardware.DispenseRequest;\n')
+          text = text.replace('import java.util.TimeZone;\n',
+              'import java.util.TimeZone;\nimport java.util.concurrent.ConcurrentHashMap;\n')
+          text = text.replace(
+              '    private final Handler mainHandler = new Handler(Looper.getMainLooper());\n',
+              '    private final Handler mainHandler = new Handler(Looper.getMainLooper());\n'
+              '    private final ConcurrentHashMap<String, SdkCommandDecoder.DecodedCommand>\n'
+              '            liveSdkCommands = new ConcurrentHashMap<>();\n')
+          text = text.replace('handleDispense(envelope);', 'handleDispense(decoded, envelope);')
+          text = text.replace('handleCollect(envelope);', 'handleCollect(decoded, envelope);')
+
+          text = sub(text,
+              r'    private void handleDispense\(JSONObject envelope\) \{\n'
+              r'        JSONObject data = envelope\.optJSONObject\("data"\);',
+              '    private void handleDispense(\n'
+              '            SdkCommandDecoder.DecodedCommand decoded,\n'
+              '            JSONObject envelope\n'
+              '    ) {\n'
+              '        final DispenseRequest request;\n'
+              '        try {\n'
+              '            request = decoded.toDispenseRequest(System.currentTimeMillis());\n'
+              '        } catch (Throwable error) {\n'
+              '            store.saveCommand(envelope);\n'
+              '            publishTerminal(envelope, false, 0, "SDK_HARDWARE_MAPPING_FAILED",\n'
+              '                    messageOf(error), null);\n'
+              '            return;\n'
+              '        }\n'
+              '        JSONObject data = envelope.optJSONObject("data");',
+              'dispense method')
+          text = text.replace(
+              '        int quantity = data.optInt("quantity", 0);\n'
+              '        int token = operationToken(envelope.optString("messageId", ""));',
+              '        int quantity = request.getQuantity();\n'
+              '        int token = operationToken(request.getMessageId());', 1)
+          text = text.replace(
+              '        store.setActiveDispense(envelope.optString("messageId", ""));\n'
+              '        publishAck(envelope);',
+              '        String messageId = envelope.optString("messageId", "");\n'
+              '        store.setActiveDispense(messageId);\n'
+              '        liveSdkCommands.put(messageId, decoded);\n'
+              '        publishAck(envelope, decoded);', 1)
+
+          text = sub(text,
+              r'    private void handleCollect\(JSONObject envelope\) \{\n'
+              r'        JSONObject data = envelope\.optJSONObject\("data"\);',
+              '    private void handleCollect(\n'
+              '            SdkCommandDecoder.DecodedCommand decoded,\n'
+              '            JSONObject envelope\n'
+              '    ) {\n'
+              '        final CollectRequest request;\n'
+              '        try {\n'
+              '            request = decoded.toCollectRequest(System.currentTimeMillis());\n'
+              '        } catch (Throwable error) {\n'
+              '            store.saveCommand(envelope);\n'
+              '            publishTerminal(envelope, false, 0, "SDK_HARDWARE_MAPPING_FAILED",\n'
+              '                    messageOf(error), null);\n'
+              '            return;\n'
+              '        }\n'
+              '        JSONObject data = envelope.optJSONObject("data");',
+              'collect method')
+          text = text.replace(
+              '        int token = operationToken(envelope.optString("messageId", ""));',
+              '        int token = operationToken(request.getMessageId());', 1)
+          text = text.replace(
+              '        store.setActiveCollect(envelope.optString("messageId", ""));\n'
+              '        publishAck(envelope);',
+              '        String messageId = envelope.optString("messageId", "");\n'
+              '        store.setActiveCollect(messageId);\n'
+              '        liveSdkCommands.put(messageId, decoded);\n'
+              '        publishAck(envelope, decoded);', 1)
+
+          start = text.index('    private boolean publishAck(JSONObject envelope) {')
+          end = text.index('    private boolean publishTerminal(', start)
+          ack = '''    private boolean publishAck(JSONObject envelope) {
+        return publishAck(envelope, null);
+    }
+
+    private boolean publishAck(
+            JSONObject envelope,
+            SdkCommandDecoder.DecodedCommand decoded
+    ) {
+        try {
+            String messageId = envelope.optString("messageId", "");
+            String eventNo = messageId + "-ack";
+            String payload;
+            String status;
+            if (decoded != null) {
+                SdkCommandDecoder.EncodedResult result = decoded.acknowledgement(
+                        eventNo, System.currentTimeMillis());
+                payload = result.payload;
+                eventNo = result.eventNo;
+                status = result.resultStatus;
+            } else {
+                JSONObject data = envelope.optJSONObject("data");
+                JSONObject result = new JSONObject();
+                result.put("messageId", messageId);
+                result.put("commandType", envelope.optString("commandType", ""));
+                result.put("status", "ack");
+                result.put("eventNo", eventNo);
+                result.put("operationNo", data == null ? "" : data.optString("operationNo", ""));
+                result.put("timestamp", System.currentTimeMillis());
+                payload = result.toString();
+                status = "ack";
+            }
+            if (!store.saveCommandResult(messageId, eventNo, status, payload)) {
+                return false;
+            }
+            MqttManager.get(context).reportCommandResult(payload);
+            return true;
+        } catch (Throwable error) {
+            Log.e(TAG, "生成SDK命令ACK失败", error);
+            return false;
+        }
+    }
+
+    private boolean publishPhysicalTerminal(
+            JSONObject envelope,
+            SdkCommandDecoder.DecodedCommand decoded,
+            boolean success,
+            int actualQuantity,
+            String resultCode,
+            String resultMessage
+    ) {
+        if (decoded == null) {
+            return false;
+        }
+        try {
+            String messageId = envelope.optString("messageId", "");
+            SdkCommandDecoder.EncodedResult result = decoded.physicalTerminal(
+                    messageId + "-result", success, actualQuantity,
+                    resultCode, resultMessage, System.currentTimeMillis());
+            if (!store.saveCommandResult(
+                    result.sourceMessageId, result.eventNo,
+                    result.resultStatus, result.payload)) {
+                return false;
+            }
+            MqttManager.get(context).reportCommandResult(result.payload);
+            return true;
+        } catch (Throwable error) {
+            Log.e(TAG, "生成SDK硬件终态失败", error);
+            return false;
+        }
+    }
+
+'''
+          text = text[:start] + ack + text[end:]
+
+          text = sub(text,
+              r'        if \(publishTerminal\(\n'
+              r'                envelope,\n'
+              r'                success,\n'
+              r'                actual,\n'
+              r'                success \? "DISPENSE_COMPLETED" : boardResultName\(resultCode\),\n'
+              r'                success \? "控制板按真实光眼计数完成出珠" : "控制板出珠失败或部分完成",\n'
+              r'                null\n'
+              r'        \)\) \{',
+              '        SdkCommandDecoder.DecodedCommand decoded = liveSdkCommands.get(messageId);\n'
+              '        if (publishPhysicalTerminal(\n'
+              '                envelope, decoded, success, actual,\n'
+              '                success ? "DISPENSE_COMPLETED" : boardResultName(resultCode),\n'
+              '                success ? "控制板按真实光眼计数完成出珠" : "控制板出珠失败或部分完成"\n'
+              '        )) {',
+              'dispense terminal')
+          text = text.replace(
+              '            store.clearActiveDispense();\n            restoreCashAcceptance();',
+              '            store.clearActiveDispense();\n'
+              '            liveSdkCommands.remove(messageId);\n'
+              '            restoreCashAcceptance();', 1)
+          text = sub(text,
+              r'        if \(publishTerminal\(\n'
+              r'                envelope,\n'
+              r'                success,\n'
+              r'                actual,\n'
+              r'                success \? "COLLECT_COMPLETED" : boardResultName\(resultCode\),\n'
+              r'                success \? "控制板按真实光眼计数完成存珠" : "控制板存珠失败或部分完成",\n'
+              r'                null\n'
+              r'        \)\) \{',
+              '        SdkCommandDecoder.DecodedCommand decoded = liveSdkCommands.get(messageId);\n'
+              '        if (publishPhysicalTerminal(\n'
+              '                envelope, decoded, success, actual,\n'
+              '                success ? "COLLECT_COMPLETED" : boardResultName(resultCode),\n'
+              '                success ? "控制板按真实光眼计数完成存珠" : "控制板存珠失败或部分完成"\n'
+              '        )) {',
+              'collect terminal')
+          text = text.replace(
+              '            store.clearActiveCollect();\n            restoreCashAcceptance();',
+              '            store.clearActiveCollect();\n'
+              '            liveSdkCommands.remove(messageId);\n'
+              '            restoreCashAcceptance();', 1)
+          path.write_text(text, encoding='utf-8')
+      - name: Build Android
+        shell: bash
+        run: |
+          set +e
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:assembleDebug > ../v2-build.log 2>&1
+          rc=$?
+          cd ..
+          mkdir -p docs
+          printf 'status=%s\ncommit=%s\n--- log tail ---\n' "$rc" "$(git rev-parse HEAD)" > docs/v2-build-status.txt
+          tail -n 200 v2-build.log >> docs/v2-build-status.txt
+      - name: Commit
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add GouzhuApp/app/src/main/java/com/gouzhu/MainActivity.java \
+                  GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandManager.java \
+                  docs/v2-build-status.txt
+          git commit -m '接入新版SDK硬件映射并验证V2构建' || exit 0
+          git pull --rebase origin main
+          git push origin HEAD:main
