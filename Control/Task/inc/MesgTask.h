@@ -25,6 +25,8 @@
 #define Unlock 0x10U
 #define CashAcceptanceApply 0x18U
 #define BillReset 0x19U
+/* Android 已持久化现金事实：Data3:Data4=16位现金序号。 */
+#define CashEventStored 0x1AU
 #define HardwareStatusRequest 0x20U
 #define BoardRestart 0xF0U
 #define EmergencyStop 0xFFU
