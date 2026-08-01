@@ -139,9 +139,7 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
                     "存珠数量上限必须为1..65535"
             );
         }
-        int timeoutSeconds = request.getSessionTimeoutSeconds() == null
-                ? 300
-                : Math.max(1, request.getSessionTimeoutSeconds());
+        int timeoutSeconds = Math.max(1, request.getSessionTimeoutSeconds());
         return execute(
                 request.getMessageId(),
                 maximum,
