@@ -1,0 +1,95 @@
+name: Fix Bootstrap Cash Boundary
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-bootstrap-cash-boundary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Remove legacy bootstrap cash configuration records
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java')
+          text = path.read_text(encoding='utf-8')
+          old = '''        DeviceCommandStore.CashConfigurationRecord record =
+                store.loadCashConfiguration();
+        if (record == null || record.changeEnabled) {
+            return;
+        }
+
+        JSONObject envelope = parseObject(record.snapshotJson);'''
+          new = '''        DeviceCommandStore.CashConfigurationRecord record =
+                store.loadCashConfiguration();
+        if (record == null || record.changeEnabled) {
+            return;
+        }
+
+        JSONObject envelope = parseObject(record.snapshotJson);
+        String sourceMessageId = envelope == null
+                ? ""
+                : envelope.optString("messageId", "");
+        if (sourceMessageId.startsWith("bootstrap-cash-config-")) {
+            Log.w(
+                    TAG,
+                    "检测到旧版bootstrap直接写入的现金配置，已删除并关闭纸钞机："
+                            + sourceMessageId
+            );
+            store.getWritableDatabase().delete(
+                    "cash_configuration",
+                    "id=1",
+                    null
+            );
+            store.clearPendingConfigMessageId();
+            store.setCashBlocked(true);
+            cashAdapter.applyDisabled(Math.max(1, record.configVersion));
+            return;
+        }'''
+          if old not in text:
+              raise RuntimeError('reapplyCashConfiguration target block not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+      - name: Build Android
+        shell: bash
+        run: |
+          set +e
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:assembleDebug > ../bootstrap-cash-build.log 2>&1
+          rc=$?
+          cd ..
+          mkdir -p docs
+          {
+            echo "android_build_status=$rc"
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo '--- build tail ---'
+            tail -n 300 bootstrap-cash-build.log
+          } > docs/bootstrap-cash-boundary-build.txt
+          exit 0
+
+      - name: Commit patch and report
+        shell: bash
+        run: |
+          rm -f .github/workflows/fix-bootstrap-cash-boundary.yml
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -A
+          git commit -m '清理旧bootstrap现金配置并验证构建' || exit 0
+          git pull --rebase origin main
+          git push origin HEAD:main
