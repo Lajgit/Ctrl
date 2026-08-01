@@ -36,16 +36,21 @@ jobs:
             com.pinball.xiaoda.device.sdk.hardware.CollectRequest
             com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult
             com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult
-            com.pinball.xiaoda.device.sdk.mqtt.MqttSessionManager
-            com.pinball.xiaoda.device.sdk.mqtt.PendingMessageStore
-            com.pinball.xiaoda.device.sdk.mqtt.PendingOutboundMessage
-            com.pinball.xiaoda.device.sdk.mqtt.MqttSessionListener
+            com.pinball.xiaoda.device.sdk.hardware.CashTier
+            com.pinball.xiaoda.device.sdk.client.MqttSessionManager
+            com.pinball.xiaoda.device.sdk.client.PendingMessageStore
+            com.pinball.xiaoda.device.sdk.client.PendingOutboundMessage
+            com.pinball.xiaoda.device.sdk.client.MqttSessionListener
             com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec
             com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResultCodec
             com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult
+            'com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder'
             com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand
             com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandTypes
+            com.pinball.xiaoda.device.sdk.protocol.DispenseMarblesCommandData
+            com.pinball.xiaoda.device.sdk.protocol.CollectMarblesCommandData
             com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData
+            'com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData$CashSaleItem'
             com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData
             com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowledgement
             com.pinball.xiaoda.device.sdk.core.MqttReceiptKey
