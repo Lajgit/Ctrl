@@ -11,7 +11,8 @@
 #define CASH_MEDIUM_BANKNOTE 1U
 
 #define CASH_ACCEPT_BANKNOTE_MASK (1U << 0)
-#define CASH_ACCEPT_COIN_MASK (1U << 1)
+/* 当前控制板代码没有可验证的硬币 inhibit 输出，V2 默认拒绝启用硬币接收。 */
+#define CASH_ACCEPT_COIN_MASK 0U
 
 void KeyAll_Init(void);
 void Key_Task(void);
