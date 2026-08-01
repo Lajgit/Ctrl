@@ -1,0 +1,78 @@
+name: Fix Cash Reapply
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-cash-reapply.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch persisted config replay
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java')
+          text = path.read_text(encoding='utf-8')
+          start = text.index('    private void reapplyCashConfiguration() {')
+          end = text.index('    private void restoreCashAcceptance() {', start)
+          replacement = '''    private void reapplyCashConfiguration() {
+        DeviceCommandStore.CashConfigurationRecord record =
+                store.loadCashConfiguration();
+        if (record == null || record.changeEnabled || store.isCashBlocked()
+                || hasActiveOperation()) {
+            cashAdapter.disableCashAcceptance();
+            return;
+        }
+        JSONObject envelope = parseObject(record.snapshotJson);
+        JSONObject data = envelope == null ? null : envelope.optJSONObject("data");
+        org.json.JSONArray items = data == null
+                ? null
+                : data.optJSONArray("cashSaleItems");
+        if (data == null || items == null) {
+            store.setCashBlocked(true);
+            cashAdapter.disableCashAcceptance();
+            return;
+        }
+
+        List<CashTier> tiers = new ArrayList<>();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
+            if (item == null) {
+                store.setCashBlocked(true);
+                cashAdapter.disableCashAcceptance();
+                return;
+            }
+            tiers.add(new CashTier(
+                    item.optString("cashMediumType", ""),
+                    item.optInt("denominationAmount", 0),
+                    item.optInt("marbleQuantity", 0),
+                    item.optString("cashSaleTierNo", "")
+            ));
+        }
+
+        hardwareExecutor.execute(() -> {
+            CashConfigurationResult result = record.enabled
+                    ? cashAdapter.apply(record.configVersion, tiers)
+                    : cashAdapter.applyDisabled(record.configVersion);
+            if (!result.isApplied()) {
+                store.setCashBlocked(true);
+            }
+        });
+    }
+
+'''
+          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+          PY
+      - name: Commit
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java
+          git commit -m '重启后从已验证快照重新应用现金配置' || exit 0
+          git pull --rebase origin main
+          git push origin HEAD:main
