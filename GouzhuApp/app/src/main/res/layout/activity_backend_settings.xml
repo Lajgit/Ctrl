@@ -51,6 +51,11 @@
                 android:text="@string/board_waiting" />
 
             <TextView
+                android:id="@+id/text_reverse_scanner_status"
+                style="@style/Widget.Gouzhu.StatusText"
+                android:text="@string/reverse_scanner_waiting" />
+
+            <TextView
                 android:id="@+id/text_stock_status"
                 style="@style/Widget.Gouzhu.StatusText"
                 android:text="@string/stock_unknown" />
