@@ -16,13 +16,18 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-/** 新版 SDK CashConfigurationAdapter 的 ttyS5 实现。 */
+/**
+ * 新版 SDK CashConfigurationAdapter 的 ttyS5 实现。
+ *
+ * <p>硬币器只有12V、GND和脉冲三根线，无法由软件物理关闭，因此控制板
+ * 状态中的硬币位始终为1。所谓disable只关闭纸钞机。</p>
+ */
 public final class SerialCashConfigurationAdapter implements CashConfigurationAdapter {
 
     private static final int CMD_CASH_APPLY = 0x18;
     private static final int EVT_CASH_ACCEPTANCE_STATUS = 0x11;
     private static final int BANKNOTE_MASK = 1;
-    private static final int COIN_MASK = 2;
+    private static final int ALWAYS_ON_COIN_MASK = 2;
     private static final long APPLY_TIMEOUT_MS = 5_000L;
 
     private final Context context;
@@ -94,10 +99,10 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
             return CashConfigurationResult.rejected("configVersion超出控制板24位范围");
         }
         if (tiers == null || tiers.isEmpty()) {
-            return applyMask(configVersion, 0);
+            return applyMask(configVersion, ALWAYS_ON_COIN_MASK);
         }
 
-        int mask = 0;
+        int mask = ALWAYS_ON_COIN_MASK;
         for (CashTier tier : tiers) {
             if (tier == null
                     || tier.getDenominationAmount() <= 0
@@ -109,9 +114,7 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
             }
             if ("banknote".equals(tier.getMediumType())) {
                 mask |= BANKNOTE_MASK;
-            } else if ("coin".equals(tier.getMediumType())) {
-                mask |= COIN_MASK;
-            } else {
+            } else if (!"coin".equals(tier.getMediumType())) {
                 disableCashAcceptance();
                 return CashConfigurationResult.rejected("不支持的现金介质");
             }
@@ -120,20 +123,21 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
     }
 
     public CashConfigurationResult applyDisabled(long configVersion) {
-        return applyMask(configVersion, 0);
+        return applyMask(configVersion, ALWAYS_ON_COIN_MASK);
     }
 
     @Override
     public void disableCashAcceptance() {
         long version = Math.max(1L, Math.min(0x00FFFFFFL, lastConfigVersion));
-        long packed = version & 0x00FFFFFFL;
+        long packed = ((long) ALWAYS_ON_COIN_MASK << 24)
+                | (version & 0x00FFFFFFL);
         SerialManager.get(context).sendCommand(CMD_CASH_APPLY, packed, true);
     }
 
     private CashConfigurationResult applyMask(long configVersion, int mask) {
         synchronized (applyLock) {
             ApplyWaiter active = new ApplyWaiter();
-            active.expectedMask = mask & 0xFF;
+            active.expectedMask = (mask | ALWAYS_ON_COIN_MASK) & 0xFF;
             active.expectedVersion = configVersion;
             waiter = active;
             lastConfigVersion = configVersion;
