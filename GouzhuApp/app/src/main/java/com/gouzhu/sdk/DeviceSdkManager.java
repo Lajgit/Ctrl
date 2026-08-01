@@ -6,6 +6,7 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
+import com.gouzhu.mqtt.BootstrapCashSaleSynchronizer;
 import com.gouzhu.util.DeviceUtil;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppClient;
@@ -116,6 +117,13 @@ public final class DeviceSdkManager {
                                 + "，耗时=" + (System.currentTimeMillis() - startedAt) + "ms"
                                 + "，resultNull=" + (result == null)
                 );
+
+                /*
+                 * bootstrap.cashSale是服务端已经确认应用的现金配置快照。
+                 * available=true固定同步为控制板mask=0x03，立即开启纸钞和硬币；
+                 * available=false同步为mask=0x02，只关闭可控纸钞机。
+                 */
+                BootstrapCashSaleSynchronizer.get(context).synchronize(result);
                 mainHandler.post(() -> callback.onSuccess(result));
             } catch (Throwable error) {
                 long elapsed = System.currentTimeMillis() - startedAt;
