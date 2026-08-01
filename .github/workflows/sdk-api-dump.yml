@@ -1,0 +1,54 @@
+name: SDK API Dump
+on:
+  push:
+    paths:
+      - '.github/workflows/sdk-api-dump.yml'
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: List SDK classes
+        run: |
+          echo '=== hardware classes ==='
+          jar tf GouzhuApp/app/libs/xiaoda-device-hardware-0.1.0.jar | grep '\.class$' | sort
+          echo '=== mqtt classes ==='
+          jar tf GouzhuApp/app/libs/xiaoda-device-mqtt-0.1.0.jar | grep '\.class$' | sort
+          echo '=== sdk protocol/core classes ==='
+          jar tf GouzhuApp/app/libs/xiaoda-device-sdk-0.1.0.jar | grep '\.class$' | grep -E 'Mqtt|Cash|Command|Credential|Topic' | sort
+      - name: Dump key APIs
+        shell: bash
+        run: |
+          CP='GouzhuApp/app/libs/xiaoda-device-sdk-0.1.0.jar:GouzhuApp/app/libs/xiaoda-device-mqtt-0.1.0.jar:GouzhuApp/app/libs/xiaoda-device-hardware-0.1.0.jar'
+          classes=(
+            com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter
+            com.pinball.xiaoda.device.sdk.hardware.CashConfigurationAdapter
+            com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandMapper
+            com.pinball.xiaoda.device.sdk.hardware.DispenseRequest
+            com.pinball.xiaoda.device.sdk.hardware.CollectRequest
+            com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult
+            com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult
+            com.pinball.xiaoda.device.sdk.mqtt.MqttSessionManager
+            com.pinball.xiaoda.device.sdk.mqtt.PendingMessageStore
+            com.pinball.xiaoda.device.sdk.mqtt.PendingOutboundMessage
+            com.pinball.xiaoda.device.sdk.mqtt.MqttSessionListener
+            com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec
+            com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResultCodec
+            com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult
+            com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand
+            com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandTypes
+            com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData
+            com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData
+            com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowledgement
+            com.pinball.xiaoda.device.sdk.core.MqttReceiptKey
+          )
+          for c in "${classes[@]}"; do
+            echo "=== $c ==="
+            javap -classpath "$CP" -public "$c" || true
+          done
