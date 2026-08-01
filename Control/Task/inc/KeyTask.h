@@ -24,6 +24,7 @@ void CashAcceptance_Disable(void);
 void CashAcceptance_RequestStatus(void);
 uint8_t CashAcceptance_GetEnableMask(void);
 uint32_t CashAcceptance_GetConfigVersion(void);
+uint32_t CashDevice_GetStatusData(void);
 
 /* 尚未被 Android 可靠接收确认的现金事实。 */
 bool CashEvent_HasPending(void);
