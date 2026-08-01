@@ -16,6 +16,15 @@ public final class AppConfig {
     /** 安卓板与控制板通信波特率。 */
     public static final int SERIAL_BAUD_RATE = 115200;
 
+    /** 反扫模块串口。 */
+    public static final String REVERSE_SCANNER_DEVICE = "/dev/ttyS6";
+
+    /**
+     * 反扫模块默认串口参数：9600 8N1、无硬件流控。
+     * 实际模组若配置为其他波特率，只修改本常量，不改解析逻辑。
+     */
+    public static final int REVERSE_SCANNER_BAUD_RATE = 9600;
+
     /** 生产 HTTP 网关。 */
     public static final String ACTIVATION_BASE_URL = "https://api.dzxd.top";
 
@@ -38,6 +47,10 @@ public final class AppConfig {
     /** 控制板事件广播。 */
     public static final String ACTION_BOARD_EVENT =
             "com.gouzhu.action.BOARD_EVENT";
+
+    /** ttyS6 反扫模块状态和扫码结果广播。 */
+    public static final String ACTION_REVERSE_SCANNER_EVENT =
+            "com.gouzhu.action.REVERSE_SCANNER_EVENT";
 
     /** 会员存珠界面事件广播。 */
     public static final String ACTION_COLLECTION_EVENT =
