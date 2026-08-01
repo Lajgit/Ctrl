@@ -22,6 +22,7 @@ import com.gouzhu.activation.ActivationManager;
 import com.gouzhu.mqtt.DeviceCommandManager;
 import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.network.WifiSupport;
+import com.gouzhu.scanner.ReverseScannerManager;
 import com.gouzhu.serial.SerialManager;
 import com.gouzhu.upgrade.UpgradeManager;
 import com.pinball.xiaoda.device.sdk.core.MqttCredential;
@@ -31,8 +32,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * com.gouzhu 单应用后台服务。
  *
- * <p>统一管理 ttyS5、网络、服务端 SDK 生命周期、MQTT 和升级，不读取或守护
- * 旧包名、旧认证流程或旧凭证。</p>
+ * <p>统一管理 ttyS5 控制板、ttyS6 反扫模块、网络、服务端 SDK 生命周期、
+ * MQTT 和升级，不读取或守护旧包名、旧认证流程或旧凭证。</p>
  */
 public class DeviceService extends Service {
 
@@ -84,9 +85,12 @@ public class DeviceService extends Service {
     }
 
     private void initializeDevice() {
-        broadcastStatus("service", "正在连接控制板");
+        broadcastStatus("service", "正在连接控制板和反扫模块");
         SerialManager.get(this).open();
         DeviceCommandManager.get(this).start();
+
+        // 反扫串口独立于 ttyS5。打开失败只影响扫码功能，不阻断设备联网和激活。
+        ReverseScannerManager.get(this).open();
 
         if (!WifiSupport.hasSavedWifi(this)) {
             broadcastStatus("network", "尚未配置WiFi");
@@ -215,7 +219,7 @@ public class DeviceService extends Service {
                 "购珠机设备服务",
                 NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription("维持购珠机串口、网络、SDK认证、MQTT和升级任务");
+        channel.setDescription("维持控制板、反扫串口、网络、SDK认证、MQTT和升级任务");
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.createNotificationChannel(channel);
@@ -378,6 +382,7 @@ public class DeviceService extends Service {
         }
         DeviceCommandManager.get(this).stop();
         MqttManager.get(this).close();
+        ReverseScannerManager.get(this).close();
         SerialManager.get(this).close();
         super.onDestroy();
     }
