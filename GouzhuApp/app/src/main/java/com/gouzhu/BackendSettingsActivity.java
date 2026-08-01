@@ -7,7 +7,6 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.SharedPreferences;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
@@ -33,26 +32,17 @@ import com.gouzhu.util.DeviceUtil;
 
 import java.util.Locale;
 
-/**
- * 购珠机后台设置页。
- *
- * <p>设备状态只在本页显示。正式设备通过控制板 K2 进入；
- * 顾客首页保留的后台按钮仅供当前调试阶段使用。</p>
- */
+/** 控制板 V2、网络、MQTT 和反扫模块诊断页。 */
 public class BackendSettingsActivity extends AppCompatActivity {
 
     private static final long BOARD_POLL_INTERVAL_MS = 2_000L;
     private static final long BOARD_RESPONSE_TIMEOUT_MS = 5_000L;
-    private static final String STATUS_PREFS = "backend_status";
-    private static final String KEY_PENDING_KNOWN = "pending_known";
-    private static final String KEY_PENDING_BEADS = "pending_beads";
 
     private TextView networkStatusText;
     private TextView mqttStatusText;
     private TextView boardStatusText;
     private TextView reverseScannerStatusText;
     private TextView stockText;
-    private TextView pendingText;
     private TextView eventText;
     private boolean receiverRegistered;
     private boolean boardResponsive;
@@ -68,8 +58,8 @@ public class BackendSettingsActivity extends AppCompatActivity {
             if (!serial.isOpen()) {
                 setBoardDisconnected(R.string.board_serial_not_connected);
             } else {
-                // ttyS5 即使控制板物理断开仍可写入，因此必须通过版本应答判断在线状态。
                 serial.sendCommand(0x00, 0L, false);
+                serial.sendCommand(0x20, 0L, false);
                 evaluateBoardResponseTimeout();
             }
             refreshReverseScannerStatus();
@@ -83,7 +73,6 @@ public class BackendSettingsActivity extends AppCompatActivity {
             if (intent == null) {
                 return;
             }
-
             if (AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())) {
                 updateServiceStatus(
                         intent.getStringExtra("key"),
@@ -91,12 +80,10 @@ public class BackendSettingsActivity extends AppCompatActivity {
                 );
                 return;
             }
-
             if (AppConfig.ACTION_REVERSE_SCANNER_EVENT.equals(intent.getAction())) {
                 handleReverseScannerEvent(intent);
                 return;
             }
-
             if (AppConfig.ACTION_BOARD_EVENT.equals(intent.getAction())) {
                 handleBoardEvent(
                         intent.getIntExtra("code2", -1),
@@ -118,10 +105,7 @@ public class BackendSettingsActivity extends AppCompatActivity {
         boardStatusText = findViewById(R.id.text_board_status);
         reverseScannerStatusText = findViewById(R.id.text_reverse_scanner_status);
         stockText = findViewById(R.id.text_stock_status);
-        pendingText = findViewById(R.id.text_pending_status);
         eventText = findViewById(R.id.text_latest_event);
-
-        restorePendingStatus();
 
         TextView deviceText = findViewById(R.id.text_device_info);
         deviceText.setText(getString(
@@ -160,7 +144,6 @@ public class BackendSettingsActivity extends AppCompatActivity {
                     WifiSupport.getCurrentSsid(this)
             ));
         }
-
         startBoardStatusMonitor();
         requestBoardStatus(false);
         refreshReverseScannerStatus();
@@ -176,6 +159,22 @@ public class BackendSettingsActivity extends AppCompatActivity {
         super.onStop();
     }
 
+    private void registerStatusReceiver() {
+        if (receiverRegistered) {
+            return;
+        }
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(AppConfig.ACTION_SERVICE_STATUS);
+        filter.addAction(AppConfig.ACTION_BOARD_EVENT);
+        filter.addAction(AppConfig.ACTION_REVERSE_SCANNER_EVENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(statusReceiver, filter);
+        }
+        receiverRegistered = true;
+    }
+
     private void startBoardStatusMonitor() {
         statusHandler.removeCallbacks(boardStatusMonitor);
         boardResponsive = false;
@@ -188,13 +187,11 @@ public class BackendSettingsActivity extends AppCompatActivity {
     private void requestBoardStatus(boolean showToast) {
         SerialManager serial = SerialManager.get(this);
         boolean versionSent = serial.sendCommand(0x00, 0L, false);
-        boolean statusSent = serial.sendCommand(0x21, 0L, false);
+        boolean statusSent = serial.sendCommand(0x20, 0L, false);
         boolean sent = versionSent || statusSent;
-
         if (!sent) {
             setBoardDisconnected(R.string.board_serial_not_connected);
         }
-
         if (showToast) {
             Toast.makeText(
                     this,
@@ -227,63 +224,15 @@ public class BackendSettingsActivity extends AppCompatActivity {
         boardStatusText.setText(textResId);
     }
 
-    private void refreshReverseScannerStatus() {
-        ReverseScannerManager scanner = ReverseScannerManager.get(this);
-        if (scanner.isOpen()) {
-            reverseScannerStatusText.setText(getString(
-                    R.string.reverse_scanner_connected_format,
-                    AppConfig.REVERSE_SCANNER_DEVICE,
-                    AppConfig.REVERSE_SCANNER_BAUD_RATE
-            ));
-        } else {
-            reverseScannerStatusText.setText(getString(
-                    R.string.reverse_scanner_disconnected_format,
-                    AppConfig.REVERSE_SCANNER_DEVICE
-            ));
-        }
-    }
-
-    private void handleReverseScannerEvent(Intent intent) {
-        String event = intent.getStringExtra(ReverseScannerManager.EXTRA_EVENT);
-        String message = intent.getStringExtra(ReverseScannerManager.EXTRA_MESSAGE);
-        String safeMessage = message == null || message.trim().isEmpty()
-                ? getString(R.string.reverse_scanner_event_unknown)
-                : message;
-        reverseScannerStatusText.setText(safeMessage);
-
-        if (!ReverseScannerManager.EVENT_CONNECTED.equals(event)
-                && !ReverseScannerManager.EVENT_DISCONNECTED.equals(event)) {
-            eventText.setText(safeMessage);
-        }
-    }
-
-    private void registerStatusReceiver() {
-        if (receiverRegistered) {
-            return;
-        }
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(AppConfig.ACTION_SERVICE_STATUS);
-        filter.addAction(AppConfig.ACTION_BOARD_EVENT);
-        filter.addAction(AppConfig.ACTION_REVERSE_SCANNER_EVENT);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(statusReceiver, filter);
-        }
-        receiverRegistered = true;
-    }
-
     private void updateServiceStatus(String key, String value) {
         String safeValue = value == null ? "" : value;
         if ("network".equals(key)) {
             networkStatusText.setText(safeValue);
         } else if ("mqtt".equals(key) || "activation".equals(key)) {
             mqttStatusText.setText(safeValue);
+        } else if ("hardware".equals(key)) {
+            eventText.setText(safeValue);
         } else if ("serial".equals(key)) {
-            /*
-             * “ttyS5 已打开”不能代表控制板在线。只有收到合法控制板帧才显示已连接；
-             * 串口打开失败或读写异常仍立即显示为断开。
-             */
             if (safeValue.contains("失败")
                     || safeValue.contains("异常")
                     || safeValue.contains("未连接")) {
@@ -298,6 +247,8 @@ public class BackendSettingsActivity extends AppCompatActivity {
 
     private void handleBoardEvent(int code2, long data, int expandCode) {
         markBoardResponsive();
+        int token = (int) ((data >>> 24) & 0xFF);
+        long value = data & 0x00FFFFFFL;
 
         switch (code2) {
             case 0x00:
@@ -307,51 +258,62 @@ public class BackendSettingsActivity extends AppCompatActivity {
                 ));
                 break;
             case 0x01:
-                eventText.setText(R.string.board_bead_output_feedback);
+                eventText.setText("出珠已启动：token=" + token + "，目标=" + value);
                 break;
             case 0x02:
-                eventText.setText(R.string.board_coin_input);
+                eventText.setText("出珠进度：token=" + token + "，实际=" + value);
+                break;
+            case 0x03:
+                eventText.setText("出珠完成：token=" + token + "，实际=" + value);
                 break;
             case 0x04:
-                int billType = (int) ((data >>> 16) & 0xFF);
-                int billState = (int) (data & 0xFF);
-                eventText.setText(getString(
-                        R.string.board_bill_accepted_format,
-                        billType,
-                        billState
-                ));
+                eventText.setText("出珠失败：token=" + token
+                        + "，实际=" + value + "，结果码=" + expandCode);
+                break;
+            case 0x05:
+                eventText.setText("存珠已启动：token=" + token + "，上限=" + value);
+                break;
+            case 0x06:
+                eventText.setText("存珠进度：token=" + token + "，实际=" + value);
                 break;
             case 0x07:
-                eventText.setText(getString(R.string.board_output_timeout_format, data));
-                updatePendingStatus(data);
+                eventText.setText("存珠完成：token=" + token + "，实际=" + value);
+                break;
+            case 0x08:
+                eventText.setText("存珠失败：token=" + token
+                        + "，实际=" + value + "，结果码=" + expandCode);
+                break;
+            case 0x10:
+                int medium = (int) ((data >>> 24) & 0xFF);
+                int amountFen = (int) ((data >>> 8) & 0xFFFF);
+                int sequence = (((int) data & 0xFF) << 8) | (expandCode & 0xFF);
+                eventText.setText("现金已入箱："
+                        + (medium == 0 ? "硬币" : "纸币")
+                        + " " + amountFen + "分，序号=" + sequence
+                        + "；等待平台下发出珠指令");
+                break;
+            case 0x11:
+                int mask = (int) ((data >>> 24) & 0xFF);
+                int version = (int) (data & 0x00FFFFFFL);
+                eventText.setText("现金配置：版本=" + version + "，启用掩码=" + mask);
+                break;
+            case 0x12:
+                eventText.setText("现金设备诊断：0x"
+                        + Long.toHexString(data).toUpperCase(Locale.ROOT));
                 break;
             case 0x20:
-                eventText.setText(getString(
-                        R.string.board_price_format,
-                        data / 100.0
-                ));
-                break;
-            case 0x21:
                 stockText.setText(getString(R.string.stock_format, data));
                 break;
-            case 0x22:
-                updatePendingStatus(data);
-                break;
-            case 0x23:
-                eventText.setText(getString(
-                        R.string.credit_format,
-                        data / 100.0
-                ));
-                break;
-            case 0x24:
+            case 0x21:
                 stockText.setText(getString(R.string.low_stock_format, data));
                 break;
-            case 0x25:
+            case 0x22:
                 stockText.setText(R.string.board_empty);
-                updatePendingStatus(data);
+                eventText.setText("控制板无珠，现金接收已关闭");
                 break;
-            case 0x26:
+            case 0x23:
                 stockText.setText(getString(R.string.refilled_format, data));
+                eventText.setText("库存已补充，等待平台现金配置重新生效");
                 break;
             case 0x27:
                 eventText.setText(R.string.backend_entered_by_k2);
@@ -367,34 +329,26 @@ public class BackendSettingsActivity extends AppCompatActivity {
         }
     }
 
-    private void restorePendingStatus() {
-        SharedPreferences preferences = getSharedPreferences(STATUS_PREFS, MODE_PRIVATE);
-        if (!preferences.getBoolean(KEY_PENDING_KNOWN, false)) {
-            pendingText.setText(R.string.pending_status_unknown);
-            return;
-        }
-        updatePendingText(preferences.getLong(KEY_PENDING_BEADS, 0L));
+    private void refreshReverseScannerStatus() {
+        ReverseScannerManager scanner = ReverseScannerManager.get(this);
+        reverseScannerStatusText.setText(scanner.isOpen()
+                ? getString(
+                        R.string.reverse_scanner_connected_format,
+                        AppConfig.REVERSE_SCANNER_DEVICE,
+                        AppConfig.REVERSE_SCANNER_BAUD_RATE
+                )
+                : getString(
+                        R.string.reverse_scanner_disconnected_format,
+                        AppConfig.REVERSE_SCANNER_DEVICE
+                ));
     }
 
-    private void updatePendingStatus(long pendingBeads) {
-        long safeValue = Math.max(0L, pendingBeads);
-        updatePendingText(safeValue);
-        getSharedPreferences(STATUS_PREFS, MODE_PRIVATE)
-                .edit()
-                .putBoolean(KEY_PENDING_KNOWN, true)
-                .putLong(KEY_PENDING_BEADS, safeValue)
-                .apply();
-    }
-
-    private void updatePendingText(long pendingBeads) {
-        if (pendingBeads > 0L) {
-            pendingText.setText(getString(
-                    R.string.pending_status_warning_format,
-                    pendingBeads
-            ));
-        } else {
-            pendingText.setText(getString(R.string.pending_status_format, 0L));
-        }
+    private void handleReverseScannerEvent(Intent intent) {
+        String message = intent.getStringExtra(ReverseScannerManager.EXTRA_MESSAGE);
+        eventText.setText(message == null || message.trim().isEmpty()
+                ? getString(R.string.reverse_scanner_event_unknown)
+                : message);
+        refreshReverseScannerStatus();
     }
 
     private void showActivationLogs() {
