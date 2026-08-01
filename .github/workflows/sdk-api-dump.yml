@@ -5,6 +5,9 @@ on:
       - '.github/workflows/sdk-api-dump.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   dump:
     runs-on: ubuntu-latest
@@ -14,17 +17,16 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: List SDK classes
-        run: |
-          echo '=== hardware classes ==='
-          jar tf GouzhuApp/app/libs/xiaoda-device-hardware-0.1.0.jar | grep '\.class$' | sort
-          echo '=== mqtt classes ==='
-          jar tf GouzhuApp/app/libs/xiaoda-device-mqtt-0.1.0.jar | grep '\.class$' | sort
-          echo '=== sdk protocol/core classes ==='
-          jar tf GouzhuApp/app/libs/xiaoda-device-sdk-0.1.0.jar | grep '\.class$' | grep -E 'Mqtt|Cash|Command|Credential|Topic' | sort
-      - name: Dump key APIs
+      - name: Dump APIs
         shell: bash
         run: |
+          mkdir -p docs
+          OUT=docs/sdk-api-dump.txt
+          : > "$OUT"
+          for jar in GouzhuApp/app/libs/xiaoda-device-*.jar; do
+            echo "=== JAR $jar ===" >> "$OUT"
+            jar tf "$jar" | grep '\.class$' | sort >> "$OUT"
+          done
           CP='GouzhuApp/app/libs/xiaoda-device-sdk-0.1.0.jar:GouzhuApp/app/libs/xiaoda-device-mqtt-0.1.0.jar:GouzhuApp/app/libs/xiaoda-device-hardware-0.1.0.jar'
           classes=(
             com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter
@@ -49,6 +51,13 @@ jobs:
             com.pinball.xiaoda.device.sdk.core.MqttReceiptKey
           )
           for c in "${classes[@]}"; do
-            echo "=== $c ==="
-            javap -classpath "$CP" -public "$c" || true
+            echo "=== JAVAP $c ===" >> "$OUT"
+            javap -classpath "$CP" -public "$c" >> "$OUT" 2>&1 || true
           done
+      - name: Commit dump
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add docs/sdk-api-dump.txt
+          git commit -m '生成新版SDK接口清单' || exit 0
+          git push
