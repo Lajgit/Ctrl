@@ -136,7 +136,6 @@ public final class SdkCommandDecoder {
                             eventNo,
                             nowMillis
                     )
-                    .operation(sdkCommand.getOperationNo(), "")
                     .terminal(0, resultCode, resultMessage)
                     .configurationVersion(configVersion)
                     .build();
@@ -159,7 +158,6 @@ public final class SdkCommandDecoder {
                             eventNo,
                             nowMillis
                     )
-                    .operation(sdkCommand.getOperationNo(), "")
                     .terminal(0, resultCode, resultMessage)
                     .build();
             return encode(result);
