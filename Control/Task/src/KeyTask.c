@@ -38,14 +38,14 @@ static volatile uint8_t BillRxHead = 0U;
 static volatile uint8_t BillRxTail = 0U;
 static uint8_t BillEscrowType = 0U;
 static bool BillEnableState = false;
-static bool CoinEnableState = false;
+static bool CoinEnableState = true;
 static BillRxState_t BillRxState = BILL_RX_IDLE;
 static uint32_t BillRxStateTick = 0U;
 static uint32_t BillPollTick = 0U;
 static uint8_t BillLastReportStatus = 0xFFU;
 static uint8_t BillLastType = 0U;
 static uint32_t CashConfigVersion = 0U;
-static uint8_t CashEnableMask = 0U;
+static uint8_t CashEnableMask = CASH_ACCEPT_COIN_MASK;
 
 static bool BillStateCommandPending = false;
 static uint8_t BillStateCommand = 0U;
@@ -80,6 +80,7 @@ extern Setting_TypeDef Setting;
 
 __weak bool CashHardware_SetCoinEnable(bool enable)
 {
+    /* 三线硬币器没有使能脚，始终处于物理接收状态。 */
     (void)enable;
     return true;
 }
@@ -132,45 +133,63 @@ static void BillAcceptor_SetEnableInternal(bool enable)
     BillAcceptor_StartStateCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
 }
 
-static void CoinAcceptor_SetEnableInternal(bool enable)
+static void CoinAcceptor_SetAlwaysOn(void)
 {
-    CoinEnableState = enable;
-    (void)CashHardware_SetCoinEnable(enable);
+    CoinEnableState = true;
+    (void)CashHardware_SetCoinEnable(true);
 }
 
-static void CashEvent_RecordAccepted(uint8_t medium, uint16_t amount_fen)
+static uint32_t CashEvent_QueueIndex(uint32_t offset)
 {
+    return (Setting.CashQueueHead + offset) % CASH_EVENT_QUEUE_CAPACITY;
+}
+
+bool CashEvent_HasPending(void)
+{
+    return Setting.CashQueueCount > 0U;
+}
+
+bool CashEvent_HasCapacity(void)
+{
+    return Setting.CashQueueCount < CASH_EVENT_QUEUE_CAPACITY;
+}
+
+static bool CashEvent_RecordAccepted(uint8_t medium, uint16_t amount_fen)
+{
+    uint32_t index;
     uint16_t sequence;
 
     if ((amount_fen == 0U) ||
         ((medium != CASH_MEDIUM_COIN) && (medium != CASH_MEDIUM_BANKNOTE)))
     {
-        return;
+        return false;
     }
 
-    /* 一次只允许一笔不可逆现金事实等待 Android 持久化。 */
-    if ((Setting.HardwareFlags & HARDWARE_FLAG_PENDING_CASH) != 0U)
+    if (!CashEvent_HasCapacity())
     {
-        CashAcceptance_Disable();
+        Setting.HardwareFlags |= HARDWARE_FLAG_CASH_QUEUE_OVERFLOW;
+        FlashTask_RequestSave();
         EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
-        return;
+        return false;
     }
 
-    sequence = (uint16_t)((Setting.PendingCashSequence + 1U) & 0xFFFFU);
+    sequence = (uint16_t)((Setting.CashSequenceCounter + 1U) & 0xFFFFU);
     if (sequence == 0U)
     {
         sequence = 1U;
     }
+    Setting.CashSequenceCounter = sequence;
 
-    Setting.PendingCashSequence = sequence;
-    Setting.PendingCashMedium = medium;
-    Setting.PendingCashAmountFen = amount_fen;
-    Setting.HardwareFlags |= HARDWARE_FLAG_PENDING_CASH;
+    index = CashEvent_QueueIndex(Setting.CashQueueCount);
+    Setting.CashQueueSequence[index] = sequence;
+    Setting.CashQueuePacked[index] = CASH_EVENT_PACK(medium, amount_fen);
+    Setting.CashQueueCount++;
+    Setting.HardwareFlags &= ~HARDWARE_FLAG_CASH_QUEUE_OVERFLOW;
 
-    /* 先关闭现金入口，再请求 Flash 保存；Mesg_Task 在 FlashTask 之后发送事实。 */
-    CashAcceptance_Disable();
     FlashTask_RequestSave();
     EventGroupSetBits(&Mesg_event, MesgEvent_CashAccepted);
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+    return true;
 }
 
 bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
@@ -178,29 +197,28 @@ bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
     uint8_t valid_mask = CASH_ACCEPT_BANKNOTE_MASK | CASH_ACCEPT_COIN_MASK;
 
     if ((config_version == 0U) || (config_version > 0x00FFFFFFUL) ||
-        ((enable_mask & (uint8_t)(~valid_mask)) != 0U) ||
-        ((Setting.HardwareFlags & HARDWARE_FLAG_PENDING_CASH) != 0U) ||
-        Hardware_IsNoBead() || Hardware_IsDispenseActive() || Hardware_IsCollectActive())
+        ((enable_mask & (uint8_t)(~valid_mask)) != 0U))
     {
         CashAcceptance_Disable();
         return false;
     }
 
     CashConfigVersion = config_version;
-    CashEnableMask = enable_mask & valid_mask;
     BillAcceptor_SetEnableInternal(
-        (CashEnableMask & CASH_ACCEPT_BANKNOTE_MASK) != 0U);
-    CoinAcceptor_SetEnableInternal(
-        (CashEnableMask & CASH_ACCEPT_COIN_MASK) != 0U);
+        (enable_mask & CASH_ACCEPT_BANKNOTE_MASK) != 0U);
+    CoinAcceptor_SetAlwaysOn();
+    CashEnableMask = (enable_mask & CASH_ACCEPT_BANKNOTE_MASK) |
+                     CASH_ACCEPT_COIN_MASK;
     EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
     return true;
 }
 
 void CashAcceptance_Disable(void)
 {
-    CashEnableMask = 0U;
+    /* 只能关闭纸钞机；三线硬币器继续产生必须上报的现金事实。 */
     BillAcceptor_SetEnableInternal(false);
-    CoinAcceptor_SetEnableInternal(false);
+    CoinAcceptor_SetAlwaysOn();
+    CashEnableMask = CASH_ACCEPT_COIN_MASK;
     EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
 }
 
@@ -208,6 +226,10 @@ void CashAcceptance_RequestStatus(void)
 {
     EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
     EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+    if (CashEvent_HasPending())
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashAccepted);
+    }
 }
 
 uint8_t CashAcceptance_GetEnableMask(void)
@@ -222,59 +244,86 @@ uint32_t CashAcceptance_GetConfigVersion(void)
 
 uint32_t CashDevice_GetStatusData(void)
 {
-    return ((uint32_t)BillLastType << 16U) |
+    uint32_t queue_count = Setting.CashQueueCount & 0x7FU;
+    uint32_t overflow =
+        (Setting.HardwareFlags & HARDWARE_FLAG_CASH_QUEUE_OVERFLOW) != 0U
+            ? 0x80000000UL
+            : 0U;
+
+    return overflow |
+           (queue_count << 24U) |
+           ((uint32_t)BillLastType << 16U) |
            ((uint32_t)BillLastReportStatus << 8U) |
            ((BillEnableState ? 1UL : 0UL) << 1U) |
            (CoinEnableState ? 1UL : 0UL);
 }
 
-bool CashEvent_HasPending(void)
-{
-    return (Setting.HardwareFlags & HARDWARE_FLAG_PENDING_CASH) != 0U;
-}
-
 uint8_t CashEvent_GetPendingMedium(void)
 {
-    return (uint8_t)Setting.PendingCashMedium;
+    uint32_t packed;
+    if (!CashEvent_HasPending())
+    {
+        return 0U;
+    }
+    packed = Setting.CashQueuePacked[Setting.CashQueueHead];
+    return (uint8_t)CASH_EVENT_PACKED_MEDIUM(packed);
 }
 
 uint16_t CashEvent_GetPendingAmountFen(void)
 {
-    return (uint16_t)Setting.PendingCashAmountFen;
+    uint32_t packed;
+    if (!CashEvent_HasPending())
+    {
+        return 0U;
+    }
+    packed = Setting.CashQueuePacked[Setting.CashQueueHead];
+    return (uint16_t)CASH_EVENT_PACKED_AMOUNT(packed);
 }
 
 uint16_t CashEvent_GetPendingSequence(void)
 {
-    return (uint16_t)Setting.PendingCashSequence;
+    if (!CashEvent_HasPending())
+    {
+        return 0U;
+    }
+    return (uint16_t)Setting.CashQueueSequence[Setting.CashQueueHead];
 }
 
 void CashEvent_ConfirmTransport(uint16_t sequence)
 {
+    uint32_t head;
+
     if (!CashEvent_HasPending() ||
         (sequence == 0U) ||
-        (sequence != (uint16_t)Setting.PendingCashSequence))
+        (sequence != CashEvent_GetPendingSequence()))
     {
         return;
     }
 
-    Setting.HardwareFlags &= ~HARDWARE_FLAG_PENDING_CASH;
-    Setting.PendingCashAmountFen = 0U;
-    Setting.PendingCashMedium = 0U;
+    head = Setting.CashQueueHead;
+    Setting.CashQueueSequence[head] = 0U;
+    Setting.CashQueuePacked[head] = 0U;
+    Setting.CashQueueHead = (head + 1U) % CASH_EVENT_QUEUE_CAPACITY;
+    Setting.CashQueueCount--;
     FlashTask_RequestSave();
+
+    if (CashEvent_HasPending())
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashAccepted);
+    }
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
 }
 
 void CashEvent_RestorePending(void)
 {
     if (CashEvent_HasPending())
     {
-        CashAcceptance_Disable();
         EventGroupSetBits(&Mesg_event, MesgEvent_CashAccepted);
     }
 }
 
 static void Encoder_ShortCallback(uint16_t id)
 {
-    /* K1 编码器按键对应 DOWN，只恢复库存事实。 */
     if (id == 2U)
     {
         Hardware_Refill();
@@ -329,10 +378,8 @@ static void PulseInput_Scan(PulseInput_t *input)
         }
         else if (current_tick - input->tick >= PULSE_DEBOUNCE_TIME)
         {
-            if (CoinEnableState)
-            {
-                CashEvent_RecordAccepted(CASH_MEDIUM_COIN, 100U);
-            }
+            /* 当前硬币器每个有效脉冲代表1元，即100分。 */
+            (void)CashEvent_RecordAccepted(CASH_MEDIUM_COIN, 100U);
             input->state = PULSE_IDLE;
         }
         break;
@@ -386,7 +433,7 @@ static void BillAcceptor_CompletePayment(uint8_t bill_type, uint8_t complete_sta
 
     if ((amount_fen > 0U) && BillEnableState)
     {
-        CashEvent_RecordAccepted(CASH_MEDIUM_BANKNOTE, amount_fen);
+        (void)CashEvent_RecordAccepted(CASH_MEDIUM_BANKNOTE, amount_fen);
     }
 }
 
@@ -418,7 +465,7 @@ static void BillAcceptor_HandleByte(uint8_t data)
         if (BillAcceptor_IsDenomination(data))
         {
             BillEscrowType = data;
-            if (BillEnableState && !CashEvent_HasPending())
+            if (BillEnableState && CashEvent_HasCapacity())
             {
                 BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
             }
@@ -483,8 +530,8 @@ static void BillAcceptor_Init(void)
     BillRxTail = 0U;
     BillEscrowType = 0U;
     BillEnableState = false;
-    CoinEnableState = false;
-    CashEnableMask = 0U;
+    CoinEnableState = true;
+    CashEnableMask = CASH_ACCEPT_COIN_MASK;
     CashConfigVersion = 0U;
     BillRxState = BILL_RX_IDLE;
     BillLastReportStatus = 0xFFU;
@@ -494,7 +541,7 @@ static void BillAcceptor_Init(void)
     HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
 
     BillAcceptor_StartStateCommand(ICT_CMD_DISABLE);
-    (void)CashHardware_SetCoinEnable(false);
+    CoinAcceptor_SetAlwaysOn();
 }
 
 static void BillAcceptor_Task(void)
