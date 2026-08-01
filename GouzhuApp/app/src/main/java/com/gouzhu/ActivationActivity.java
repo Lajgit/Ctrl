@@ -1,6 +1,8 @@
 package com.gouzhu;
 
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -13,7 +15,9 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.widget.ImageView;
+import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
@@ -26,19 +30,21 @@ import com.gouzhu.util.DeviceUtil;
  * 首次设备报到后的扫码认领界面。
  *
  * <p>二维码内容和认领码只使用服务端 enroll 响应，不在设备端自行拼接。
- * 当平台尚未登记设备身份公钥时，本页显示设备号和 X.509 公钥，供平台先完成身份登记；
- * 身份登记成功后服务会自动重试 enroll，并在本页切换为服务端返回的认领二维码。</p>
+ * 页面同时显示当前错误和本机持久化的注册/报到/激活日志，便于直接判断新版
+ * KeyPair 报到、平台自动登记开关、服务端响应及自动重试状态。</p>
  */
 public final class ActivationActivity extends AppCompatActivity {
 
     public static final String EXTRA_CLAIM_QR_CONTENT = "claimQrContent";
     public static final String EXTRA_CLAIM_CODE = "claimCode";
     public static final String EXTRA_ACTIVATION_STATUS = "activationStatus";
+    public static final String EXTRA_ACTIVATION_ERROR_DETAIL = "activationErrorDetail";
     public static final String EXTRA_IDENTITY_REGISTRATION_REQUIRED =
             "identityRegistrationRequired";
     public static final String EXTRA_IDENTITY_PUBLIC_KEY = "identityPublicKey";
 
     private static final long SUCCESS_CLOSE_DELAY_MS = 1_200L;
+    private static final long LOG_REFRESH_INTERVAL_MS = 1_000L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -46,10 +52,22 @@ public final class ActivationActivity extends AppCompatActivity {
     private TextView qrUnavailableText;
     private TextView claimCodeText;
     private TextView activationStatusText;
+    private TextView activationErrorText;
     private TextView identityRegistrationText;
+    private TextView activationLogText;
+    private ScrollView activationLogScroll;
     private String deviceNo;
+    private String lastRenderedLog = "";
     private boolean receiverRegistered;
     private boolean completing;
+
+    private final Runnable logRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            refreshActivationLog();
+            mainHandler.postDelayed(this, LOG_REFRESH_INTERVAL_MS);
+        }
+    };
 
     private final BroadcastReceiver activationReceiver = new BroadcastReceiver() {
         @Override
@@ -61,6 +79,7 @@ public final class ActivationActivity extends AppCompatActivity {
             }
 
             String status = intent.getStringExtra("value");
+            String errorDetail = intent.getStringExtra(EXTRA_ACTIVATION_ERROR_DETAIL);
             boolean identityRegistrationRequired = intent.getBooleanExtra(
                     EXTRA_IDENTITY_REGISTRATION_REQUIRED,
                     false
@@ -81,7 +100,13 @@ public final class ActivationActivity extends AppCompatActivity {
                 }
             }
 
+            if (notBlank(errorDetail)) {
+                renderError(errorDetail);
+            }
+            refreshActivationLog();
+
             if (status != null && status.contains("认证成功")) {
+                activationErrorText.setVisibility(View.GONE);
                 completeActivation();
             }
         }
@@ -97,14 +122,22 @@ public final class ActivationActivity extends AppCompatActivity {
         qrUnavailableText = findViewById(R.id.text_activation_qr_unavailable);
         claimCodeText = findViewById(R.id.text_activation_claim_code);
         activationStatusText = findViewById(R.id.text_activation_status);
+        activationErrorText = findViewById(R.id.text_activation_error);
         identityRegistrationText = findViewById(R.id.text_activation_identity_registration);
+        activationLogText = findViewById(R.id.text_activation_log);
+        activationLogScroll = findViewById(R.id.scroll_activation_log);
 
         deviceNo = DeviceUtil.getDeviceId(this);
         TextView deviceText = findViewById(R.id.text_activation_device);
         deviceText.setText(getString(R.string.activation_device_format, deviceNo));
 
+        findViewById(R.id.button_copy_activation_log).setOnClickListener(
+                view -> copyActivationLog()
+        );
+
         applyIntent(getIntent());
         ActivationLogStore.append(this, "注册/激活界面", "已显示设备注册激活界面");
+        refreshActivationLog();
     }
 
     @Override
@@ -123,12 +156,15 @@ public final class ActivationActivity extends AppCompatActivity {
             }
             receiverRegistered = true;
         }
+        mainHandler.removeCallbacks(logRefreshRunnable);
+        mainHandler.post(logRefreshRunnable);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         hideSystemUi();
+        refreshActivationLog();
     }
 
     @Override
@@ -136,10 +172,12 @@ public final class ActivationActivity extends AppCompatActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         applyIntent(intent);
+        refreshActivationLog();
     }
 
     @Override
     protected void onStop() {
+        mainHandler.removeCallbacks(logRefreshRunnable);
         if (receiverRegistered) {
             unregisterReceiver(activationReceiver);
             receiverRegistered = false;
@@ -164,20 +202,24 @@ public final class ActivationActivity extends AppCompatActivity {
         }
 
         String status = intent.getStringExtra(EXTRA_ACTIVATION_STATUS);
+        String errorDetail = intent.getStringExtra(EXTRA_ACTIVATION_ERROR_DETAIL);
         if (intent.getBooleanExtra(EXTRA_IDENTITY_REGISTRATION_REQUIRED, false)) {
             renderIdentityRegistration(
                     intent.getStringExtra(EXTRA_IDENTITY_PUBLIC_KEY),
                     status
             );
-            return;
+        } else {
+            renderClaim(
+                    intent.getStringExtra(EXTRA_CLAIM_QR_CONTENT),
+                    intent.getStringExtra(EXTRA_CLAIM_CODE)
+            );
+            if (notBlank(status)) {
+                activationStatusText.setText(status);
+            }
         }
 
-        renderClaim(
-                intent.getStringExtra(EXTRA_CLAIM_QR_CONTENT),
-                intent.getStringExtra(EXTRA_CLAIM_CODE)
-        );
-        if (notBlank(status)) {
-            activationStatusText.setText(status);
+        if (notBlank(errorDetail)) {
+            renderError(errorDetail);
         }
     }
 
@@ -189,6 +231,7 @@ public final class ActivationActivity extends AppCompatActivity {
             claimQrImage.setImageBitmap(bitmap);
             claimQrImage.setVisibility(View.VISIBLE);
             qrUnavailableText.setVisibility(View.GONE);
+            activationErrorText.setVisibility(View.GONE);
         } else {
             claimQrImage.setImageDrawable(null);
             claimQrImage.setVisibility(View.GONE);
@@ -217,6 +260,41 @@ public final class ActivationActivity extends AppCompatActivity {
         activationStatusText.setText(notBlank(status)
                 ? status
                 : getString(R.string.activation_identity_registration_hint));
+    }
+
+    private void renderError(String errorDetail) {
+        activationErrorText.setText(getString(
+                R.string.activation_error_format,
+                errorDetail
+        ));
+        activationErrorText.setVisibility(View.VISIBLE);
+    }
+
+    private void refreshActivationLog() {
+        String logs = ActivationLogStore.read(this);
+        String display = logs.isEmpty()
+                ? getString(R.string.activation_log_empty)
+                : logs;
+        if (display.equals(lastRenderedLog)) {
+            return;
+        }
+        lastRenderedLog = display;
+        activationLogText.setText(display);
+        activationLogScroll.post(() -> activationLogScroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void copyActivationLog() {
+        String logs = ActivationLogStore.read(this);
+        ClipboardManager clipboard =
+                (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText(
+                "购珠机注册激活日志",
+                logs.isEmpty() ? getString(R.string.activation_log_empty) : logs
+        ));
+        Toast.makeText(this, R.string.activation_log_copied, Toast.LENGTH_SHORT).show();
     }
 
     private void completeActivation() {
