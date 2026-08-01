@@ -262,10 +262,12 @@ public final class PaymentManager {
             return "";
         }
 
-        String requestNo = preferences().getString(KEY_SCANNER_REQUEST_NO, "");
-        if (requestNo.isEmpty()) {
-            requestNo = newRequestNo("redeem");
-            preferences().edit().putString(KEY_SCANNER_REQUEST_NO, requestNo).commit();
+        // 每次有效扫码生成独立 clientRequestNo。反扫管理器负责短时间重复码去重，
+        // 不能跨不同扫码长期复用同一个请求号，否则服务端会按幂等请求返回旧结果。
+        String requestNo = newRequestNo("redeem");
+        if (!preferences().edit().putString(KEY_SCANNER_REQUEST_NO, requestNo).commit()) {
+            broadcast(EVENT_FAILED, "保存反扫核销请求号失败", getCurrentOrderId(), null);
+            return "";
         }
 
         final String finalRequestNo = requestNo;
