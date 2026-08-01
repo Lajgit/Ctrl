@@ -27,6 +27,8 @@
 #define BillReset 0x19U
 /* Android 已持久化现金事实：Data3:Data4=16位现金序号。 */
 #define CashEventStored 0x1AU
+/* Android 已持久化关键硬件事件：Data1=原事件Code2，Data2=操作token。 */
+#define BoardEventStored 0x1BU
 #define HardwareStatusRequest 0x20U
 #define BoardRestart 0xF0U
 #define EmergencyStop 0xFFU
