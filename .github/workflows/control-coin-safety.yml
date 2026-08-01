@@ -1,0 +1,72 @@
+name: Control Coin Safety
+on:
+  push:
+    paths:
+      - '.github/workflows/control-coin-safety.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch coin inhibit safety
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('Control/Task/src/KeyTask.c')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('''__weak bool CashHardware_SetCoinEnable(bool enable)
+{
+    (void)enable;
+    return true;
+}''', '''__weak bool CashHardware_SetCoinEnable(bool enable)
+{
+    /* 没有量产硬件 inhibit 实现时，只允许关闭，不允许声明已成功启用。 */
+    return enable == false;
+}''')
+          text = text.replace('''static void CoinAcceptor_SetEnableInternal(bool enable)
+{
+    CoinEnableState = enable;
+    (void)CashHardware_SetCoinEnable(enable);
+}''', '''static bool CoinAcceptor_SetEnableInternal(bool enable)
+{
+    bool applied = CashHardware_SetCoinEnable(enable);
+    CoinEnableState = enable && applied;
+    return applied;
+}''')
+          old = '''    CashConfigVersion = config_version;
+    CashEnableMask = enable_mask & valid_mask;
+    BillAcceptor_SetEnableInternal(
+        (CashEnableMask & CASH_ACCEPT_BANKNOTE_MASK) != 0U);
+    CoinAcceptor_SetEnableInternal(
+        (CashEnableMask & CASH_ACCEPT_COIN_MASK) != 0U);
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+    return true;'''
+          new = '''    CashConfigVersion = config_version;
+    CashEnableMask = enable_mask & valid_mask;
+    BillAcceptor_SetEnableInternal(
+        (CashEnableMask & CASH_ACCEPT_BANKNOTE_MASK) != 0U);
+    if (!CoinAcceptor_SetEnableInternal(
+            (CashEnableMask & CASH_ACCEPT_COIN_MASK) != 0U))
+    {
+        CashAcceptance_Disable();
+        return false;
+    }
+    EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+    return true;'''
+          if old not in text:
+              raise SystemExit('cash apply block not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add Control/Task/src/KeyTask.c
+          git commit -m '硬币接收启用必须由真实inhibit硬件确认' || exit 0
+          git pull --rebase origin main
+          git push origin HEAD:main
