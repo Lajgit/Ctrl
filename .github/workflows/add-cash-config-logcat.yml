@@ -1,0 +1,414 @@
+name: Add Cash Config Logcat
+on:
+  push:
+    paths:
+      - '.github/workflows/add-cash-config-logcat.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  patch-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Add detailed cash configuration logs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path('GouzhuApp/app/src/main/java/com/gouzhu/MainActivity.java')
+          text = main.read_text(encoding='utf-8')
+          if 'import android.util.Log;' not in text:
+              text = text.replace('import android.os.Bundle;\n', 'import android.os.Bundle;\nimport android.util.Log;\n')
+          if 'private static final String TAG = "GouzhuMain";' not in text:
+              text = text.replace(
+                  'public class MainActivity extends AppCompatActivity {\n',
+                  'public class MainActivity extends AppCompatActivity {\n\n    private static final String TAG = "GouzhuMain";\n'
+              )
+          text = text.replace(
+              '''            public void onSuccess(DeviceAppBootstrapResult result) {
+                bootstrapLoading = false;
+                applyBootstrap(result);
+            }''',
+              '''            public void onSuccess(DeviceAppBootstrapResult result) {
+                bootstrapLoading = false;
+                Log.i(TAG, "首页/现金配置读取成功，开始刷新主界面");
+                applyBootstrap(result);
+            }'''
+          )
+          text = text.replace(
+              '''            public void onFailure(Throwable error) {
+                bootstrapLoading = false;
+                disablePackages();
+                paymentStatusText.setText(getString(
+                        R.string.sdk_bootstrap_failed_format,
+                        messageOf(error)
+                ));
+            }''',
+              '''            public void onFailure(Throwable error) {
+                bootstrapLoading = false;
+                Log.e(
+                        TAG,
+                        "首页/现金配置读取失败，套餐入口已禁用：" + messageOf(error),
+                        error
+                );
+                disablePackages();
+                paymentStatusText.setText(getString(
+                        R.string.sdk_bootstrap_failed_format,
+                        messageOf(error)
+                ));
+            }'''
+          )
+          main.write_text(text, encoding='utf-8')
+
+          runtime = Path('GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java')
+          text = runtime.read_text(encoding='utf-8')
+
+          text = text.replace(
+              '''        } catch (Throwable error) {
+            store.saveCommand(decoded.envelope);
+            publishSdkGenericTerminal(
+                    decoded,
+                    false,
+                    "CASH_CONFIGURATION_INVALID",
+                    messageOf(error)
+            );
+            return;
+        }
+
+        String validationError = validateCashConfiguration(config);''',
+              '''        } catch (Throwable error) {
+            Log.e(
+                    TAG,
+                    "解析sync_cash_configuration失败：messageId="
+                            + decoded.sdkCommand.getMessageId()
+                            + "，payload=" + decoded.envelope,
+                    error
+            );
+            store.saveCommand(decoded.envelope);
+            publishSdkGenericTerminal(
+                    decoded,
+                    false,
+                    "CASH_CONFIGURATION_INVALID",
+                    messageOf(error)
+            );
+            return;
+        }
+
+        String validationError = validateCashConfiguration(config);''',
+              1
+          )
+
+          text = text.replace(
+              '''        if (validationError != null) {
+            store.saveCommand(decoded.envelope);''',
+              '''        if (validationError != null) {
+            Log.e(
+                    TAG,
+                    "现金配置字段校验失败：messageId="
+                            + decoded.sdkCommand.getMessageId()
+                            + "，configVersion=" + safeConfigVersion(config)
+                            + "，原因=" + validationError
+                            + "，payload=" + decoded.envelope
+            );
+            store.saveCommand(decoded.envelope);''',
+              1
+          )
+
+          text = text.replace(
+              '''        long configVersion = config.getConfigVersion();
+        boolean enabled = config.isCashAcceptanceEnabled();
+        List<CashTier> tiers = toCashTiers(config);
+
+        if (!store.saveCashConfiguration(''',
+              '''        long configVersion = config.getConfigVersion();
+        boolean enabled = config.isCashAcceptanceEnabled();
+        List<CashTier> tiers = toCashTiers(config);
+        Log.i(
+                TAG,
+                "收到现金配置：messageId=" + decoded.sdkCommand.getMessageId()
+                        + "，configVersion=" + configVersion
+                        + "，cashAcceptanceEnabled=" + enabled
+                        + "，changeEnabled=" + config.isChangeEnabled()
+                        + "，tierCount=" + tiers.size()
+        );
+
+        if (!store.saveCashConfiguration(''',
+              1
+          )
+
+          text = text.replace(
+              '''        ) || !store.saveCommand(decoded.envelope)) {
+            publishSdkConfigurationTerminal(''',
+              '''        ) || !store.saveCommand(decoded.envelope)) {
+            Log.e(
+                    TAG,
+                    "现金配置持久化失败：messageId="
+                            + decoded.sdkCommand.getMessageId()
+                            + "，configVersion=" + configVersion
+            );
+            publishSdkConfigurationTerminal(''',
+              1
+          )
+
+          text = text.replace(
+              '''        if (!publishSdkAck(decoded)) {
+            liveCommands.remove(messageId);
+            store.clearPendingConfigMessageId();
+            reportStorageFault("现金配置ACK无法写入outbox");
+            return;
+        }
+
+        hardwareExecutor.execute(() -> {
+            CashConfigurationResult result = enabled
+                    ? cashAdapter.apply(configVersion, tiers)
+                    : cashAdapter.applyDisabled(configVersion);
+            boolean success = result.isApplied();
+            publishSdkConfigurationTerminal(
+                    decoded,
+                    success,
+                    configVersion,
+                    success
+                            ? "CASH_CONFIGURATION_APPLIED"
+                            : "CASH_CONFIGURATION_REJECTED",
+                    success
+                            ? "现金配置已完整持久化并由控制板应用"
+                            : safe(result.getMessage())
+            );
+            store.clearPendingConfigMessageId();
+            liveCommands.remove(messageId);
+        });''',
+              '''        if (!publishSdkAck(decoded)) {
+            Log.e(
+                    TAG,
+                    "现金配置ACK写入outbox失败：messageId=" + messageId
+                            + "，configVersion=" + configVersion
+            );
+            liveCommands.remove(messageId);
+            store.clearPendingConfigMessageId();
+            reportStorageFault("现金配置ACK无法写入outbox");
+            return;
+        }
+
+        hardwareExecutor.execute(() -> {
+            try {
+                Log.i(
+                        TAG,
+                        "开始向控制板应用现金配置：messageId=" + messageId
+                                + "，configVersion=" + configVersion
+                                + "，enabled=" + enabled
+                                + "，tierCount=" + tiers.size()
+                );
+                CashConfigurationResult result = enabled
+                        ? cashAdapter.apply(configVersion, tiers)
+                        : cashAdapter.applyDisabled(configVersion);
+                boolean success = result != null && result.isApplied();
+                String resultMessage = result == null
+                        ? "现金配置适配器返回null"
+                        : safe(result.getMessage());
+                if (success) {
+                    Log.i(
+                            TAG,
+                            "控制板现金配置应用成功：messageId=" + messageId
+                                    + "，configVersion=" + configVersion
+                    );
+                } else {
+                    Log.e(
+                            TAG,
+                            "控制板现金配置应用失败：messageId=" + messageId
+                                    + "，configVersion=" + configVersion
+                                    + "，原因=" + resultMessage
+                    );
+                }
+                publishSdkConfigurationTerminal(
+                        decoded,
+                        success,
+                        configVersion,
+                        success
+                                ? "CASH_CONFIGURATION_APPLIED"
+                                : "CASH_CONFIGURATION_REJECTED",
+                        success
+                                ? "现金配置已完整持久化并由控制板应用"
+                                : resultMessage
+                );
+            } catch (Throwable error) {
+                Log.e(
+                        TAG,
+                        "控制板现金配置应用异常：messageId=" + messageId
+                                + "，configVersion=" + configVersion,
+                        error
+                );
+                publishSdkConfigurationTerminal(
+                        decoded,
+                        false,
+                        configVersion,
+                        "CASH_CONFIGURATION_APPLY_EXCEPTION",
+                        messageOf(error)
+                );
+            } finally {
+                store.clearPendingConfigMessageId();
+                liveCommands.remove(messageId);
+            }
+        });''',
+              1
+          )
+
+          text = text.replace(
+              '''        if (record == null || record.changeEnabled) {
+            return;
+        }
+
+        JSONObject envelope = parseObject(record.snapshotJson);''',
+              '''        if (record == null) {
+            Log.w(TAG, "启动恢复时未读取到已持久化现金配置");
+            return;
+        }
+        if (record.changeEnabled) {
+            Log.e(
+                    TAG,
+                    "拒绝恢复现金配置：本机不支持找零，configVersion="
+                            + record.configVersion
+            );
+            return;
+        }
+
+        JSONObject envelope = parseObject(record.snapshotJson);''',
+              1
+          )
+
+          text = text.replace(
+              '''        if (data == null || items == null) {
+            return;
+        }''',
+              '''        if (data == null || items == null) {
+            Log.e(
+                    TAG,
+                    "读取已保存现金配置快照失败：configVersion="
+                            + record.configVersion
+                            + "，snapshotLength="
+                            + (record.snapshotJson == null ? -1 : record.snapshotJson.length())
+                            + "，dataNull=" + (data == null)
+                            + "，itemsNull=" + (items == null)
+            );
+            return;
+        }''',
+              1
+          )
+
+          text = text.replace(
+              '''            if (item == null) {
+                return;
+            }''',
+              '''            if (item == null) {
+                Log.e(
+                        TAG,
+                        "读取已保存现金档位失败：configVersion="
+                                + record.configVersion + "，index=" + index
+                );
+                return;
+            }''',
+              1
+          )
+
+          text = text.replace(
+              '''        hardwareExecutor.execute(() -> {
+            CashConfigurationResult result = record.enabled
+                    ? cashAdapter.apply(record.configVersion, tiers)
+                    : cashAdapter.applyDisabled(record.configVersion);
+            if (!result.isApplied()) {
+                MqttManager.get(context).reportFault(
+                        "CASH_CONFIGURATION_REAPPLY_FAILED",
+                        "现金配置恢复失败",
+                        2,
+                        safe(result.getMessage())
+                );
+            }
+        });''',
+              '''        hardwareExecutor.execute(() -> {
+            try {
+                Log.i(
+                        TAG,
+                        "开始恢复已保存现金配置：configVersion="
+                                + record.configVersion
+                                + "，enabled=" + record.enabled
+                                + "，tierCount=" + tiers.size()
+                );
+                CashConfigurationResult result = record.enabled
+                        ? cashAdapter.apply(record.configVersion, tiers)
+                        : cashAdapter.applyDisabled(record.configVersion);
+                if (result == null || !result.isApplied()) {
+                    String reason = result == null
+                            ? "现金配置适配器返回null"
+                            : safe(result.getMessage());
+                    Log.e(
+                            TAG,
+                            "现金配置恢复失败：configVersion="
+                                    + record.configVersion + "，原因=" + reason
+                    );
+                    MqttManager.get(context).reportFault(
+                            "CASH_CONFIGURATION_REAPPLY_FAILED",
+                            "现金配置恢复失败",
+                            2,
+                            reason
+                    );
+                } else {
+                    Log.i(
+                            TAG,
+                            "已保存现金配置恢复成功：configVersion="
+                                    + record.configVersion
+                    );
+                }
+            } catch (Throwable error) {
+                Log.e(
+                        TAG,
+                        "恢复已保存现金配置发生异常：configVersion="
+                                + record.configVersion,
+                        error
+                );
+                MqttManager.get(context).reportFault(
+                        "CASH_CONFIGURATION_REAPPLY_EXCEPTION",
+                        "现金配置恢复异常",
+                        2,
+                        messageOf(error)
+                );
+            }
+        });''',
+              1
+          )
+
+          runtime.write_text(text, encoding='utf-8')
+          PY
+      - name: Build Android
+        shell: bash
+        run: |
+          set +e
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:assembleDebug > ../cash-config-logcat-build.log 2>&1
+          rc=$?
+          cd ..
+          mkdir -p docs
+          {
+            echo "android_build_status=$rc"
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo '--- log tail ---'
+            tail -n 400 cash-config-logcat-build.log
+          } > docs/cash-config-logcat-build.txt
+          exit 0
+      - name: Commit source and report
+        shell: bash
+        run: |
+          rm -f .github/workflows/add-cash-config-logcat.yml
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -A
+          git commit -m '补充现金配置读取和应用失败Logcat诊断' || exit 0
+          git pull --rebase origin main
+          git push origin HEAD:main
