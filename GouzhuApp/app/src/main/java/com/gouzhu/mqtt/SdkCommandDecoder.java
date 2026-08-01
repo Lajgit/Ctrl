@@ -1,38 +1,17 @@
 package com.gouzhu.mqtt;
 
+import com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData;
+import com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand;
+import com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec;
+
 import org.json.JSONObject;
 
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 
-/**
- * 新版 xiaoda-device-sdk 协议校验入口。
- *
- * <p>设备只处理通过 DeviceMqttCommandCodec.decode 的 Topic、deviceNo、命令类型、
- * operationToken 和过期时间校验的消息。反射仅用于隔离服务端交付 JAR 的二进制
- * 小版本签名差异；任何类或方法缺失都按协议不可用处理，不回退到裸 JSON 执行。</p>
- */
+/** 新版 SDK MQTT 命令协议的唯一解码入口。 */
 public final class SdkCommandDecoder {
 
-    private static final String CODEC_CLASS =
-            "com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec";
-
-    private final Object codec;
-    private final Method decodeMethod;
-
-    public SdkCommandDecoder() {
-        try {
-            Class<?> type = Class.forName(CODEC_CLASS);
-            Constructor<?> constructor = type.getDeclaredConstructor();
-            constructor.setAccessible(true);
-            codec = constructor.newInstance();
-            decodeMethod = findDecodeMethod(type);
-            decodeMethod.setAccessible(true);
-        } catch (Throwable error) {
-            throw new IllegalStateException("新版SDK命令协议初始化失败", error);
-        }
-    }
+    private final DeviceMqttCommandCodec codec = new DeviceMqttCommandCodec();
 
     public DecodedCommand decode(
             String topic,
@@ -41,44 +20,23 @@ public final class SdkCommandDecoder {
             long nowMillis
     ) {
         byte[] safePayload = payload == null ? new byte[0] : payload;
-        String text = new String(safePayload, StandardCharsets.UTF_8);
         try {
-            Class<?> payloadType = decodeMethod.getParameterTypes()[1];
-            Object payloadArg = payloadType == byte[].class ? safePayload : text;
-            Object sdkCommand = decodeMethod.invoke(
-                    codec,
+            DeviceMqttCommand<?> sdkCommand = codec.decode(
                     topic,
-                    payloadArg,
+                    safePayload,
                     deviceNo,
                     nowMillis
             );
-            if (sdkCommand == null) {
-                throw new IllegalStateException("SDK命令解码结果为空");
-            }
-            return new DecodedCommand(new JSONObject(text), sdkCommand);
+            return new DecodedCommand(
+                    new JSONObject(new String(safePayload, StandardCharsets.UTF_8)),
+                    sdkCommand
+            );
         } catch (Throwable error) {
-            Throwable cause = error.getCause() == null ? error : error.getCause();
             throw new IllegalArgumentException(
-                    "MQTT命令未通过新版SDK协议校验：" + messageOf(cause),
-                    cause
+                    "MQTT命令未通过新版SDK协议校验：" + messageOf(error),
+                    error
             );
         }
-    }
-
-    private static Method findDecodeMethod(Class<?> type) {
-        for (Method method : type.getMethods()) {
-            if (!"decode".equals(method.getName()) || method.getParameterCount() != 4) {
-                continue;
-            }
-            Class<?>[] parameters = method.getParameterTypes();
-            if (parameters[0] == String.class
-                    && (parameters[1] == String.class || parameters[1] == byte[].class)
-                    && parameters[2] == String.class
-                    && (parameters[3] == long.class || parameters[3] == Long.class)) {
-                return method;
-            }
-        }
-        throw new IllegalStateException("新版SDK缺少四参数 DeviceMqttCommandCodec.decode");
     }
 
     private static String messageOf(Throwable error) {
@@ -93,27 +51,34 @@ public final class SdkCommandDecoder {
 
     public static final class DecodedCommand {
         public final JSONObject envelope;
-        public final Object sdkCommand;
+        public final DeviceMqttCommand<?> sdkCommand;
 
-        DecodedCommand(JSONObject envelope, Object sdkCommand) {
+        DecodedCommand(JSONObject envelope, DeviceMqttCommand<?> sdkCommand) {
             this.envelope = envelope;
             this.sdkCommand = sdkCommand;
         }
 
-        /** 使用 CashEventResponseCommandData 自带状态方法，不在 App 重建枚举。 */
+        public CashEventResponseCommandData requireCashEventResponse() {
+            return sdkCommand.requireData(CashEventResponseCommandData.class);
+        }
+
         public boolean invokeCashStatus(String methodName) {
-            try {
-                Object data = sdkCommand.getClass().getMethod("getData").invoke(sdkCommand);
-                if (data == null) {
-                    return false;
-                }
-                Object value = data.getClass().getMethod(methodName).invoke(data);
-                return value instanceof Boolean && (Boolean) value;
-            } catch (Throwable error) {
-                throw new IllegalStateException(
-                        "新版SDK现金响应缺少状态方法：" + methodName,
-                        error
-                );
+            CashEventResponseCommandData data = requireCashEventResponse();
+            switch (methodName) {
+                case "isPending":
+                    return data.isPending();
+                case "isProcessing":
+                    return data.isProcessing();
+                case "isCompleted":
+                    return data.isCompleted();
+                case "isManualReview":
+                    return data.isManualReview();
+                case "isRejected":
+                    return data.isRejected();
+                case "isUnknown":
+                    return data.isUnknown();
+                default:
+                    throw new IllegalArgumentException("未知现金响应状态方法：" + methodName);
             }
         }
     }
