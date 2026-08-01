@@ -5,141 +5,167 @@
 
 Event_Handle_t Mesg_event;
 
-extern BeadMotor_t BeadMotor1;
-extern BeadMotor_t BeadMotor2;
 extern Tx_HandleTypeDef Tx1;
 extern ListHandle_t ResendList;
-extern uint8_t BillAcceptor_LastType;
-extern uint8_t BillAcceptor_LastStatus;
-extern uint8_t BillAcceptor_CurrencyMode;
 
-static uint32_t MakeRemainData(void)
+static uint32_t MakeOperationData(const HardwareOperation_t *operation,
+                                  uint32_t value)
 {
-    /* Data1:Data2 为吐珠剩余数量，Data3:Data4 为存珠剩余数量。 */
-    return ((uint32_t)BeadMotor1.remain_num << 16U) |
-           (uint32_t)BeadMotor2.remain_num;
+    uint8_t token = operation == NULL ? 0U : operation->token;
+    return ((uint32_t)token << OPERATION_DATA_TOKEN_SHIFT) |
+           (value & OPERATION_DATA_VALUE_MASK);
 }
 
-static uint8_t MakeBillIndex(uint8_t bill_type)
+static uint32_t MakeCashAcceptedData(void)
 {
-    if ((bill_type >= 0x40U) && (bill_type <= 0x4FU))
-    {
-        return (uint8_t)(bill_type - 0x3FU);
-    }
-
-    return 0U;
+    uint16_t amount_fen = CashEvent_GetPendingAmountFen();
+    uint16_t sequence = CashEvent_GetPendingSequence();
+    return ((uint32_t)CashEvent_GetPendingMedium() << 24U) |
+           ((uint32_t)amount_fen << 8U) |
+           ((uint32_t)sequence >> 8U);
 }
 
-static uint32_t MakeBillData(void)
+static uint32_t MakeCashAcceptanceData(void)
 {
-    return ((uint32_t)BillAcceptor_CurrencyMode << 24U) |
-           ((uint32_t)BillAcceptor_LastType << 16U) |
-           ((uint32_t)MakeBillIndex(BillAcceptor_LastType) << 8U) |
-           (uint32_t)BillAcceptor_LastStatus;
+    return ((uint32_t)CashAcceptance_GetEnableMask() << 24U) |
+           (CashAcceptance_GetConfigVersion() & 0x00FFFFFFUL);
 }
 
 void Mesg_Task(void)
 {
-    /* K2（SettingButton/PD11）短按后请求安卓进入后台设置。 */
+    const HardwareOperation_t *operation;
+
+    /* K2（PD13）短按后请求 Android 进入后台设置。 */
     BackendKey_Task();
 
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor1Feedback))
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseStarted))
     {
-        /* PD3：吐珠电机光眼确认一颗。 */
-        Comm_SendMesg_FillData(&Tx1, Board_to_Android, BeadMotor1Feedback, 1U, 0x00U);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BeadMotor1Feedback);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor2Feedback))
-    {
-        /* PD4：存珠电机光眼确认一颗；安卓据此累计并掉电保存本次实际数量。 */
-        Comm_SendMesg_FillData(&Tx1, Board_to_Android, BeadMotor2Feedback, 1U, 0x00U);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BeadMotor2Feedback);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CoinInput))
-    {
-        /* 保留旧硬币脉冲事件，Data=1 表示一个 1 元硬币。 */
-        Comm_SendMesg_FillData(&Tx1, Board_to_Android, CoinInput, 1U, 0x00U);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CoinInput);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BillAccepted))
-    {
-        /* 保留 ICT 原始类型和状态，供后台诊断。 */
+        operation = Hardware_GetDispenseReport();
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
-                                          BillAccepted,
-                                          MakeBillData(),
-                                          BillAcceptor_CurrencyMode,
+                                          DispenseStarted,
+                                          MakeOperationData(operation, operation->requested),
+                                          HW_RESULT_OK,
                                           &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BillAccepted);
+        EventGroupClearBits(&Mesg_event, MesgEvent_DispenseStarted);
     }
 
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashAcceptedAmount))
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseProgress))
     {
-        /* 现金事实统一上报：Data1=介质，Data2:Data4=整数人民币元。 */
+        operation = Hardware_GetDispenseReport();
+        Comm_SendMesg_FillData(&Tx1,
+                               Board_to_Android,
+                               DispenseProgress,
+                               MakeOperationData(operation, operation->actual),
+                               HW_RESULT_OK);
+        EventGroupClearBits(&Mesg_event, MesgEvent_DispenseProgress);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseCompleted))
+    {
+        operation = Hardware_GetDispenseReport();
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
-                                          CashAcceptedAmount,
-                                          CashEvent_GetPackedData(),
+                                          DispenseCompleted,
+                                          MakeOperationData(operation, operation->actual),
+                                          operation->result,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_DispenseCompleted);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseFailed))
+    {
+        operation = Hardware_GetDispenseReport();
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          DispenseFailed,
+                                          MakeOperationData(operation, operation->actual),
+                                          operation->result,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_DispenseFailed);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectStarted))
+    {
+        operation = Hardware_GetCollectReport();
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          CollectStarted,
+                                          MakeOperationData(operation, operation->requested),
+                                          HW_RESULT_OK,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CollectStarted);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectProgress))
+    {
+        operation = Hardware_GetCollectReport();
+        Comm_SendMesg_FillData(&Tx1,
+                               Board_to_Android,
+                               CollectProgress,
+                               MakeOperationData(operation, operation->actual),
+                               HW_RESULT_OK);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CollectProgress);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectCompleted))
+    {
+        operation = Hardware_GetCollectReport();
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          CollectCompleted,
+                                          MakeOperationData(operation, operation->actual),
+                                          operation->result,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CollectCompleted);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectFailed))
+    {
+        operation = Hardware_GetCollectReport();
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          CollectFailed,
+                                          MakeOperationData(operation, operation->actual),
+                                          operation->result,
+                                          &ResendList);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CollectFailed);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashAccepted))
+    {
+        if (CashEvent_HasPending())
+        {
+            Comm_SendMesg_FillData_withResend(
+                &Tx1,
+                Board_to_Android,
+                CashAccepted,
+                MakeCashAcceptedData(),
+                (uint8_t)CashEvent_GetPendingSequence(),
+                &ResendList);
+        }
+        EventGroupClearBits(&Mesg_event, MesgEvent_CashAccepted);
+    }
+
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashAcceptanceStatus))
+    {
+        Comm_SendMesg_FillData_withResend(&Tx1,
+                                          Board_to_Android,
+                                          CashAcceptanceStatus,
+                                          MakeCashAcceptanceData(),
                                           0x00U,
                                           &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CashAcceptedAmount);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
     }
 
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashReturnedAmount))
-    {
-        /* 只有真实退币机构动作成功后才发送 returned。 */
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          CashReturnedAmount,
-                                          CashEvent_GetPackedData(),
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CashReturnedAmount);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashReturnFailed))
-    {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          CashReturnFailed,
-                                          CashEvent_GetPackedData(),
-                                          0x01U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CashReturnFailed);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BillStatus))
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashDeviceStatus))
     {
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
-                               BillStatus,
-                               MakeBillData(),
-                               BillAcceptor_CurrencyMode);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BillStatus);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BillCurrencyMode))
-    {
-        Comm_SendMesg_FillData(&Tx1,
-                               Board_to_Android,
-                               BillCurrencyModeStatus,
-                               BillAcceptor_CurrencyMode,
+                               CashDeviceStatus,
+                               CashDevice_GetStatusData(),
                                0x00U);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BillCurrencyMode);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadPriceStatus))
-    {
-        /* 本地现金计价仍使用分，避免浮点；现金事件上报金额则使用整数元。 */
-        Comm_SendMesg_FillData(&Tx1,
-                               Board_to_Android,
-                               BeadPriceStatus,
-                               Purchase_GetBeadPriceFen(),
-                               Purchase_GetPriceSetResult());
-        EventGroupClearBits(&Mesg_event, MesgEvent_BeadPriceStatus);
+        EventGroupClearBits(&Mesg_event, MesgEvent_CashDeviceStatus);
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadStockStatus))
@@ -147,29 +173,9 @@ void Mesg_Task(void)
         Comm_SendMesg_FillData(&Tx1,
                                Board_to_Android,
                                BeadStockStatus,
-                               Purchase_GetBeadStock(),
+                               Hardware_GetBeadStock(),
                                0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadStockStatus);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_PurchasePendingStatus))
-    {
-        Comm_SendMesg_FillData(&Tx1,
-                               Board_to_Android,
-                               PurchasePendingStatus,
-                               Purchase_GetPendingBeads(),
-                               0x00U);
-        EventGroupClearBits(&Mesg_event, MesgEvent_PurchasePendingStatus);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_PurchaseCreditStatus))
-    {
-        Comm_SendMesg_FillData(&Tx1,
-                               Board_to_Android,
-                               PurchaseCreditStatus,
-                               Purchase_GetCreditFen(),
-                               0x00U);
-        EventGroupClearBits(&Mesg_event, MesgEvent_PurchaseCreditStatus);
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadLowStock))
@@ -177,7 +183,7 @@ void Mesg_Task(void)
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
                                           BeadLowStock,
-                                          Purchase_GetBeadStock(),
+                                          Hardware_GetBeadStock(),
                                           0x00U,
                                           &ResendList);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadLowStock);
@@ -188,7 +194,7 @@ void Mesg_Task(void)
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
                                           BeadEmpty,
-                                          Purchase_GetPendingBeads(),
+                                          Hardware_GetBeadStock(),
                                           0x00U,
                                           &ResendList);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadEmpty);
@@ -199,7 +205,7 @@ void Mesg_Task(void)
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
                                           BeadRefilled,
-                                          Purchase_GetBeadStock(),
+                                          Hardware_GetBeadStock(),
                                           0x00U,
                                           &ResendList);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadRefilled);
@@ -216,37 +222,13 @@ void Mesg_Task(void)
         EventGroupClearBits(&Mesg_event, MesgEvent_BackendSettingsRequest);
     }
 
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_RemainingBead))
-    {
-        Comm_SendMesg_FillData(&Tx1, Board_to_Android, RemainingBead, MakeRemainData(), 0x00U);
-        EventGroupClearBits(&Mesg_event, MesgEvent_RemainingBead);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor1Timeout))
-    {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          BeadMotor1Timeout,
-                                          BeadMotor1.remain_num,
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BeadMotor1Timeout);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadMotor2Timeout))
-    {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          BeadMotor2Timeout,
-                                          BeadMotor2.remain_num,
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BeadMotor2Timeout);
-    }
-
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_Unlock))
     {
-        Comm_SendMesg_FillData(&Tx1, Board_to_Android, AlreadyUnlock, 0U, 0x00U);
+        Comm_SendMesg_FillData(&Tx1,
+                               Board_to_Android,
+                               AlreadyUnlock,
+                               0U,
+                               0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_Unlock);
     }
 
@@ -254,7 +236,7 @@ void Mesg_Task(void)
     {
         Comm_SendMesg_FillData_withResend(&Tx1,
                                           Board_to_Android,
-                                          VersionRequest,
+                                          VersionReport,
                                           VERSION,
                                           0x00U,
                                           &ResendList);
