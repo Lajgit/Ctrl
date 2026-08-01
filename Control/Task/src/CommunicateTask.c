@@ -2,7 +2,6 @@
 #include "MesgTask.h"
 #include "CtrlTask.h"
 #include "KeyTask.h"
-#include "FlashTask.h"
 #include "app_crc.h"
 #include "app_list.h"
 #include "string.h"
@@ -11,8 +10,6 @@
 static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg);
 static bool Board_WriteBootRequest(uint32_t request_magic);
 static void Board_SystemRestart(bool enter_bootloader);
-static void Purchase_AddPaidOutput(uint32_t bead_count);
-static void Collection_StopImmediately(void);
 
 ListHandle_t ResendList, DealList;
 static ListNode_t ResendList_buffer[100];
@@ -26,10 +23,7 @@ Tx_HandleTypeDef Tx1;
 Rx_HandleTypeDef Rx1;
 
 extern Event_Handle_t Mesg_event;
-extern BeadMotor_t BeadMotor1;
-extern BeadMotor_t BeadMotor2;
 extern Lock_t Lock;
-extern Setting_TypeDef Setting;
 
 static bool Board_WriteBootRequest(uint32_t request_magic)
 {
@@ -76,48 +70,12 @@ static void Board_SystemRestart(bool enter_bootloader)
         return;
     }
     Device_StopAllImmediately();
+    CashAcceptance_Disable();
     HAL_Delay(100U);
     NVIC_SystemReset();
     while (1)
     {
     }
-}
-
-/*
- * 平台固定数量出珠仍通过安卓下发数量，数量进入原有掉电保存欠吐队列。
- * 本地现金购买继续由控制板独立换算和执行，安卓只接收现金事实上报。
- */
-static void Purchase_AddPaidOutput(uint32_t bead_count)
-{
-    if (bead_count == 0U)
-    {
-        return;
-    }
-    if (bead_count > (0xFFFFFFFFUL - Setting.PendingBeads))
-    {
-        Setting.PendingBeads = 0xFFFFFFFFUL;
-    }
-    else
-    {
-        Setting.PendingBeads += bead_count;
-    }
-    FlashTask_RequestSave();
-    EventGroupSetBits(&Mesg_event, MesgEvent_PurchasePendingStatus);
-    if ((Setting.BeadStock == 0U) ||
-        ((Setting.PurchaseFlags & PURCHASE_FLAG_NO_BEAD) != 0U))
-    {
-        Purchase_OnDispenseTimeout();
-    }
-}
-
-static void Collection_StopImmediately(void)
-{
-    /* 仅停止存珠电机，不影响本地现金吐珠和电子锁。 */
-    BeadMotor2.motor.LosePower(&BeadMotor2.motor);
-    BeadMotor2.motor.state = DEVICE_STATE_IDLE;
-    BeadMotor2.remain_num = 0U;
-    BeadMotor2.retry_count = 0U;
-    EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
 }
 
 static bool USART_ReceiveMesg_Verify(void *self, void *mesg)
@@ -129,11 +87,6 @@ static bool USART_ReceiveMesg_Verify(void *self, void *mesg)
     return crc16 == mesg_crc16;
 }
 
-static uint16_t USART_GetData16(Mesg_TypeDef *mesg)
-{
-    return ((uint16_t)mesg->Data3 << 8U) | mesg->Data4;
-}
-
 static uint32_t USART_GetData32(Mesg_TypeDef *mesg)
 {
     return ((uint32_t)mesg->Data1 << 24U) |
@@ -142,99 +95,87 @@ static uint32_t USART_GetData32(Mesg_TypeDef *mesg)
            (uint32_t)mesg->Data4;
 }
 
+static uint32_t USART_GetValue24(Mesg_TypeDef *mesg)
+{
+    return ((uint32_t)mesg->Data2 << 16U) |
+           ((uint32_t)mesg->Data3 << 8U) |
+           (uint32_t)mesg->Data4;
+}
+
+static void USART_ConfirmBoardEvent(Mesg_TypeDef *mesg)
+{
+    Mesg_TypeDef *original = &MesgTable[mesg->ID];
+
+    /* 现金事实只有在 Android 已持久化并原样确认后才从控制板 Flash 删除。 */
+    if (original->Code2 == CashAccepted)
+    {
+        uint16_t sequence = ((uint16_t)original->Data4 << 8U) |
+                            (uint16_t)original->ExpandCode;
+        CashEvent_ConfirmTransport(sequence);
+    }
+    List_DeleteNode(&ResendList, mesg->ID);
+}
+
 static void USART1_Deal(void *rx_mesg)
 {
     uint32_t data;
-    uint8_t medium;
-    uint32_t amount_yuan;
+    uint32_t value;
+    uint8_t token;
     Mesg_TypeDef *mesg = (Mesg_TypeDef *)rx_mesg;
 
     if (mesg->Code1 == Android_to_Board)
     {
-        /* 合法帧先原样应答；相同 ID 在去重窗口内不重复执行业务。 */
+        /* 合法 Android 帧先原样应答；相同 ID 在 5 秒内不重复启动硬件。 */
         USART_RequestMesg(&Tx1, mesg);
         if (List_IsExistID(&DealList, mesg->ID) == false)
         {
+            token = mesg->Data1;
+            value = USART_GetValue24(mesg);
             switch (mesg->Code2)
             {
             case VersionRequest:
                 EventGroupSetBits(&Mesg_event, MesgEvent_VersionRequest);
                 break;
-            case BeadMotor1Output:
-                if (Purchase_GetBeadStock() > 0U)
-                {
-                    BeadMotor_Output(&BeadMotor1, USART_GetData16(mesg));
-                    EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
-                }
-                else
-                {
-                    EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
-                }
+
+            case DispenseStart:
+                (void)Hardware_StartDispense(token, value);
                 break;
-            case BeadMotor2Output:
-                /* 用户在屏幕确认倒珠完成后，安卓才发送本命令启动存珠。 */
-                BeadMotor_Output(&BeadMotor2, USART_GetData16(mesg));
-                EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+
+            case CollectStart:
+                (void)Hardware_StartCollect(token, value);
                 break;
-            case BeadMotor2Stop:
-                Collection_StopImmediately();
+
+            case CollectStop:
+                Hardware_StopCollect(token);
                 break;
+
             case Unlock:
                 Lock.sw.state = DEVICE_STATE_START;
                 EventGroupSetBits(&Mesg_event, MesgEvent_Unlock);
                 break;
-            case BillCurrencyModeSet:
-                BillAcceptor_SetCurrencyMode(mesg->Data4);
+
+            case CashAcceptanceApply:
+                (void)CashAcceptance_Apply(mesg->Data1, value);
                 break;
-            case BillEnable:
-                if (Purchase_GetBeadStock() > 0U)
-                {
-                    BillAcceptor_SetEnable(true);
-                }
-                else
-                {
-                    EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
-                }
-                break;
-            case BillDisable:
-                BillAcceptor_SetEnable(false);
-                break;
+
             case BillReset:
                 BillAcceptor_Reset();
                 break;
-            case CoinEnable:
-                CoinAcceptor_SetEnable(true);
+
+            case HardwareStatusRequest:
+                Hardware_RequestStatus();
                 break;
-            case CoinDisable:
-                CoinAcceptor_SetEnable(false);
-                break;
-            case CashReturnRequest:
-                /* Data1=介质，Data2:Data4=整数人民币元。 */
-                data = USART_GetData32(mesg);
-                medium = (uint8_t)(data >> 24U);
-                amount_yuan = data & 0x00FFFFFFUL;
-                (void)CashHardware_RequestReturn(medium, amount_yuan);
-                break;
-            case BeadPriceSet:
-                /* 本地现金单颗价格仍按“分”保存，避免浮点。 */
-                Purchase_SetBeadPrice(USART_GetData32(mesg));
-                break;
-            case PurchaseStatusRequest:
-                Purchase_RequestStatus();
-                break;
-            case PaidPurchaseOutput:
-                /* 平台业务固定数量出珠；现金购珠不使用此命令。 */
-                Purchase_AddPaidOutput(USART_GetData32(mesg));
-                break;
+
             case BoardRestart:
                 data = USART_GetData32(mesg);
                 Board_SystemRestart(data == OTA_REQUEST_MAGIC);
                 break;
-            case StopAllDevice:
-                Device_StopAllImmediately();
-                Purchase_PauseDispense();
-                EventGroupSetBits(&Mesg_event, MesgEvent_RemainingBead);
+
+            case EmergencyStop:
+                Hardware_AbortAll();
+                CashAcceptance_Disable();
                 break;
+
             default:
                 break;
             }
@@ -243,7 +184,7 @@ static void USART1_Deal(void *rx_mesg)
     }
     else if (mesg->Code1 == Board_to_Android)
     {
-        List_DeleteNode(&ResendList, mesg->ID);
+        USART_ConfirmBoardEvent(mesg);
     }
 }
 
@@ -252,6 +193,7 @@ static uint8_t USART_SendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
     static uint8_t id = 0U;
     uint8_t data[14];
     uint16_t crc;
+
     id++;
     mesg->ResendID = 0U;
     mesg->ID = id;
@@ -312,6 +254,7 @@ static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
 {
     uint8_t data[14];
     uint16_t crc;
+
     mesg->ResendID++;
     if (mesg->ResendID > Max_Resend_Times)
     {
@@ -340,7 +283,8 @@ static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
 {
     uint8_t data[14];
     uint16_t crc;
-    data[0] = Mesg_Head;
+
+    data[0] = mesg->Head;
     data[1] = mesg->ResendID;
     data[2] = mesg->ID;
     data[3] = mesg->Code1;
@@ -354,7 +298,7 @@ static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
     crc = CRC16_calculate(data, 11U);
     data[11] = (uint8_t)(crc >> 8U);
     data[12] = (uint8_t)crc;
-    data[13] = Mesg_Tail;
+    data[13] = mesg->Tail;
     tx->Transimit(tx, data, sizeof(data));
 }
 
@@ -397,6 +341,7 @@ void Communicate_Init(void)
 {
     Rx_InitTypeDef rx_init;
     Tx_InitTypeDef tx_init;
+
     List_Create(&ResendList, ResendList_buffer, 100U);
     List_Create(&DealList, DealList_buffer, 100U);
     rx_init.huart = &huart1;
@@ -409,6 +354,7 @@ void Communicate_Init(void)
     rx_init.Verify = USART_ReceiveMesg_Verify;
     rx_init.Deal = USART1_Deal;
     Communicate_Rx_Init(&Rx1, rx_init);
+
     tx_init.huart = &huart1;
     tx_init.hdma = NULL;
     tx_init.TxBuf = NULL;
