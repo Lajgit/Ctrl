@@ -2,8 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-def appVersionName = "2.1.0"
-def appVersionCode = 13
+def appVersionName = "2.1.1"
+def appVersionCode = 14
 
 android {
     namespace 'com.gouzhu'
@@ -37,6 +37,7 @@ android {
 
     packaging {
         resources {
+            // 新版 MQTT JAR 与宿主 Paho 都携带根目录 bundle.properties；仅保留一份。
             pickFirsts += ['bundle.properties']
         }
     }
@@ -60,6 +61,7 @@ dependencies {
     implementation files('libs/xiaoda-device-mqtt-0.1.0.jar')
     implementation files('libs/xiaoda-device-hardware-0.1.0.jar')
 
+    // 现有传输层暂时使用宿主 Paho；业务命令、结果和硬件映射均使用新版 SDK。
     implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
 
     implementation 'com.squareup.okhttp3:okhttp:4.10.0'
