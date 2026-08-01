@@ -62,6 +62,10 @@
     <string name="board_connected_waiting_version">控制板：已连接，正在读取版本</string>
     <string name="board_disconnected">控制板：已断开</string>
     <string name="board_serial_not_connected">控制板：串口未连接</string>
+    <string name="reverse_scanner_waiting">反扫模块：正在连接 ttyS6</string>
+    <string name="reverse_scanner_connected_format">反扫模块：已连接 %1$s，%2$d 8N1</string>
+    <string name="reverse_scanner_disconnected_format">反扫模块：未连接 %1$s</string>
+    <string name="reverse_scanner_event_unknown">反扫模块：收到未知状态</string>
     <string name="stock_unknown">库存：等待控制板上报</string>
     <string name="pending_status_unknown">未吐珠：等待控制板上报</string>
     <string name="pending_status_format">未吐珠：%1$d 珠</string>
