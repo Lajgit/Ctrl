@@ -32,10 +32,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 购珠机 MQTT 管理器，同时实现服务端 SDK 的 MqttTransport。
+ * MQTT 传输层。
  *
- * <p>Broker、账号、密码、订阅 Topic、上报 Topic、QoS、心跳和 KeepAlive 全部
- * 使用 SDK 校验后的 MqttCredential，不在 App 中拼接生产 Topic。</p>
+ * <p>本类只负责连接、订阅和发布。控制/配置 payload 不在此处裸解析，统一交给
+ * DeviceCommandManager，并由新版 SDK DeviceMqttCommandCodec 完成 Topic、deviceNo、
+ * 类型、令牌和有效期校验。</p>
  */
 public final class MqttManager implements MqttTransport {
 
@@ -72,7 +73,6 @@ public final class MqttManager implements MqttTransport {
         connect(credential, null);
     }
 
-    /** 异步连接 SDK 返回的 MQTT Broker。 */
     @Override
     public void connect(MqttCredential credential, MessageListener listener) {
         if (credential == null) {
@@ -127,7 +127,6 @@ public final class MqttManager implements MqttTransport {
         }
     }
 
-    /** 业务层发布 UTF-8 JSON，使用凭证中的 QoS，非保留。 */
     public synchronized boolean publish(String topic, String payload) {
         MqttCredential current = credential;
         int qos = current == null ? 1 : current.getQos();
@@ -295,13 +294,14 @@ public final class MqttManager implements MqttTransport {
     }
 
     private void afterConnected(boolean reconnect) throws Exception {
+        /* 必须先订阅，再恢复本地状态和重放 durable outbox。 */
         ensureSubscribed();
-        reportHeartbeat();
-        reportStatus();
-        startHeartbeatLoop();
         DeviceCommandManager.get(context).start();
         DeviceCommandManager.get(context).flushPending();
         UpgradeManager.get(context).resumePendingResult();
+        reportHeartbeat();
+        reportStatus();
+        startHeartbeatLoop();
         broadcastStatus("mqtt", reconnect ? "MQTT已重连" : "MQTT已连接");
         reconnectScheduled.set(false);
     }
@@ -342,20 +342,14 @@ public final class MqttManager implements MqttTransport {
 
     private void handleMessage(String topic, byte[] payloadBytes) {
         try {
-            String payload = new String(payloadBytes, StandardCharsets.UTF_8);
-            JSONObject json = new JSONObject(payload);
-            String targetDevice = DeviceUtil.normalizeDeviceNo(json.optString("deviceNo", ""));
-            String localDevice = DeviceUtil.requireDeviceNo(context);
-            if (!targetDevice.isEmpty() && !localDevice.equals(targetDevice)) {
-                return;
-            }
-
             if (topic.contains("/command/upgrade")) {
-                UpgradeManager.get(context).handleMqttCommand(payload);
+                UpgradeManager.get(context).handleMqttCommand(
+                        new String(payloadBytes, StandardCharsets.UTF_8)
+                );
                 return;
             }
             if (topic.contains("/command/control") || topic.contains("/command/config")) {
-                DeviceCommandManager.get(context).handleCommand(json);
+                DeviceCommandManager.get(context).handleCommand(topic, payloadBytes);
                 return;
             }
             if (topic.contains("/command/task")) {
