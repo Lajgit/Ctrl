@@ -39,6 +39,8 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
 
     private volatile ApplyWaiter waiter;
     private volatile long lastAppliedConfigVersion = 1L;
+    private int lastObservedActualMask = -1;
+    private long lastObservedActualVersion = -1L;
     private boolean receiverRegistered;
 
     private final BroadcastReceiver boardReceiver = new BroadcastReceiver() {
@@ -53,14 +55,20 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
             int actualMask = (int) ((packed >>> 24) & 0xFF);
             long actualVersion = packed & 0x00FFFFFFL;
             ApplyWaiter active = waiter;
+            boolean stateChanged = actualMask != lastObservedActualMask
+                    || actualVersion != lastObservedActualVersion;
 
-            Log.i(
-                    TAG,
-                    "收到控制板现金配置状态：actualMask=0x"
-                            + Integer.toHexString(actualMask)
-                            + "，actualVersion=" + actualVersion
-                            + "，hasWaiter=" + (active != null)
-            );
+            if (active != null || stateChanged) {
+                Log.i(
+                        TAG,
+                        "收到控制板现金配置状态：actualMask=0x"
+                                + Integer.toHexString(actualMask)
+                                + "，actualVersion=" + actualVersion
+                                + "，hasWaiter=" + (active != null)
+                );
+            }
+            lastObservedActualMask = actualMask;
+            lastObservedActualVersion = actualVersion;
 
             if (active == null) {
                 return;
