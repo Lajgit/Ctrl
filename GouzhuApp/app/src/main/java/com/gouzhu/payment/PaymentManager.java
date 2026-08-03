@@ -252,38 +252,28 @@ public final class PaymentManager {
     }
 
     /**
-     * 扫码器读取六位内部套餐取珠码后，调用 SDK 创建核销。
-     * 创建结果只表示后端受理，真实出珠仍等待 MQTT 指令。
+     * 店员手工输入平台六位取珠码时调用原始内部核销接口。
+     *
+     * <p>反扫二维码不得调用本方法，必须通过 ScannerBusinessRouter 使用
+     * bootstrap.redemptionRouting。业务码只在本次内存调用中使用，不写日志、不落盘。</p>
      */
     public String submitScannerQrString(String scanContent) {
         String pickupCode = scanContent == null ? "" : scanContent.trim();
-        if (!pickupCode.matches("\\d{6}")) {
-            broadcast(EVENT_FAILED, "内部取珠码必须为6位数字", getCurrentOrderId(), null);
+        if (pickupCode.isEmpty()) {
+            broadcast(EVENT_FAILED, "平台取珠码不能为空", getCurrentOrderId(), null);
             return "";
         }
 
-        // 每次有效扫码生成独立 clientRequestNo。反扫管理器负责短时间重复码去重，
-        // 不能跨不同扫码长期复用同一个请求号，否则服务端会按幂等请求返回旧结果。
         String requestNo = newRequestNo("redeem");
-        if (!preferences().edit().putString(KEY_SCANNER_REQUEST_NO, requestNo).commit()) {
-            broadcast(EVENT_FAILED, "保存反扫核销请求号失败", getCurrentOrderId(), null);
+        if (!saveScannerRequestMetadata(requestNo, "internal", pickupCode)) {
+            broadcast(EVENT_FAILED, "保存核销请求元数据失败", getCurrentOrderId(), null);
             return "";
         }
-
-        final String finalRequestNo = requestNo;
-        JSONObject json = new JSONObject();
-        try {
-            json.put("clientRequestNo", finalRequestNo);
-            json.put("pickupCode", pickupCode);
-        } catch (Throwable error) {
-            return "";
-        }
-        preferences().edit().putString(KEY_LAST_SCANNER_JSON, json.toString()).commit();
 
         executor.execute(() -> {
             try {
                 DeviceAppInternalRedemptionResult result = sdkManager.createInternalRedemption(
-                        finalRequestNo,
+                        requestNo,
                         pickupCode
                 );
                 String message = firstNonBlank(
@@ -291,22 +281,32 @@ public final class PaymentManager {
                         result.getRedemptionStatus(),
                         "取珠码已受理，等待平台处理"
                 );
-                broadcast(EVENT_SCANNER_REPORTED, message, getCurrentOrderId(), null);
+                broadcast(EVENT_SCANNER_REPORTED, message, requestNo, null);
             } catch (Throwable error) {
-                broadcast(EVENT_FAILED, messageOf(error), getCurrentOrderId(), null);
+                Log.e(TAG, "平台取珠码提交失败，requestNo=" + requestNo, error);
+                broadcast(EVENT_FAILED, messageOf(error), requestNo, null);
             }
         });
-        return json.toString();
+        return requestNo;
     }
 
-    /** 创建会员取珠请求；取珠码由会员流程提供，必须以 W 开头且其余为数字。 */
+    /**
+     * 已经由可信业务流程取得会员原始取珠码时调用。
+     *
+     * <p>本方法不再自行判断 W 等前缀，格式边界由 SDK 和服务端负责。反扫二维码
+     * 仍必须使用 bootstrap 动态路由。</p>
+     */
     public String submitMemberWithdrawal(String withdrawalCode) {
         String code = withdrawalCode == null ? "" : withdrawalCode.trim();
-        if (!code.matches("W\\d+")) {
-            broadcast(EVENT_FAILED, "会员取珠码格式无效", getCurrentOrderId(), null);
+        if (code.isEmpty()) {
+            broadcast(EVENT_FAILED, "会员取珠码不能为空", getCurrentOrderId(), null);
             return "";
         }
         String requestNo = newRequestNo("withdraw");
+        if (!saveScannerRequestMetadata(requestNo, "member", code)) {
+            broadcast(EVENT_FAILED, "保存会员取珠请求元数据失败", requestNo, null);
+            return "";
+        }
         executor.execute(() -> {
             try {
                 DeviceAppMemberWithdrawalResult result = sdkManager.createMemberWithdrawal(
@@ -318,12 +318,35 @@ public final class PaymentManager {
                         result.getWithdrawalStatus(),
                         "会员取珠请求已受理，等待平台处理"
                 );
-                broadcast(EVENT_SCANNER_REPORTED, message, getCurrentOrderId(), null);
+                broadcast(EVENT_SCANNER_REPORTED, message, requestNo, null);
             } catch (Throwable error) {
-                broadcast(EVENT_FAILED, messageOf(error), getCurrentOrderId(), null);
+                Log.e(TAG, "会员取珠请求提交失败，requestNo=" + requestNo, error);
+                broadcast(EVENT_FAILED, messageOf(error), requestNo, null);
             }
         });
         return requestNo;
+    }
+
+    /** 只保存请求号、类型、长度和脱敏尾号，禁止持久化完整业务码。 */
+    private boolean saveScannerRequestMetadata(
+            String requestNo,
+            String routeType,
+            String businessCode
+    ) {
+        try {
+            JSONObject json = new JSONObject();
+            json.put("clientRequestNo", requestNo);
+            json.put("routeType", routeType);
+            json.put("codeLength", businessCode == null ? 0 : businessCode.length());
+            json.put("maskedCode", maskCode(businessCode));
+            return preferences().edit()
+                    .putString(KEY_SCANNER_REQUEST_NO, requestNo)
+                    .putString(KEY_LAST_SCANNER_JSON, json.toString())
+                    .commit();
+        } catch (Throwable error) {
+            Log.e(TAG, "保存扫码请求脱敏元数据失败", error);
+            return false;
+        }
     }
 
     /** 旧的临时服务器消息入口不再使用，保留签名避免其他代码编译中断。 */
@@ -372,6 +395,14 @@ public final class PaymentManager {
     private static String newRequestNo(String prefix) {
         String uuid = UUID.randomUUID().toString().replace("-", "");
         return prefix + "-" + System.currentTimeMillis() + "-" + uuid.substring(0, 12);
+    }
+
+    private static String maskCode(String content) {
+        if (content == null || content.isEmpty()) {
+            return "";
+        }
+        int visible = Math.min(4, content.length());
+        return "***" + content.substring(content.length() - visible);
     }
 
     private static String messageOf(Throwable error) {
