@@ -99,13 +99,13 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(CoinInput_GPIO_Port, &GPIO_InitStruct);
 
-  /* PD3：吐珠光眼遮挡时拉低，改为下降沿触发。 */
+  /* PD4：出珠光眼遮挡时拉低，下降沿触发。 */
   GPIO_InitStruct.Pin = HoolleOutput_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(HoolleOutput_GPIO_Port, &GPIO_InitStruct);
 
-  /* PD4：存珠光眼改为下降沿触发。 */
+  /* PD3：存珠光眼遮挡时拉低，下降沿触发。 */
   GPIO_InitStruct.Pin = CardFeedback_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -146,7 +146,7 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* PD3/PD4 已改作两路光眼反馈，不再按旧 Switch8/Switch7 初始化。 */
+  /* PD3/PD4 已改作存珠、出珠光眼反馈，不再按旧 Switch8/Switch7 初始化。 */
   GPIO_InitStruct.Pin = Button4_Pin|Button5_Pin|Button6_Pin|SettingButton_Pin
                           |KeyBoard3_Pin|KeyBoard2_Pin|KeyBoard1_Pin|Switch11_Pin
                           |Switch10_Pin|Switch9_Pin|Switch6_Pin|Switch5_Pin
