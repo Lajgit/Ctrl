@@ -24,8 +24,11 @@ jobs:
           def replace_once(path, old, new):
               file = Path(path)
               text = file.read_text(encoding="utf-8")
-              if text.count(old) != 1:
-                  raise SystemExit(f"{path}: expected one match, found {text.count(old)}")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"{path}: expected one match, found {count}: {old!r}"
+                  )
               file.write_text(text.replace(old, new, 1), encoding="utf-8")
 
           adapter = "GouzhuApp/app/src/main/java/com/gouzhu/hardware/SerialCashConfigurationAdapter.java"
@@ -36,10 +39,7 @@ jobs:
           )
           replace_once(
               adapter,
-              """    @Override
-              public void disableCashAcceptance() {
-                  long version = Math.max(1L, Math.min(0x00FFFFFFL, lastConfigVersion));
-          """,
+              "    @Override\n    public void disableCashAcceptance() {",
               """    public void markApplied(long configVersion) {
                   if (configVersion > 0L && configVersion <= 0x00FFFFFFL) {
                       lastAppliedConfigVersion = configVersion;
@@ -47,57 +47,51 @@ jobs:
               }
 
               @Override
-              public void disableCashAcceptance() {
-                  long version = Math.max(
-                          1L,
-                          Math.min(0x00FFFFFFL, lastAppliedConfigVersion)
-                  );
-          """
+              public void disableCashAcceptance() {"""
           )
           replace_once(
               adapter,
-              """            waiter = active;
-                  lastConfigVersion = configVersion;
-                  long startedAt = System.currentTimeMillis();
-          """,
-              """            waiter = active;
-                  long startedAt = System.currentTimeMillis();
-          """
+              "        long version = Math.max(1L, Math.min(0x00FFFFFFL, lastConfigVersion));",
+              """        long version = Math.max(
+                          1L,
+                          Math.min(0x00FFFFFFL, lastAppliedConfigVersion)
+                  );"""
+          )
+          replace_once(
+              adapter,
+              "            lastConfigVersion = configVersion;\n",
+              ""
           )
 
           runtime = "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java"
           replace_once(
               runtime,
               """            if (success) {
-                      resultCode = "CASH_CONFIGURATION_APPLIED";
-          """,
+                      resultCode = "CASH_CONFIGURATION_APPLIED";""",
               """            if (success) {
                       cashAdapter.markApplied(configVersion);
-                      resultCode = "CASH_CONFIGURATION_APPLIED";
-          """
+                      resultCode = "CASH_CONFIGURATION_APPLIED";"""
           )
           replace_once(
               runtime,
               """            if (!result.isApplied()) {
                       MqttManager.get(context).reportFault(
-                          "CASH_CONFIGURATION_REAPPLY_FAILED",
-                          "现金配置恢复失败",
-                          2,
-                          safe(result.getMessage())
+                              "CASH_CONFIGURATION_REAPPLY_FAILED",
+                              "现金配置恢复失败",
+                              2,
+                              safe(result.getMessage())
                       );
-                  }
-          """,
+                  }""",
               """            if (!result.isApplied()) {
                       MqttManager.get(context).reportFault(
-                          "CASH_CONFIGURATION_REAPPLY_FAILED",
-                          "现金配置恢复失败",
-                          2,
-                          safe(result.getMessage())
+                              "CASH_CONFIGURATION_REAPPLY_FAILED",
+                              "现金配置恢复失败",
+                              2,
+                              safe(result.getMessage())
                       );
                   } else {
                       cashAdapter.markApplied(record.configVersion);
-                  }
-          """
+                  }"""
           )
           PY
           git diff --check
