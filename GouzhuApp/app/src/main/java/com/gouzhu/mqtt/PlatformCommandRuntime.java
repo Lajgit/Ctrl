@@ -1180,6 +1180,10 @@ final class PlatformCommandRuntime {
     }
 
     private void reapplyCashConfiguration() {
+        if (store.isCashBlocked()) {
+            cashAdapter.disableCashAcceptance();
+            return;
+        }
         DeviceCommandStore.CashConfigurationRecord record =
                 store.loadCashConfiguration();
         if (record == null || record.changeEnabled) {
