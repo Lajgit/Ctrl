@@ -5,6 +5,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+
 import com.gouzhu.AppConfig;
 import com.gouzhu.util.DeviceUtil;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
@@ -96,6 +99,25 @@ public final class DeviceSdkManager {
         );
     }
 
+    private static void logLong(String tag, String content) {
+        if (content == null) {
+            Log.i(tag, "null");
+            return;
+        }
+
+        final int chunkSize = 3000;
+        int length = content.length();
+
+        for (int start = 0, index = 1; start < length; start += chunkSize, index++) {
+            int end = Math.min(length, start + chunkSize);
+            Log.i(
+                    tag,
+                    "bootstrap[" + index + "] "
+                            + content.substring(start, end)
+            );
+        }
+    }
+
     /** 获取设备屏动态首页、功能开关、套餐和现金状态快照。 */
     public void refreshBootstrap(BootstrapCallback callback) {
         final String appVersion = DeviceUtil.getAppVersion(context);
@@ -111,6 +133,17 @@ public final class DeviceSdkManager {
             long startedAt = System.currentTimeMillis();
             try {
                 DeviceAppBootstrapResult result = newAppClient().bootstrap(appVersion);
+                lastBootstrap = result;
+
+                Gson gson = new GsonBuilder()
+                        .serializeNulls()
+                        .setPrettyPrinting()
+                        .create();
+
+                String bootstrapJson = gson.toJson(result);
+                logLong(TAG, "bootstrap完整内容：\n" + bootstrapJson);
+
+
                 lastBootstrap = result;
                 Log.i(
                         TAG,
