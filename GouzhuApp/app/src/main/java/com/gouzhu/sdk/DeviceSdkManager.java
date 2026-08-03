@@ -5,9 +5,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-
 import com.gouzhu.AppConfig;
 import com.gouzhu.util.DeviceUtil;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
@@ -29,8 +26,8 @@ import java.util.concurrent.Executors;
 /**
  * 服务端设备 SDK 的 Android 入口。
  *
- * <p>统一创建 lifecycle、credential 和 device-app 客户端。HTTP 方法为同步调用，
- * 因此所有公开异步入口都在单线程执行器中运行，回调切回主线程。</p>
+ * <p>统一创建生命周期、凭证和设备屏客户端。HTTP 方法为同步调用，因此所有公开
+ * 异步入口都在单线程执行器中运行，回调切回主线程。</p>
  */
 public final class DeviceSdkManager {
 
@@ -99,32 +96,13 @@ public final class DeviceSdkManager {
         );
     }
 
-    private static void logLong(String tag, String content) {
-        if (content == null) {
-            Log.i(tag, "null");
-            return;
-        }
-
-        final int chunkSize = 3000;
-        int length = content.length();
-
-        for (int start = 0, index = 1; start < length; start += chunkSize, index++) {
-            int end = Math.min(length, start + chunkSize);
-            Log.i(
-                    tag,
-                    "bootstrap[" + index + "] "
-                            + content.substring(start, end)
-            );
-        }
-    }
-
-    /** 获取设备屏动态首页、功能开关、套餐和现金状态快照。 */
+    /** 获取设备屏动态首页、功能开关、套餐、扫码路由和现金状态快照。 */
     public void refreshBootstrap(BootstrapCallback callback) {
         final String appVersion = DeviceUtil.getAppVersion(context);
         final String deviceNo = DeviceUtil.requireDeviceNo(context);
         Log.i(
                 TAG,
-                "开始读取首页/现金配置：deviceNo=" + deviceNo
+                "开始读取设备屏bootstrap：deviceNo=" + deviceNo
                         + "，appVersion=" + appVersion
                         + "，apiBaseUrl=" + AppConfig.ACTIVATION_BASE_URL
         );
@@ -135,35 +113,26 @@ public final class DeviceSdkManager {
                 DeviceAppBootstrapResult result = newAppClient().bootstrap(appVersion);
                 lastBootstrap = result;
 
-                Gson gson = new GsonBuilder()
-                        .serializeNulls()
-                        .setPrettyPrinting()
-                        .create();
-
-                String bootstrapJson = gson.toJson(result);
-                logLong(TAG, "bootstrap完整内容：\n" + bootstrapJson);
-
-
-                lastBootstrap = result;
+                /*
+                 * SDK只读模型的toString会对支付链接、Token、券码和长文本进行安全脱敏。
+                 * 禁止使用Gson反射打印原始字段，否则会绕过SDK的日志脱敏策略。
+                 */
+                Log.d(TAG, "bootstrap安全摘要=" + String.valueOf(result));
                 Log.i(
                         TAG,
-                        "首页/现金配置读取成功：deviceNo=" + deviceNo
+                        "设备屏bootstrap读取成功：deviceNo=" + deviceNo
                                 + "，耗时=" + (System.currentTimeMillis() - startedAt) + "ms"
                                 + "，resultNull=" + (result == null)
                 );
 
-                /*
-                 * bootstrap.cashSale 只是服务端当前已确认状态的只读快照。
-                 * 它不能代替 sync_cash_configuration，也不得直接控制 ttyS5 纸钞机。
-                 * 唯一硬件配置入口是 PlatformCommandRuntime 收到的 MQTT 配置命令。
-                 */
+                // cashSale只是当前运行状态和已应用快照，不能代替MQTT现金配置命令。
                 logCashSaleSnapshot(result);
                 mainHandler.post(() -> callback.onSuccess(result));
             } catch (Throwable error) {
                 long elapsed = System.currentTimeMillis() - startedAt;
                 Log.e(
                         TAG,
-                        "首页/现金配置读取失败：deviceNo=" + deviceNo
+                        "设备屏bootstrap读取失败：deviceNo=" + deviceNo
                                 + "，appVersion=" + appVersion
                                 + "，apiBaseUrl=" + AppConfig.ACTIVATION_BASE_URL
                                 + "，耗时=" + elapsed + "ms"
@@ -225,7 +194,7 @@ public final class DeviceSdkManager {
             if (cashSale == null) {
                 Log.w(
                         TAG,
-                        "bootstrap.cashSale为空；该结果仅用于状态展示，不下发现金硬件配置"
+                        "bootstrap.cashSale为空；该结果只用于状态展示，不下发现金硬件配置"
                 );
                 return;
             }
@@ -248,7 +217,7 @@ public final class DeviceSdkManager {
                             + "，configurationVersion=" + configurationVersion
                             + "，tierCount=" + tierCount
                             + "，unavailableReason=" + unavailableReason
-                            + "；不会直接控制纸钞机，等待MQTT sync_cash_configuration"
+                            + "；现金硬件只接受MQTT sync_cash_configuration"
             );
         } catch (Throwable error) {
             Log.w(TAG, "读取bootstrap.cashSale状态快照失败", error);
