@@ -1,9 +1,9 @@
 name: Apply cash applied-version pointer fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/cash-config-pb13-20260803
+      - main
 
 permissions:
   contents: write
