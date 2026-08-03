@@ -1,0 +1,113 @@
+name: Apply cash configuration version floor
+
+on:
+  push:
+    branches:
+      - fix/cash-config-version-floor-20260803
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/cash-config-version-floor-20260803
+      - name: Persist highest accepted configuration version
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old!r}")
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          store = "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandStore.java"
+          replace_once(
+              store,
+              "    private static final String META_PENDING_CONFIG = \"pending_cash_config_message\";\n",
+              "    private static final String META_PENDING_CONFIG = \"pending_cash_config_message\";\n"
+              "    private static final String META_LATEST_CONFIG_VERSION = \"latest_cash_config_version\";\n"
+          )
+          replace_once(
+              store,
+              """    public synchronized int getLatestCashConfigVersion() {
+                  return Math.max(
+                          getCashConfigVersion(),
+                          parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
+                  );
+              }
+          """,
+              """    public synchronized int getLatestCashConfigVersion() {
+                  return Math.max(
+                          getCashConfigVersion(),
+                          Math.max(
+                                  parsePositiveInt(getMeta(META_LATEST_CONFIG_VERSION)),
+                                  parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
+                          )
+                  );
+              }
+          """
+          )
+          replace_once(
+              store,
+              """            int latestVersion = Math.max(
+                          getCashConfigVersion(db),
+                          parsePositiveInt(getMeta(db, META_PENDING_CONFIG_VERSION))
+                  );
+          """,
+              """            int latestVersion = Math.max(
+                          getCashConfigVersion(db),
+                          Math.max(
+                                  parsePositiveInt(
+                                          getMeta(db, META_LATEST_CONFIG_VERSION)
+                                  ),
+                                  parsePositiveInt(
+                                          getMeta(db, META_PENDING_CONFIG_VERSION)
+                                  )
+                          )
+                  );
+          """
+          )
+          replace_once(
+              store,
+              """            putMeta(db, META_PENDING_CONFIG, messageId);
+                  putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));
+          """,
+              """            putMeta(db, META_PENDING_CONFIG, messageId);
+                  putMeta(db, META_LATEST_CONFIG_VERSION, String.valueOf(configVersion));
+                  putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));
+          """
+          )
+
+          runtime = "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java"
+          replace_once(
+              runtime,
+              """        marbleAdapter.start(hardwareObserver);
+                  cashAdapter.start();
+                  SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
+          """,
+              """        marbleAdapter.start(hardwareObserver);
+                  cashAdapter.start();
+                  cashAdapter.markApplied(store.getCashConfigVersion());
+                  SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
+          """
+          )
+          PY
+          git diff --check
+      - name: Commit focused fix
+        run: |
+          git rm .github/workflows/apply-cash-version-floor.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandStore.java
+          git add GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java
+          git commit -m "持久化现金配置最高已接收版本"
+          git push origin HEAD:fix/cash-config-version-floor-20260803
