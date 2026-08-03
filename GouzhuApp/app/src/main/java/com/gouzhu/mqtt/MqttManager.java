@@ -205,6 +205,7 @@ public final class MqttManager implements MqttTransport {
     }
 
     public boolean reportCashEvent(String payload) {
+        Log.i(TAG, "现金事实上报JSON=" + safe(payload));
         return publishReport("cash-event", payload);
     }
 
