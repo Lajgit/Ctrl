@@ -183,6 +183,17 @@ public final class SdkCommandDecoder {
             ));
         }
 
+        public EncodedResult configurationAcknowledgement(
+                String eventNo,
+                long nowMillis
+        ) {
+            return encode(DeviceCommandResult.configurationAcknowledgement(
+                    sdkCommand,
+                    eventNo,
+                    nowMillis
+            ));
+        }
+
         public EncodedResult physicalTerminal(
                 String eventNo,
                 boolean success,
@@ -209,24 +220,18 @@ public final class SdkCommandDecoder {
         public EncodedResult configurationTerminal(
                 String eventNo,
                 boolean success,
-                long configVersion,
                 String resultCode,
                 String resultMessage,
                 long nowMillis
         ) {
-            DeviceCommandResult result = DeviceCommandResult.builder(
-                            sdkCommand.getMessageId(),
-                            sdkCommand.getCommandType(),
-                            success
-                                    ? DeviceCommandResult.STATUS_SUCCESS
-                                    : DeviceCommandResult.STATUS_FAILED,
-                            eventNo,
-                            nowMillis
-                    )
-                    .terminal(0, resultCode, resultMessage)
-                    .configurationVersion(configVersion)
-                    .build();
-            return encode(result);
+            return encode(DeviceCommandResult.configurationTerminal(
+                    sdkCommand,
+                    eventNo,
+                    success,
+                    resultCode,
+                    resultMessage,
+                    nowMillis
+            ));
         }
 
         public EncodedResult genericTerminal(

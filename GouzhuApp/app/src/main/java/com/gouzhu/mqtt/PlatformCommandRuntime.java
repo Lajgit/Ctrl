@@ -497,112 +497,155 @@ final class PlatformCommandRuntime {
     }
 
     private void acceptCashConfiguration(SdkCommandDecoder.DecodedCommand decoded) {
+        String messageId = decoded.sdkCommand.getMessageId();
         final CashConfigurationCommandData config;
         try {
             config = decoded.sdkCommand.requireData(
                     CashConfigurationCommandData.class
             );
         } catch (Throwable error) {
-            store.saveCommand(decoded.envelope);
-            publishSdkGenericTerminal(
+            cashAdapter.disableCashAcceptance();
+            persistAndPublishConfigurationFailure(
                     decoded,
-                    false,
                     "CASH_CONFIGURATION_INVALID",
-                    messageOf(error)
+                    messageOf(error),
+                    false
             );
             return;
         }
 
         String validationError = validateCashConfiguration(config);
         if (validationError != null) {
-            store.saveCommand(decoded.envelope);
-            publishSdkConfigurationTerminal(
+            cashAdapter.disableCashAcceptance();
+            persistAndPublishConfigurationFailure(
                     decoded,
-                    false,
-                    safeConfigVersion(config),
                     "CASH_CONFIGURATION_INVALID",
-                    validationError
+                    validationError,
+                    false
             );
             return;
         }
 
         long configVersion = config.getConfigVersion();
         if (configVersion <= store.getLatestCashConfigVersion()) {
-            store.saveCommand(decoded.envelope);
-            publishSdkConfigurationTerminal(
+            cashAdapter.disableCashAcceptance();
+            persistAndPublishConfigurationFailure(
                     decoded,
-                    false,
-                    configVersion,
                     "CASH_CONFIGURATION_STALE",
-                    "configVersion必须高于本地已接收版本"
+                    "configVersion必须高于本地已接收版本",
+                    false
             );
             return;
         }
 
         boolean enabled = config.isCashAcceptanceEnabled();
         List<CashTier> tiers = toCashTiers(config);
-        String messageId = decoded.sdkCommand.getMessageId();
+        final SdkCommandDecoder.EncodedResult acknowledgement;
+        final SdkCommandDecoder.EncodedResult interruptedTerminal;
+        try {
+            long nowMillis = System.currentTimeMillis();
+            acknowledgement = decoded.configurationAcknowledgement(
+                    messageId + "-ack",
+                    nowMillis
+            );
+            interruptedTerminal = decoded.configurationTerminal(
+                    messageId + "-result",
+                    false,
+                    "CASH_CONFIGURATION_INTERRUPTED",
+                    "现金配置处理被进程重启中断",
+                    nowMillis
+            );
+        } catch (Throwable error) {
+            cashAdapter.disableCashAcceptance();
+            reportStorageFault(
+                    "现金配置专用回执生成失败：" + messageOf(error));
+            return;
+        }
+
         if (!store.savePendingCashConfiguration(
                 decoded.envelope,
                 (int) configVersion,
                 enabled,
                 config.isChangeEnabled(),
-                decoded.envelope.toString()
+                decoded.envelope.toString(),
+                acknowledgement.eventNo,
+                acknowledgement.resultStatus,
+                acknowledgement.payload,
+                interruptedTerminal.eventNo,
+                interruptedTerminal.resultStatus,
+                interruptedTerminal.payload
         )) {
-            publishSdkConfigurationTerminal(
+            cashAdapter.disableCashAcceptance();
+            persistAndPublishConfigurationFailure(
                     decoded,
-                    false,
-                    configVersion,
                     "LOCAL_STORAGE_ERROR",
-                    "完整现金配置无法原子保存为待应用版本"
+                    "完整现金配置、ACK和中断终态无法原子保存",
+                    false
             );
             return;
         }
 
         liveCommands.put(messageId, decoded);
-        if (!publishSdkAck(decoded)) {
-            liveCommands.remove(messageId);
-            store.clearPendingCashConfiguration(messageId);
-            cashAdapter.disableCashAcceptance();
-            reportStorageFault("现金配置ACK无法写入outbox");
-            return;
-        }
-
+        MqttManager.get(context).reportCommandResult(acknowledgement.payload);
         hardwareExecutor.execute(() -> {
-            CashConfigurationResult result = enabled
-                    ? cashAdapter.apply(configVersion, tiers)
-                    : cashAdapter.applyDisabled(configVersion);
-            boolean hardwareApplied = result.isApplied();
-            boolean success = hardwareApplied
-                    && store.commitPendingCashConfiguration(messageId);
-            String resultCode;
-            String resultMessage;
+            try {
+                CashConfigurationResult result = enabled
+                        ? cashAdapter.apply(configVersion, tiers)
+                        : cashAdapter.applyDisabled(configVersion);
+                if (result != null && result.isApplied()) {
+                    final SdkCommandDecoder.EncodedResult successTerminal;
+                    try {
+                        successTerminal = decoded.configurationTerminal(
+                                messageId + "-result",
+                                true,
+                                "CASH_CONFIGURATION_APPLIED",
+                                "现金配置已应用",
+                                System.currentTimeMillis()
+                        );
+                    } catch (Throwable error) {
+                        cashAdapter.disableCashAcceptance();
+                        persistAndPublishConfigurationFailure(
+                                decoded,
+                                "LOCAL_STORAGE_ERROR",
+                                "现金配置成功回执生成失败：" + messageOf(error),
+                                true
+                        );
+                        return;
+                    }
 
-            if (success) {
-                cashAdapter.markApplied(configVersion);
-                resultCode = "CASH_CONFIGURATION_APPLIED";
-                resultMessage = "现金配置已由控制板确认并切换为最近成功版本";
-            } else {
-                cashAdapter.disableCashAcceptance();
-                store.clearPendingCashConfiguration(messageId);
-                resultCode = hardwareApplied
-                        ? "LOCAL_STORAGE_ERROR"
-                        : "CASH_CONFIGURATION_REJECTED";
-                resultMessage = hardwareApplied
-                        ? "控制板已应用，但最近成功版本切换失败，已执行安全关闭"
-                        : safe(result.getMessage());
+                    if (store.commitPendingCashConfigurationAndResult(
+                            messageId,
+                            successTerminal.eventNo,
+                            successTerminal.resultStatus,
+                            successTerminal.payload
+                    )) {
+                        cashAdapter.markApplied(configVersion);
+                        MqttManager.get(context).reportCommandResult(
+                                successTerminal.payload
+                        );
+                    } else {
+                        cashAdapter.disableCashAcceptance();
+                        persistAndPublishConfigurationFailure(
+                                decoded,
+                                "LOCAL_STORAGE_ERROR",
+                                "控制板已应用，但本地applied与success回执原子提交失败",
+                                true
+                        );
+                    }
+                } else {
+                    cashAdapter.disableCashAcceptance();
+                    persistAndPublishConfigurationFailure(
+                            decoded,
+                            "CASH_CONFIGURATION_APPLY_FAILED",
+                            result == null
+                                    ? "现金配置适配器未返回结果"
+                                    : safe(result.getMessage()),
+                            true
+                    );
+                }
+            } finally {
+                liveCommands.remove(messageId);
             }
-
-            if (!publishSdkConfigurationTerminal(
-                    decoded,
-                    success,
-                    configVersion,
-                    resultCode,
-                    resultMessage
-            )) {
-                reportStorageFault("现金配置终态无法写入outbox");
-            }
-            liveCommands.remove(messageId);
         });
     }
 
@@ -881,6 +924,17 @@ final class PlatformCommandRuntime {
         CommandResultAcknowledgement acknowledgement =
                 decoded.sdkCommand.requireData(CommandResultAcknowledgement.class);
         if (!acknowledgement.isRecorded()) {
+            for (DeviceCommandStore.OutboxItem item
+                    : store.listCommandResults()) {
+                if (safe(acknowledgement.getSourceMessageId()).equals(
+                        item.sourceMessageId)
+                        && safe(acknowledgement.getEventNo()).equals(
+                                item.eventNo)
+                        && safe(acknowledgement.getResultStatus()).equals(
+                                item.resultStatus)) {
+                    MqttManager.get(context).reportCommandResult(item.payload);
+                }
+            }
             return;
         }
         store.removeCommandResult(
@@ -945,25 +999,40 @@ final class PlatformCommandRuntime {
         }
     }
 
-    private boolean publishSdkConfigurationTerminal(
+    private boolean persistAndPublishConfigurationFailure(
             SdkCommandDecoder.DecodedCommand decoded,
-            boolean success,
-            long configVersion,
             String resultCode,
-            String resultMessage
+            String resultMessage,
+            boolean clearPending
     ) {
         try {
             String messageId = decoded.sdkCommand.getMessageId();
-            return saveAndPublish(decoded.configurationTerminal(
-                    messageId + "-result",
-                    success,
-                    configVersion,
-                    resultCode,
-                    resultMessage,
-                    System.currentTimeMillis()
-            ));
+            SdkCommandDecoder.EncodedResult terminal =
+                    decoded.configurationTerminal(
+                            messageId + "-result",
+                            false,
+                            resultCode,
+                            safe(resultMessage),
+                            System.currentTimeMillis()
+                    );
+            if (!store.failCashConfigurationAndResult(
+                    decoded.envelope,
+                    terminal.sourceMessageId,
+                    terminal.eventNo,
+                    terminal.resultStatus,
+                    terminal.payload,
+                    clearPending
+            )) {
+                reportStorageFault(
+                        "现金配置failed终态无法写入SQLite/outbox");
+                return false;
+            }
+            MqttManager.get(context).reportCommandResult(terminal.payload);
+            return true;
         } catch (Throwable error) {
-            Log.e(TAG, "SDK现金配置终态生成失败", error);
+            Log.e(TAG, "SDK现金配置失败终态生成失败", error);
+            reportStorageFault(
+                    "现金配置失败终态生成失败：" + messageOf(error));
             return false;
         }
     }
@@ -1015,13 +1084,23 @@ final class PlatformCommandRuntime {
         if (blank(messageId)) {
             return;
         }
-        store.clearPendingCashConfiguration(messageId);
         cashAdapter.disableCashAcceptance();
+        DeviceCommandStore.OutboxItem terminal =
+                store.failInterruptedCashConfiguration();
+        if (terminal == null) {
+            reportStorageFault(
+                    "中断现金配置无法标记failed并保存终态；messageId="
+                            + messageId
+            );
+            return;
+        }
+        MqttManager.get(context).reportCommandResult(terminal.payload);
         MqttManager.get(context).reportFault(
                 "CASH_CONFIGURATION_INTERRUPTED",
                 "检测到进程重启前未完成的现金配置",
                 3,
-                "已保留最近成功版本并关闭现金设备；messageId=" + messageId
+                "已保留最近成功版本、关闭现金设备并保存failed终态；messageId="
+                        + messageId
         );
     }
 
@@ -1202,12 +1281,6 @@ final class PlatformCommandRuntime {
         return "CE-A-" + format.format(new Date()) + "-"
                 + String.format(Locale.ROOT, "%04X", sequence) + "-"
                 + UUID.randomUUID().toString().substring(0, 6);
-    }
-
-    private static long safeConfigVersion(CashConfigurationCommandData config) {
-        return config == null || config.getConfigVersion() == null
-                ? 0L
-                : config.getConfigVersion();
     }
 
     private static JSONObject parseObject(String value) {
