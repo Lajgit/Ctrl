@@ -5,6 +5,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+
 import com.gouzhu.AppConfig;
 import com.gouzhu.util.DeviceUtil;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
@@ -113,6 +116,15 @@ public final class DeviceSdkManager {
                 DeviceAppBootstrapResult result = newAppClient().bootstrap(appVersion);
                 lastBootstrap = result;
 
+                Gson gson = new GsonBuilder()
+                        .serializeNulls()
+                        .setPrettyPrinting()
+                        .create();
+
+                String bootstrapJson = gson.toJson(result);
+                logLong(TAG, "bootstrap完整内容：\n" + bootstrapJson);
+                lastBootstrap = result;
+
                 /*
                  * SDK只读模型的toString会对支付链接、Token、券码和长文本进行安全脱敏。
                  * 禁止使用Gson反射打印原始字段，否则会绕过SDK的日志脱敏策略。
@@ -142,6 +154,25 @@ public final class DeviceSdkManager {
                 mainHandler.post(() -> callback.onFailure(error));
             }
         });
+    }
+
+    private static void logLong(String tag, String content) {
+        if (content == null) {
+            Log.i(tag, "null");
+            return;
+        }
+
+        final int chunkSize = 3000;
+        int length = content.length();
+
+        for (int start = 0, index = 1; start < length; start += chunkSize, index++) {
+            int end = Math.min(length, start + chunkSize);
+            Log.i(
+                    tag,
+                    "bootstrap[" + index + "] "
+                            + content.substring(start, end)
+            );
+        }
     }
 
     public DeviceAppNativePurchaseResult createNativePurchase(
