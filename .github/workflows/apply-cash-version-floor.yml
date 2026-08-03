@@ -1,9 +1,9 @@
 name: Apply cash configuration version floor
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/cash-config-version-floor-20260803
+      - main
 
 permissions:
   contents: write
