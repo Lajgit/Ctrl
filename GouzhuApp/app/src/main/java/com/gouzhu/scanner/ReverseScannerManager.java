@@ -6,7 +6,7 @@ import android.os.SystemClock;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
-import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.mqtt.MqttManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -18,16 +18,12 @@ import java.nio.charset.StandardCharsets;
 /**
  * ttyS6 反扫模块管理器。
  *
- * <p>串口由本类独占打开，按 CR、LF、ETX 或字节空闲间隔切分一条扫码内容。
- * 当前业务支持两类服务端已有接口：</p>
+ * <p>串口由本类独占打开，按 CR、LF、ETX 或字节空闲间隔切分扫码帧。业务类型
+ * 不再由设备端写死前缀，而是交给 {@link ScannerBusinessRouter}，使用最近一次
+ * bootstrap 返回的 redemptionRouting 精确匹配。</p>
  *
- * <ul>
- *     <li>6 位数字：内部套餐取珠码；</li>
- *     <li>W 开头且其余为数字：会员取珠码。</li>
- * </ul>
- *
- * <p>其他扫码内容只上报“暂不支持”，不会驱动控制板。真实出珠仍必须等待
- * 服务端 MQTT 指令。</p>
+ * <p>反扫读取和核销接口都不能直接驱动控制板；真实出珠只能执行平台下发并通过
+ * SDK 校验的 MQTT dispense_marbles 指令。</p>
  */
 public final class ReverseScannerManager {
 
@@ -44,12 +40,16 @@ public final class ReverseScannerManager {
 
     public static final String TYPE_INTERNAL_REDEMPTION = "internalRedemption";
     public static final String TYPE_MEMBER_WITHDRAWAL = "memberWithdrawal";
+    public static final String TYPE_THIRD_PARTY_REDEMPTION = "thirdPartyRedemption";
     public static final String TYPE_UNSUPPORTED = "unsupported";
 
     private static final String TAG = "GouzhuReverseScanner";
     private static final int MAX_SCAN_BYTES = 2048;
+    private static final int MIN_SCAN_CHARACTERS = 4;
     private static final long IDLE_FRAME_DELAY_MS = 180L;
     private static final long DUPLICATE_WINDOW_MS = 1500L;
+    private static final long NOISE_LOG_INTERVAL_MS = 60_000L;
+    private static final long FAULT_REPORT_INTERVAL_MS = 60_000L;
 
     private static volatile ReverseScannerManager instance;
 
@@ -59,8 +59,11 @@ public final class ReverseScannerManager {
 
     private volatile boolean running;
     private volatile long lastByteAt;
-    private volatile String lastScan = "";
+    private volatile String lastScanFingerprint = "";
     private volatile long lastScanAt;
+    private volatile long lastNoiseLogAt;
+    private volatile int ignoredNoiseFrames;
+    private volatile long lastFaultReportAt;
 
     private FileInputStream inputStream;
     private Thread readThread;
@@ -114,6 +117,7 @@ public final class ReverseScannerManager {
             return true;
         } catch (Throwable error) {
             Log.e(TAG, "打开反扫模块失败", error);
+            reportScannerFault("反扫模块连接失败：" + messageOf(error));
             closeInternal(false);
             broadcast(
                     EVENT_ERROR,
@@ -184,6 +188,7 @@ public final class ReverseScannerManager {
         } catch (Throwable error) {
             if (running) {
                 Log.e(TAG, "反扫串口读取失败", error);
+                reportScannerFault("反扫串口读取失败：" + messageOf(error));
                 broadcast(
                         EVENT_ERROR,
                         "反扫模块读取异常：" + messageOf(error),
@@ -215,18 +220,17 @@ public final class ReverseScannerManager {
     }
 
     private void consumeByte(int value) {
-        // STX 不作为扫码正文；ETX、CR、LF 都作为一条扫码结束符。
+        // STX 表示新帧开始。若前一帧没有正常结束，直接清空，避免把噪声拼进二维码。
         if (value == 0x02) {
-            synchronized (bufferLock) {
-                if (scanBuffer.size() == 0) {
-                    return;
-                }
-            }
+            resetBuffer();
+            return;
         }
+        // ETX、CR、LF 均作为完整扫码帧结束符。
         if (value == 0x03 || value == '\r' || value == '\n') {
             flushPendingScan();
             return;
         }
+        // NUL 和其他控制字符属于线路空闲、模块状态字节或噪声，不进入正文。
         if (value == 0x00 || value < 0x20) {
             return;
         }
@@ -243,6 +247,7 @@ public final class ReverseScannerManager {
             }
         }
         if (overflow) {
+            reportScannerFault("反扫数据超过最大长度，已丢弃");
             broadcast(EVENT_ERROR, "反扫数据超过最大长度，已丢弃", "", "");
         }
     }
@@ -269,61 +274,81 @@ public final class ReverseScannerManager {
             return;
         }
 
-        long now = SystemClock.elapsedRealtime();
-        if (content.equals(lastScan) && now - lastScanAt < DUPLICATE_WINDOW_MS) {
-            Log.i(TAG, "忽略反扫模块短时间重复上报，长度=" + content.length());
+        // 真正二维码不会只有一个可打印字符。模块空闲状态或串口毛刺形成的短帧静默丢弃。
+        if (content.length() < MIN_SCAN_CHARACTERS) {
+            recordNoiseFrame(content.length());
             return;
         }
-        lastScan = content;
+
+        String fingerprint = fingerprint(content);
+        long now = SystemClock.elapsedRealtime();
+        if (fingerprint.equals(lastScanFingerprint)
+                && now - lastScanAt < DUPLICATE_WINDOW_MS) {
+            // 只对完整二维码做短时间幂等，不再为模块空闲单字节持续打印 Info 日志。
+            Log.d(TAG, "忽略短时间重复二维码，长度=" + content.length());
+            return;
+        }
+        lastScanFingerprint = fingerprint;
         lastScanAt = now;
 
         String maskedCode = maskCode(content);
-        if (content.matches("\\d{6}")) {
-            String requestJson = PaymentManager.get(context).submitScannerQrString(content);
-            if (requestJson.isEmpty()) {
-                broadcast(
-                        EVENT_ERROR,
-                        "内部取珠码提交失败，码值=" + maskedCode,
-                        TYPE_INTERNAL_REDEMPTION,
-                        maskedCode
-                );
-                return;
-            }
+        ScannerBusinessRouter.Submission submission =
+                ScannerBusinessRouter.get(context).submit(content);
+        if (submission.accepted) {
             broadcast(
                     EVENT_SCAN_ACCEPTED,
-                    "已读取6位内部取珠码并提交服务端，码值=" + maskedCode,
-                    TYPE_INTERNAL_REDEMPTION,
+                    submission.message + "，码值=" + maskedCode,
+                    submission.codeType,
                     maskedCode
             );
             return;
         }
-
-        if (content.matches("W\\d+")) {
-            String requestNo = PaymentManager.get(context).submitMemberWithdrawal(content);
-            if (requestNo.isEmpty()) {
-                broadcast(
-                        EVENT_ERROR,
-                        "会员取珠码提交失败，码值=" + maskedCode,
-                        TYPE_MEMBER_WITHDRAWAL,
-                        maskedCode
-                );
-                return;
-            }
+        if (submission.unsupported) {
             broadcast(
-                    EVENT_SCAN_ACCEPTED,
-                    "已读取会员取珠码并提交服务端，码值=" + maskedCode,
-                    TYPE_MEMBER_WITHDRAWAL,
+                    EVENT_SCAN_UNSUPPORTED,
+                    submission.message + "；长度=" + content.length()
+                            + "，尾号=" + maskedCode,
+                    TYPE_UNSUPPORTED,
                     maskedCode
             );
             return;
         }
+        broadcast(EVENT_ERROR, submission.message, "", maskedCode);
+    }
 
-        broadcast(
-                EVENT_SCAN_UNSUPPORTED,
-                "已读取扫码内容，但当前服务端接口不支持该格式；长度="
-                        + content.length() + "，尾号=" + maskedCode,
-                TYPE_UNSUPPORTED,
-                maskedCode
+    /** 线路空闲短帧只做低频 Debug 统计，避免污染正常联调日志。 */
+    private void recordNoiseFrame(int length) {
+        ignoredNoiseFrames++;
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastNoiseLogAt < NOISE_LOG_INTERVAL_MS) {
+            return;
+        }
+        Log.d(
+                TAG,
+                "反扫串口已静默过滤短帧噪声：count=" + ignoredNoiseFrames
+                        + "，lastLength=" + length
+        );
+        ignoredNoiseFrames = 0;
+        lastNoiseLogAt = now;
+    }
+
+    /** 使用不可逆摘要完成短时间去重，不在内存中长期保留完整业务码。 */
+    private static String fingerprint(String content) {
+        return content.length() + ":" + Integer.toHexString(content.hashCode());
+    }
+
+    /** 串口真正故障按统一设备故障协议上报，普通空闲噪声不作为故障。 */
+    private void reportScannerFault(String description) {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastFaultReportAt < FAULT_REPORT_INTERVAL_MS) {
+            return;
+        }
+        lastFaultReportAt = now;
+        MqttManager.get(context).reportFault(
+                "SCANNER_ERROR",
+                "扫码器异常",
+                2,
+                description
         );
     }
 
