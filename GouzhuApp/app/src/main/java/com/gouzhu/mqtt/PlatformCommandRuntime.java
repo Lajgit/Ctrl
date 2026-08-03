@@ -578,6 +578,7 @@ final class PlatformCommandRuntime {
             String resultMessage;
 
             if (success) {
+                cashAdapter.markApplied(configVersion);
                 resultCode = "CASH_CONFIGURATION_APPLIED";
                 resultMessage = "现金配置已由控制板确认并切换为最近成功版本";
             } else {
@@ -1142,6 +1143,8 @@ final class PlatformCommandRuntime {
                         2,
                         safe(result.getMessage())
                 );
+            } else {
+                cashAdapter.markApplied(record.configVersion);
             }
         });
     }

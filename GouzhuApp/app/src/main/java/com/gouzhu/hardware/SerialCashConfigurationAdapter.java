@@ -38,7 +38,7 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
     private final Object applyLock = new Object();
 
     private volatile ApplyWaiter waiter;
-    private volatile long lastConfigVersion = 1L;
+    private volatile long lastAppliedConfigVersion = 1L;
     private boolean receiverRegistered;
 
     private final BroadcastReceiver boardReceiver = new BroadcastReceiver() {
@@ -171,9 +171,18 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
         return applyMask(configVersion, 0);
     }
 
+    public void markApplied(long configVersion) {
+        if (configVersion > 0L && configVersion <= 0x00FFFFFFL) {
+            lastAppliedConfigVersion = configVersion;
+        }
+    }
+
     @Override
     public void disableCashAcceptance() {
-        long version = Math.max(1L, Math.min(0x00FFFFFFL, lastConfigVersion));
+        long version = Math.max(
+                1L,
+                Math.min(0x00FFFFFFL, lastAppliedConfigVersion)
+        );
         long packed = version & 0x00FFFFFFL;
         boolean sent = SerialManager.get(context).sendCommand(
                 CMD_CASH_APPLY,
@@ -194,7 +203,6 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
             active.expectedMask = mask & 0xFF;
             active.expectedVersion = configVersion;
             waiter = active;
-            lastConfigVersion = configVersion;
             long startedAt = System.currentTimeMillis();
             try {
                 long packed = ((long) active.expectedMask << 24)
