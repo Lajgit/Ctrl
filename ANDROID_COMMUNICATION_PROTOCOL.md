@@ -219,7 +219,7 @@ Android处理顺序：
 → 失败时保留原始JSON，后续从outbox重发
 ```
 
-App日志使用Tag `GouzhuPlatformV2`，首次构造并准备上报时打印：
+App日志使用Tag `GouzhuMqtt`，每次准备发布或从outbox重发时打印：
 
 ```text
 现金事实上报JSON={...}
