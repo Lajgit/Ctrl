@@ -520,7 +520,6 @@ public final class MqttManager implements MqttTransport {
 
         @Override
         public void deliveryComplete(IMqttDeliveryToken token) {
-            schedulePendingOutboxFlush();
         }
     }
 
