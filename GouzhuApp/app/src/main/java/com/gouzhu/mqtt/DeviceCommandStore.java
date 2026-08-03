@@ -33,6 +33,12 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
     private static final String META_PENDING_CONFIG_ENABLED = "pending_cash_config_enabled";
     private static final String META_PENDING_CONFIG_CHANGE = "pending_cash_config_change";
     private static final String META_PENDING_CONFIG_SNAPSHOT = "pending_cash_config_snapshot";
+    private static final String META_PENDING_CONFIG_FAILURE_EVENT_NO =
+            "pending_cash_config_failure_event_no";
+    private static final String META_PENDING_CONFIG_FAILURE_STATUS =
+            "pending_cash_config_failure_status";
+    private static final String META_PENDING_CONFIG_FAILURE_PAYLOAD =
+            "pending_cash_config_failure_payload";
     private static final String META_CASH_BLOCKED = "cash_blocked";
 
     public DeviceCommandStore(Context context) {
@@ -289,9 +295,19 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             int configVersion,
             boolean enabled,
             boolean changeEnabled,
-            String snapshotJson
+            String snapshotJson,
+            String ackEventNo,
+            String ackResultStatus,
+            String ackPayload,
+            String interruptedEventNo,
+            String interruptedResultStatus,
+            String interruptedPayload
     ) {
-        if (envelope == null || configVersion <= 0 || blank(snapshotJson)) {
+        if (envelope == null || configVersion <= 0 || blank(snapshotJson)
+                || blank(ackEventNo) || blank(ackResultStatus) || blank(ackPayload)
+                || blank(interruptedEventNo)
+                || blank(interruptedResultStatus)
+                || blank(interruptedPayload)) {
             return false;
         }
         String messageId = envelope.optString("messageId", "").trim();
@@ -316,18 +332,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             if (configVersion <= latestVersion) {
                 return false;
             }
-
-            ContentValues command = new ContentValues();
-            command.put("message_id", messageId);
-            command.put("envelope", envelope.toString());
-            command.put("state", commandState(envelope));
-            command.put("updated_at", System.currentTimeMillis());
-            if (db.insertWithOnConflict(
-                    "commands",
-                    null,
-                    command,
-                    SQLiteDatabase.CONFLICT_REPLACE
-            ) == -1L) {
+            if (!saveCommandEnvelope(db, envelope, "pending")) {
                 return false;
             }
 
@@ -337,6 +342,31 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             putMeta(db, META_PENDING_CONFIG_ENABLED, enabled ? "1" : "0");
             putMeta(db, META_PENDING_CONFIG_CHANGE, changeEnabled ? "1" : "0");
             putMeta(db, META_PENDING_CONFIG_SNAPSHOT, snapshotJson);
+            putMeta(db, META_PENDING_CONFIG_FAILURE_EVENT_NO, interruptedEventNo);
+            putMeta(
+                    db,
+                    META_PENDING_CONFIG_FAILURE_STATUS,
+                    interruptedResultStatus
+            );
+            putMeta(
+                    db,
+                    META_PENDING_CONFIG_FAILURE_PAYLOAD,
+                    interruptedPayload
+            );
+
+            String receiptKey = messageId + "|" + ackEventNo + "|"
+                    + ackResultStatus;
+            if (!saveOutbox(
+                    db,
+                    receiptKey,
+                    "command_result",
+                    messageId,
+                    ackEventNo,
+                    ackResultStatus,
+                    ackPayload
+            )) {
+                return false;
+            }
             db.setTransactionSuccessful();
             return true;
         } finally {
@@ -344,8 +374,14 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         }
     }
 
-    public synchronized boolean commitPendingCashConfiguration(String messageId) {
-        if (blank(messageId)) {
+    public synchronized boolean commitPendingCashConfigurationAndResult(
+            String messageId,
+            String eventNo,
+            String resultStatus,
+            String payload
+    ) {
+        if (blank(messageId) || blank(eventNo) || blank(payload)
+                || !"success".equals(resultStatus)) {
             return false;
         }
         SQLiteDatabase db = getWritableDatabase();
@@ -382,13 +418,132 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             ) == -1L) {
                 return false;
             }
+            if (!updateCommandState(db, messageId, "applied")) {
+                return false;
+            }
+            String receiptKey = messageId + "|" + eventNo + "|"
+                    + resultStatus;
+            if (!saveOutbox(
+                    db,
+                    receiptKey,
+                    "command_result",
+                    messageId,
+                    eventNo,
+                    resultStatus,
+                    payload
+            )) {
+                return false;
+            }
 
+            putMeta(db, META_CASH_BLOCKED, "0");
             clearPendingCashConfiguration(db);
             db.setTransactionSuccessful();
             return true;
         } finally {
             db.endTransaction();
         }
+    }
+
+    public synchronized boolean failCashConfigurationAndResult(
+            JSONObject envelope,
+            String sourceMessageId,
+            String eventNo,
+            String resultStatus,
+            String payload,
+            boolean clearPending
+    ) {
+        if (envelope == null || blank(sourceMessageId) || blank(eventNo)
+                || blank(payload) || !"failed".equals(resultStatus)
+                || !sourceMessageId.equals(
+                        envelope.optString("messageId", "").trim())) {
+            return false;
+        }
+
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            if (!saveCommandEnvelope(db, envelope, "failed")) {
+                return false;
+            }
+            putMeta(db, META_CASH_BLOCKED, "1");
+            String receiptKey = sourceMessageId + "|" + eventNo + "|"
+                    + resultStatus;
+            if (!saveOutbox(
+                    db,
+                    receiptKey,
+                    "command_result",
+                    sourceMessageId,
+                    eventNo,
+                    resultStatus,
+                    payload
+            )) {
+                return false;
+            }
+            if (clearPending
+                    && sourceMessageId.equals(
+                            getMeta(db, META_PENDING_CONFIG))) {
+                clearPendingCashConfiguration(db);
+            }
+            db.setTransactionSuccessful();
+            return true;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public synchronized OutboxItem failInterruptedCashConfiguration() {
+        SQLiteDatabase db = getWritableDatabase();
+        OutboxItem result = null;
+        db.beginTransaction();
+        try {
+            String messageId = getMeta(db, META_PENDING_CONFIG);
+            String eventNo = getMeta(
+                    db,
+                    META_PENDING_CONFIG_FAILURE_EVENT_NO
+            );
+            String resultStatus = getMeta(
+                    db,
+                    META_PENDING_CONFIG_FAILURE_STATUS
+            );
+            String payload = getMeta(
+                    db,
+                    META_PENDING_CONFIG_FAILURE_PAYLOAD
+            );
+            if (blank(messageId) || blank(eventNo) || blank(payload)
+                    || !"failed".equals(resultStatus)) {
+                return null;
+            }
+            if (!updateCommandState(db, messageId, "failed")) {
+                return null;
+            }
+            putMeta(db, META_CASH_BLOCKED, "1");
+            String receiptKey = messageId + "|" + eventNo + "|"
+                    + resultStatus;
+            if (!saveOutbox(
+                    db,
+                    receiptKey,
+                    "command_result",
+                    messageId,
+                    eventNo,
+                    resultStatus,
+                    payload
+            )) {
+                return null;
+            }
+
+            clearPendingCashConfiguration(db);
+            result = new OutboxItem();
+            result.receiptKey = receiptKey;
+            result.kind = "command_result";
+            result.sourceMessageId = messageId;
+            result.eventNo = eventNo;
+            result.resultStatus = resultStatus;
+            result.payload = payload;
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+        return result;
     }
 
     public synchronized void clearPendingCashConfiguration(String messageId) {
@@ -530,6 +685,26 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             String resultStatus,
             String payload
     ) {
+        return saveOutbox(
+                getWritableDatabase(),
+                receiptKey,
+                kind,
+                sourceMessageId,
+                eventNo,
+                resultStatus,
+                payload
+        );
+    }
+
+    private static boolean saveOutbox(
+            SQLiteDatabase db,
+            String receiptKey,
+            String kind,
+            String sourceMessageId,
+            String eventNo,
+            String resultStatus,
+            String payload
+    ) {
         ContentValues values = new ContentValues();
         values.put("receipt_key", receiptKey);
         values.put("kind", kind);
@@ -538,16 +713,36 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         values.put("result_status", resultStatus);
         values.put("payload", payload);
         values.put("created_at", System.currentTimeMillis());
-        return getWritableDatabase().insertWithOnConflict(
-                "outbox", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
-                || hasOutbox(receiptKey);
+        return db.insertWithOnConflict(
+                "outbox",
+                null,
+                values,
+                SQLiteDatabase.CONFLICT_IGNORE
+        ) != -1L || hasOutbox(db, receiptKey, payload);
     }
 
     private boolean hasOutbox(String receiptKey) {
-        try (Cursor cursor = getReadableDatabase().query(
-                "outbox", new String[]{"id"}, "receipt_key=?",
-                new String[]{receiptKey}, null, null, null)) {
-            return cursor.moveToFirst();
+        return hasOutbox(getReadableDatabase(), receiptKey, null);
+    }
+
+    private static boolean hasOutbox(
+            SQLiteDatabase db,
+            String receiptKey,
+            String expectedPayload
+    ) {
+        try (Cursor cursor = db.query(
+                "outbox",
+                new String[]{"payload"},
+                "receipt_key=?",
+                new String[]{receiptKey},
+                null,
+                null,
+                null)) {
+            if (!cursor.moveToFirst()) {
+                return false;
+            }
+            return expectedPayload == null
+                    || expectedPayload.equals(cursor.getString(0));
         }
     }
 
@@ -609,6 +804,47 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         db.delete("meta", "key=?", new String[]{key});
     }
 
+    private static boolean saveCommandEnvelope(
+            SQLiteDatabase db,
+            JSONObject envelope,
+            String state
+    ) {
+        if (envelope == null || blank(state)) {
+            return false;
+        }
+        String messageId = envelope.optString("messageId", "").trim();
+        if (messageId.isEmpty()) {
+            return false;
+        }
+        ContentValues values = new ContentValues();
+        values.put("message_id", messageId);
+        values.put("envelope", envelope.toString());
+        values.put("state", state);
+        values.put("updated_at", System.currentTimeMillis());
+        return db.insertWithOnConflict(
+                "commands",
+                null,
+                values,
+                SQLiteDatabase.CONFLICT_REPLACE
+        ) != -1L;
+    }
+
+    private static boolean updateCommandState(
+            SQLiteDatabase db,
+            String messageId,
+            String state
+    ) {
+        ContentValues values = new ContentValues();
+        values.put("state", state);
+        values.put("updated_at", System.currentTimeMillis());
+        return db.update(
+                "commands",
+                values,
+                "message_id=?",
+                new String[]{messageId}
+        ) == 1;
+    }
+
     private static int getCashConfigVersion(SQLiteDatabase db) {
         try (Cursor cursor = db.query(
                 "cash_configuration",
@@ -636,6 +872,9 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         deleteMeta(db, META_PENDING_CONFIG_ENABLED);
         deleteMeta(db, META_PENDING_CONFIG_CHANGE);
         deleteMeta(db, META_PENDING_CONFIG_SNAPSHOT);
+        deleteMeta(db, META_PENDING_CONFIG_FAILURE_EVENT_NO);
+        deleteMeta(db, META_PENDING_CONFIG_FAILURE_STATUS);
+        deleteMeta(db, META_PENDING_CONFIG_FAILURE_PAYLOAD);
     }
 
     private static String commandState(JSONObject envelope) {
