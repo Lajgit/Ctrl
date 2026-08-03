@@ -465,6 +465,10 @@ static bool BillAcceptor_IsStatus(uint8_t data)
 
 static void BillAcceptor_ReportStatus(uint8_t status)
 {
+    uint8_t previous_status = BillLastReportStatus;
+    uint8_t previous_mask = CashEnableMask;
+    bool config_committed = false;
+
     BillLastReportStatus = status;
     if ((status == ICT_CMD_ENABLE) || (status == ICT_CMD_DISABLE))
     {
@@ -475,12 +479,16 @@ static void BillAcceptor_ReportStatus(uint8_t status)
             BillStateCommandPending = false;
             BillRequestedEnable = BillEnableState;
         }
-        if (!CashAcceptance_CommitPendingIfMatched())
+        config_committed = CashAcceptance_CommitPendingIfMatched();
+        if (!config_committed && (CashEnableMask != previous_mask))
         {
             EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
         }
     }
-    EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+    if ((status != previous_status) || (CashEnableMask != previous_mask))
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+    }
 }
 
 static void BillAcceptor_CompletePayment(uint8_t bill_type, uint8_t complete_status)
