@@ -84,6 +84,10 @@ void Error_Handler(void);
 #define CoinInput_Pin GPIO_PIN_15
 #define CoinInput_GPIO_Port GPIOE
 
+/* 硬币器12V电源MOS控制：PB13，高电平上电，逻辑与PC15电子锁一致。 */
+#define CoinPower_Pin GPIO_PIN_13
+#define CoinPower_GPIO_Port GPIOB
+
 #define J1_Pin GPIO_PIN_1
 #define J1_GPIO_Port GPIOA
 #define J2_Pin GPIO_PIN_2

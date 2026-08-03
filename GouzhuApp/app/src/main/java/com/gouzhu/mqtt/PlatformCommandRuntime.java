@@ -184,6 +184,7 @@ final class PlatformCommandRuntime {
         SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
         SerialManager.get(context).sendCommand(CMD_HARDWARE_STATUS, 0L, false);
         recoverWithoutRepeatingPhysicalAction();
+        discardInterruptedCashConfiguration();
         reapplyCashConfiguration();
     }
 
@@ -525,31 +526,43 @@ final class PlatformCommandRuntime {
         }
 
         long configVersion = config.getConfigVersion();
+        if (configVersion <= store.getLatestCashConfigVersion()) {
+            store.saveCommand(decoded.envelope);
+            publishSdkConfigurationTerminal(
+                    decoded,
+                    false,
+                    configVersion,
+                    "CASH_CONFIGURATION_STALE",
+                    "configVersion必须高于本地已接收版本"
+            );
+            return;
+        }
+
         boolean enabled = config.isCashAcceptanceEnabled();
         List<CashTier> tiers = toCashTiers(config);
-
-        if (!store.saveCashConfiguration(
+        String messageId = decoded.sdkCommand.getMessageId();
+        if (!store.savePendingCashConfiguration(
+                decoded.envelope,
                 (int) configVersion,
                 enabled,
                 config.isChangeEnabled(),
                 decoded.envelope.toString()
-        ) || !store.saveCommand(decoded.envelope)) {
+        )) {
             publishSdkConfigurationTerminal(
                     decoded,
                     false,
                     configVersion,
                     "LOCAL_STORAGE_ERROR",
-                    "完整现金配置持久化失败"
+                    "完整现金配置无法原子保存为待应用版本"
             );
             return;
         }
 
-        String messageId = decoded.sdkCommand.getMessageId();
-        store.setPendingConfigMessageId(messageId);
         liveCommands.put(messageId, decoded);
         if (!publishSdkAck(decoded)) {
             liveCommands.remove(messageId);
-            store.clearPendingConfigMessageId();
+            store.clearPendingCashConfiguration(messageId);
+            cashAdapter.disableCashAcceptance();
             reportStorageFault("现金配置ACK无法写入outbox");
             return;
         }
@@ -558,19 +571,36 @@ final class PlatformCommandRuntime {
             CashConfigurationResult result = enabled
                     ? cashAdapter.apply(configVersion, tiers)
                     : cashAdapter.applyDisabled(configVersion);
-            boolean success = result.isApplied();
-            publishSdkConfigurationTerminal(
+            boolean hardwareApplied = result.isApplied();
+            boolean success = hardwareApplied
+                    && store.commitPendingCashConfiguration(messageId);
+            String resultCode;
+            String resultMessage;
+
+            if (success) {
+                cashAdapter.markApplied(configVersion);
+                resultCode = "CASH_CONFIGURATION_APPLIED";
+                resultMessage = "现金配置已由控制板确认并切换为最近成功版本";
+            } else {
+                cashAdapter.disableCashAcceptance();
+                store.clearPendingCashConfiguration(messageId);
+                resultCode = hardwareApplied
+                        ? "LOCAL_STORAGE_ERROR"
+                        : "CASH_CONFIGURATION_REJECTED";
+                resultMessage = hardwareApplied
+                        ? "控制板已应用，但最近成功版本切换失败，已执行安全关闭"
+                        : safe(result.getMessage());
+            }
+
+            if (!publishSdkConfigurationTerminal(
                     decoded,
                     success,
                     configVersion,
-                    success
-                            ? "CASH_CONFIGURATION_APPLIED"
-                            : "CASH_CONFIGURATION_REJECTED",
-                    success
-                            ? "现金配置已完整持久化并由控制板应用"
-                            : safe(result.getMessage())
-            );
-            store.clearPendingConfigMessageId();
+                    resultCode,
+                    resultMessage
+            )) {
+                reportStorageFault("现金配置终态无法写入outbox");
+            }
             liveCommands.remove(messageId);
         });
     }
@@ -979,6 +1009,21 @@ final class PlatformCommandRuntime {
         }
     }
 
+    private void discardInterruptedCashConfiguration() {
+        String messageId = store.getPendingConfigMessageId();
+        if (blank(messageId)) {
+            return;
+        }
+        store.clearPendingCashConfiguration(messageId);
+        cashAdapter.disableCashAcceptance();
+        MqttManager.get(context).reportFault(
+                "CASH_CONFIGURATION_INTERRUPTED",
+                "检测到进程重启前未完成的现金配置",
+                3,
+                "已保留最近成功版本并关闭现金设备；messageId=" + messageId
+        );
+    }
+
     private void recoverWithoutRepeatingPhysicalAction() {
         if (!hasActiveOperation()) {
             return;
@@ -1068,12 +1113,13 @@ final class PlatformCommandRuntime {
         JSONArray items = data == null
                 ? null
                 : data.optJSONArray("cashSaleItems");
-        if (data == null || items == null) {
+        if (data == null || (record.enabled && items == null)) {
             return;
         }
 
         List<CashTier> tiers = new ArrayList<>();
-        for (int index = 0; index < items.length(); index++) {
+        int itemCount = items == null ? 0 : items.length();
+        for (int index = 0; index < itemCount; index++) {
             JSONObject item = items.optJSONObject(index);
             if (item == null) {
                 return;
@@ -1097,6 +1143,8 @@ final class PlatformCommandRuntime {
                         2,
                         safe(result.getMessage())
                 );
+            } else {
+                cashAdapter.markApplied(record.configVersion);
             }
         });
     }
