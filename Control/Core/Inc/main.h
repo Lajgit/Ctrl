@@ -70,15 +70,15 @@ void Error_Handler(void);
 #define HoolleInput_Pin GPIO_PIN_0
 #define HoolleInput_GPIO_Port GPIOC
 
-/* 吐珠电机光眼反馈：PD3，对应 PE9/PE11 电机通道。 */
-#define HoolleOutput_Pin GPIO_PIN_3
+/* 出珠电机光眼反馈：PD4，对应 PE9/PE11 电机通道。 */
+#define HoolleOutput_Pin GPIO_PIN_4
 #define HoolleOutput_GPIO_Port GPIOD
-#define HoolleOutput_EXTI_IRQn EXTI3_IRQn
+#define HoolleOutput_EXTI_IRQn EXTI4_IRQn
 
-/* 存珠电机光眼反馈：PD4，对应 PE13/PE14 电机通道。 */
-#define CardFeedback_Pin GPIO_PIN_4
+/* 存珠电机光眼反馈：PD3，对应 PE13/PE14 电机通道。 */
+#define CardFeedback_Pin GPIO_PIN_3
 #define CardFeedback_GPIO_Port GPIOD
-#define CardFeedback_EXTI_IRQn EXTI4_IRQn
+#define CardFeedback_EXTI_IRQn EXTI3_IRQn
 
 /* 投币器脉冲输入：PE15。 */
 #define CoinInput_Pin GPIO_PIN_15
@@ -154,7 +154,7 @@ void Error_Handler(void);
 #define Switch9_Pin GPIO_PIN_2
 #define Switch9_GPIO_Port GPIOD
 
-/* PD3/PD4 已用于吐珠、存珠光眼反馈，以下旧名称仅保留工程兼容。 */
+/* PD3/PD4 已用于存珠、出珠光眼反馈，以下旧名称仅保留工程兼容。 */
 #define Switch8_Pin GPIO_PIN_3
 #define Switch8_GPIO_Port GPIOD
 #define Switch7_Pin GPIO_PIN_4
