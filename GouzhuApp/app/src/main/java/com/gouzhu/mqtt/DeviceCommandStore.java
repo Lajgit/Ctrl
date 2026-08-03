@@ -28,6 +28,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
     private static final String META_ACTIVE_COLLECT = "active_collect";
     private static final String META_BOARD_VERSION = "board_version";
     private static final String META_PENDING_CONFIG = "pending_cash_config_message";
+    private static final String META_LATEST_CONFIG_VERSION = "latest_cash_config_version";
     private static final String META_PENDING_CONFIG_VERSION = "pending_cash_config_version";
     private static final String META_PENDING_CONFIG_ENABLED = "pending_cash_config_enabled";
     private static final String META_PENDING_CONFIG_CHANGE = "pending_cash_config_change";
@@ -276,7 +277,10 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
     public synchronized int getLatestCashConfigVersion() {
         return Math.max(
                 getCashConfigVersion(),
+                Math.max(
+                parsePositiveInt(getMeta(META_LATEST_CONFIG_VERSION)),
                 parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
+        )
         );
     }
 
@@ -300,7 +304,14 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         try {
             int latestVersion = Math.max(
                     getCashConfigVersion(db),
-                    parsePositiveInt(getMeta(db, META_PENDING_CONFIG_VERSION))
+                    Math.max(
+                    parsePositiveInt(
+                            getMeta(db, META_LATEST_CONFIG_VERSION)
+                    ),
+                    parsePositiveInt(
+                            getMeta(db, META_PENDING_CONFIG_VERSION)
+                    )
+            )
             );
             if (configVersion <= latestVersion) {
                 return false;
@@ -321,6 +332,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             }
 
             putMeta(db, META_PENDING_CONFIG, messageId);
+            putMeta(db, META_LATEST_CONFIG_VERSION, String.valueOf(configVersion));
             putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));
             putMeta(db, META_PENDING_CONFIG_ENABLED, enabled ? "1" : "0");
             putMeta(db, META_PENDING_CONFIG_CHANGE, changeEnabled ? "1" : "0");

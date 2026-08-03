@@ -181,6 +181,7 @@ final class PlatformCommandRuntime {
 
         marbleAdapter.start(hardwareObserver);
         cashAdapter.start();
+        cashAdapter.markApplied(store.getCashConfigVersion());
         SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
         SerialManager.get(context).sendCommand(CMD_HARDWARE_STATUS, 0L, false);
         recoverWithoutRepeatingPhysicalAction();
