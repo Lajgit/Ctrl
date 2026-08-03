@@ -471,7 +471,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
     }
 
     public synchronized void clearPendingConfigMessageId() {
-        clearPendingCashConfiguration(null);
+        clearPendingCashConfiguration((String) null);
     }
 
     public synchronized void setActiveDispense(String messageId) {
