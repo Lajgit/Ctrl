@@ -38,67 +38,39 @@ jobs:
           )
           replace_once(
               store,
-              """    public synchronized int getLatestCashConfigVersion() {
-                  return Math.max(
-                          getCashConfigVersion(),
-                          parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
-                  );
-              }
-          """,
-              """    public synchronized int getLatestCashConfigVersion() {
-                  return Math.max(
-                          getCashConfigVersion(),
-                          Math.max(
-                                  parsePositiveInt(getMeta(META_LATEST_CONFIG_VERSION)),
-                                  parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
-                          )
-                  );
-              }
-          """
+              "        parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))\n",
+              "        Math.max(\n"
+              "                parsePositiveInt(getMeta(META_LATEST_CONFIG_VERSION)),\n"
+              "                parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))\n"
+              "        )\n"
           )
           replace_once(
               store,
-              """            int latestVersion = Math.max(
-                          getCashConfigVersion(db),
-                          parsePositiveInt(getMeta(db, META_PENDING_CONFIG_VERSION))
-                  );
-          """,
-              """            int latestVersion = Math.max(
-                          getCashConfigVersion(db),
-                          Math.max(
-                                  parsePositiveInt(
-                                          getMeta(db, META_LATEST_CONFIG_VERSION)
-                                  ),
-                                  parsePositiveInt(
-                                          getMeta(db, META_PENDING_CONFIG_VERSION)
-                                  )
-                          )
-                  );
-          """
+              "            parsePositiveInt(getMeta(db, META_PENDING_CONFIG_VERSION))\n",
+              "            Math.max(\n"
+              "                    parsePositiveInt(\n"
+              "                            getMeta(db, META_LATEST_CONFIG_VERSION)\n"
+              "                    ),\n"
+              "                    parsePositiveInt(\n"
+              "                            getMeta(db, META_PENDING_CONFIG_VERSION)\n"
+              "                    )\n"
+              "            )\n"
           )
           replace_once(
               store,
-              """            putMeta(db, META_PENDING_CONFIG, messageId);
-                  putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));
-          """,
-              """            putMeta(db, META_PENDING_CONFIG, messageId);
-                  putMeta(db, META_LATEST_CONFIG_VERSION, String.valueOf(configVersion));
-                  putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));
-          """
+              "            putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));\n",
+              "            putMeta(db, META_LATEST_CONFIG_VERSION, String.valueOf(configVersion));\n"
+              "            putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));\n"
           )
 
           runtime = "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java"
           replace_once(
               runtime,
-              """        marbleAdapter.start(hardwareObserver);
-                  cashAdapter.start();
-                  SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
-          """,
-              """        marbleAdapter.start(hardwareObserver);
-                  cashAdapter.start();
-                  cashAdapter.markApplied(store.getCashConfigVersion());
-                  SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
-          """
+              "        cashAdapter.start();\n"
+              "        SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);\n",
+              "        cashAdapter.start();\n"
+              "        cashAdapter.markApplied(store.getCashConfigVersion());\n"
+              "        SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);\n"
           )
           PY
           git diff --check
