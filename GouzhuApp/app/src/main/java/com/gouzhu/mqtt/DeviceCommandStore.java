@@ -278,9 +278,9 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         return Math.max(
                 getCashConfigVersion(),
                 Math.max(
-                parsePositiveInt(getMeta(META_LATEST_CONFIG_VERSION)),
-                parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
-        )
+                        parsePositiveInt(getMeta(META_LATEST_CONFIG_VERSION)),
+                        parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
+                )
         );
     }
 
@@ -305,13 +305,13 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             int latestVersion = Math.max(
                     getCashConfigVersion(db),
                     Math.max(
-                    parsePositiveInt(
-                            getMeta(db, META_LATEST_CONFIG_VERSION)
-                    ),
-                    parsePositiveInt(
-                            getMeta(db, META_PENDING_CONFIG_VERSION)
+                            parsePositiveInt(
+                                    getMeta(db, META_LATEST_CONFIG_VERSION)
+                            ),
+                            parsePositiveInt(
+                                    getMeta(db, META_PENDING_CONFIG_VERSION)
+                            )
                     )
-            )
             );
             if (configVersion <= latestVersion) {
                 return false;
