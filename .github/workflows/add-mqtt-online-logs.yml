@@ -1,0 +1,167 @@
+name: 补充MQTT连接与上线刷新日志
+
+on:
+  push:
+    paths:
+      - '.github/workflows/add-mqtt-online-logs.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 配置JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 补充MQTT日志和上线后bootstrap刷新
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('GouzhuApp/app/src/main/java/com/gouzhu/mqtt/MqttManager.java')
+          text = path.read_text(encoding='utf-8')
+
+          old_import = '''import com.gouzhu.AppConfig;
+import com.gouzhu.upgrade.UpgradeManager;'''
+          new_import = '''import com.gouzhu.AppConfig;
+import com.gouzhu.sdk.DeviceSdkManager;
+import com.gouzhu.upgrade.UpgradeManager;'''
+          if old_import not in text:
+              raise SystemExit('未找到AppConfig导入位置')
+          text = text.replace(old_import, new_import, 1)
+
+          old_sdk_import = '''import com.pinball.xiaoda.device.sdk.client.MqttTransport;
+import com.pinball.xiaoda.device.sdk.core.MqttCredential;'''
+          new_sdk_import = '''import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
+import com.pinball.xiaoda.device.sdk.client.MqttTransport;
+import com.pinball.xiaoda.device.sdk.core.MqttCredential;'''
+          if old_sdk_import not in text:
+              raise SystemExit('未找到MQTT SDK导入位置')
+          text = text.replace(old_sdk_import, new_sdk_import, 1)
+
+          old_method = '''    private void afterConnected(boolean reconnect) throws Exception {
+        /* 必须先订阅，再恢复本地状态和重放 durable outbox。 */
+        ensureSubscribed();
+        DeviceCommandManager.get(context).start();
+        DeviceCommandManager.get(context).flushPending();
+        UpgradeManager.get(context).resumePendingResult();
+        reportHeartbeat();
+        reportStatus();
+        startHeartbeatLoop();
+        broadcastStatus("mqtt", reconnect ? "MQTT已重连" : "MQTT已连接");
+        reconnectScheduled.set(false);
+    }
+'''
+
+          new_method = '''    private void afterConnected(boolean reconnect) throws Exception {
+        /* 必须先订阅，再恢复本地状态和重放 durable outbox。 */
+        ensureSubscribed();
+
+        MqttCredential current = credential;
+        Log.i(
+                TAG,
+                "MQTT连接成功并完成订阅：reconnect=" + reconnect
+                        + "，brokerUrl="
+                        + (current == null ? "" : safe(current.getBrokerUrl()))
+                        + "，clientId="
+                        + (current == null ? "" : safe(current.getClientId()))
+                        + "，commandTopic="
+                        + (current == null
+                        ? ""
+                        : safe(current.getCommandSubscribeTopic()))
+                        + "，qos=" + (current == null ? -1 : current.getQos())
+        );
+
+        DeviceCommandManager.get(context).start();
+        DeviceCommandManager.get(context).flushPending();
+        UpgradeManager.get(context).resumePendingResult();
+
+        boolean heartbeatPublished = publishReport("heartbeat", "{}");
+        boolean statusPublished = reportStatus();
+        Log.i(
+                TAG,
+                "MQTT首次上线消息发送结果：heartbeat=" + heartbeatPublished
+                        + "，status=" + statusPublished
+                        + "；随后重新读取bootstrap确认服务端在线状态"
+        );
+
+        startHeartbeatLoop();
+        broadcastStatus("mqtt", reconnect ? "MQTT已重连" : "MQTT已连接");
+        reconnectScheduled.set(false);
+        refreshBootstrapAfterMqttOnline();
+    }
+
+    /**
+     * MQTT完成订阅并发送首次心跳、状态后重新读取bootstrap。
+     *
+     * <p>首页进程可能早于MQTT建立连接，第一次bootstrap会显示设备离线。此处只
+     * 重新读取服务端状态，不直接控制现金硬件；现金配置仍只接受MQTT
+     * sync_cash_configuration。</p>
+     */
+    private void refreshBootstrapAfterMqttOnline() {
+        Log.i(TAG, "MQTT已上线，开始重新读取bootstrap确认设备在线状态");
+        DeviceSdkManager.get(context).refreshBootstrap(
+                new DeviceSdkManager.BootstrapCallback() {
+                    @Override
+                    public void onSuccess(DeviceAppBootstrapResult result) {
+                        Log.i(
+                                TAG,
+                                "MQTT上线后bootstrap刷新成功：resultNull="
+                                        + (result == null)
+                        );
+                    }
+
+                    @Override
+                    public void onFailure(Throwable error) {
+                        Log.e(TAG, "MQTT上线后bootstrap刷新失败", error);
+                    }
+                }
+        );
+    }
+'''
+
+          if old_method not in text:
+              raise SystemExit('未找到afterConnected原始方法')
+          text = text.replace(old_method, new_method, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: 编译Android Debug包
+        shell: bash
+        run: |
+          set +e
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:assembleDebug > ../mqtt-online-log-build.log 2>&1
+          status=$?
+          cd ..
+          mkdir -p docs
+          {
+            echo "android_build_status=${status}"
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "--- build tail ---"
+            tail -n 180 mqtt-online-log-build.log
+          } > docs/MQTT连接与上线刷新日志构建结果.txt
+          exit ${status}
+
+      - name: 提交修改和构建结果
+        shell: bash
+        run: |
+          rm -f .github/workflows/add-mqtt-online-logs.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "补充MQTT连接成功和上线刷新日志"
+          git pull --rebase origin main
+          git push origin HEAD:main
