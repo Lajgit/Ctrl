@@ -13,6 +13,7 @@ extern UART_HandleTypeDef huart3;
 static volatile uint16_t BeadMotor1FeedbackPending = 0U;
 static volatile uint16_t BeadMotor2FeedbackPending = 0U;
 
+/* 出珠光眼：PD4。 */
 static void BeadMotor1Feedback_IRQ(void)
 {
     if (BeadMotor1FeedbackPending < 0xFFFFU)
@@ -21,6 +22,7 @@ static void BeadMotor1Feedback_IRQ(void)
     }
 }
 
+/* 存珠光眼：PD3。 */
 static void BeadMotor2Feedback_IRQ(void)
 {
     if (BeadMotor2FeedbackPending < 0xFFFFU)
