@@ -24,17 +24,14 @@ jobs:
           path = Path("GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandStore.java")
           text = path.read_text(encoding="utf-8")
 
-          old_first = '''    public synchronized int getLatestCashConfigVersion() {
-                  return Math.max(
-                          getCashConfigVersion(),
-                          Math.max(
-                          parsePositiveInt(getMeta(META_LATEST_CONFIG_VERSION)),
-                          parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
-                  )
-                  );
-              }
-          '''
-          new_first = '''    public synchronized int getLatestCashConfigVersion() {
+          method_start = text.index(
+              "    public synchronized int getLatestCashConfigVersion() {"
+          )
+          method_end = text.index(
+              "    public synchronized boolean savePendingCashConfiguration(",
+              method_start
+          )
+          method = '''    public synchronized int getLatestCashConfigVersion() {
                   return Math.max(
                           getCashConfigVersion(),
                           Math.max(
@@ -43,21 +40,22 @@ jobs:
                           )
                   );
               }
-          '''
 
-          old_second = '''            int latestVersion = Math.max(
-                          getCashConfigVersion(db),
-                          Math.max(
-                          parsePositiveInt(
-                                  getMeta(db, META_LATEST_CONFIG_VERSION)
-                          ),
-                          parsePositiveInt(
-                                  getMeta(db, META_PENDING_CONFIG_VERSION)
-                          )
-                  )
-                  );
           '''
-          new_second = '''            int latestVersion = Math.max(
+          text = text[:method_start] + method + text[method_end:]
+
+          pending_start = text.index(
+              "    public synchronized boolean savePendingCashConfiguration("
+          )
+          block_start = text.index(
+              "            int latestVersion = Math.max(",
+              pending_start
+          )
+          block_end = text.index(
+              "            if (configVersion <= latestVersion)",
+              block_start
+          )
+          block = '''            int latestVersion = Math.max(
                           getCashConfigVersion(db),
                           Math.max(
                                   parsePositiveInt(
@@ -69,12 +67,7 @@ jobs:
                           )
                   );
           '''
-
-          for old, new in ((old_first, new_first), (old_second, new_second)):
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"expected one match, found {count}: {old!r}")
-              text = text.replace(old, new, 1)
+          text = text[:block_start] + block + text[block_end:]
 
           path.write_text(text, encoding="utf-8")
           PY
