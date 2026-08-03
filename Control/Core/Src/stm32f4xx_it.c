@@ -210,8 +210,8 @@ void EXTI3_IRQHandler(void)
   /* USER CODE BEGIN EXTI3_IRQn 0 */
 
   /* USER CODE END EXTI3_IRQn 0 */
-  /* PD3：吐珠电机光眼反馈。 */
-  HAL_GPIO_EXTI_IRQHandler(HoolleOutput_Pin);
+  /* PD3：存珠电机光眼反馈。 */
+  HAL_GPIO_EXTI_IRQHandler(CardFeedback_Pin);
   /* USER CODE BEGIN EXTI3_IRQn 1 */
 
   /* USER CODE END EXTI3_IRQn 1 */
@@ -225,8 +225,8 @@ void EXTI4_IRQHandler(void)
   /* USER CODE BEGIN EXTI4_IRQn 0 */
 
   /* USER CODE END EXTI4_IRQn 0 */
-  /* PD4：存珠电机光眼反馈。 */
-  HAL_GPIO_EXTI_IRQHandler(CardFeedback_Pin);
+  /* PD4：出珠电机光眼反馈。 */
+  HAL_GPIO_EXTI_IRQHandler(HoolleOutput_Pin);
   /* USER CODE BEGIN EXTI4_IRQn 1 */
 
   /* USER CODE END EXTI4_IRQn 1 */

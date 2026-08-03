@@ -111,11 +111,11 @@ bit1 = 硬币器12V电源状态
 |---|---|---|---|
 | `0x00` | VersionReport | `0x02010000` | 固件2.1.0.0 |
 | `0x01` | DispenseStarted | token+目标数量 | 出珠启动 |
-| `0x02` | DispenseProgress | token+真实数量 | PD3累计 |
+| `0x02` | DispenseProgress | token+真实数量 | PD4累计 |
 | `0x03` | DispenseCompleted | token+真实数量 | 出珠完成 |
 | `0x04` | DispenseFailed | token+真实数量；Expand=结果码 | 失败或部分完成 |
 | `0x05` | CollectStarted | token+上限 | 存珠启动 |
-| `0x06` | CollectProgress | token+真实数量 | PD4累计 |
+| `0x06` | CollectProgress | token+真实数量 | PD3累计 |
 | `0x07` | CollectCompleted | token+真实数量 | 存珠完成 |
 | `0x08` | CollectFailed | token+真实数量；Expand=结果码 | 存珠失败 |
 | `0x0D` | AlreadyUnlock | 0 | 已开锁 |
@@ -127,6 +127,8 @@ bit1 = 硬币器12V电源状态
 | `0x22` | BeadEmpty | 当前库存 | 无珠 |
 | `0x23` | BeadRefilled | 当前库存 | 已补珠 |
 | `0x27` | BackendSettingsRequest | 1 | K2（PD13）进入后台 |
+
+光眼映射固定为：PD4 / EXTI4 → 出珠光眼 → HoolleOutput_Pin → Hardware_OnDispensePulse；PD3 / EXTI3 → 存珠光眼 → CardFeedback_Pin → Hardware_OnCollectPulse。
 
 硬件结果码：
 
@@ -297,7 +299,7 @@ bit0        = 硬币器PB13电源实际启用状态
 → 平台下发dispense_marbles(quantity=N)
 → Android持久化命令和ACK
 → Android发送DispenseStart(token,N)
-→ 控制板按PD3真实计数执行
+→ 控制板按PD4真实计数执行
 → Android上报actualQuantity
 ```
 
