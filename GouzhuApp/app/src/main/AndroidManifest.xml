@@ -64,6 +64,19 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!--
+            仅接收本应用内部的MQTT状态广播。收到已连接/已重连后打印明确日志，
+            并重新读取bootstrap确认服务端在线状态。
+        -->
+        <receiver
+            android:name=".mqtt.MqttOnlineStatusReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.gouzhu.action.SERVICE_STATUS" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".boot.BootReceiver"
             android:enabled="true"
