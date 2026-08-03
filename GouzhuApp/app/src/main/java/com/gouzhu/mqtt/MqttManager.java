@@ -54,7 +54,6 @@ public final class MqttManager implements MqttTransport {
     private final AtomicBoolean connecting = new AtomicBoolean(false);
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean(false);
     private final AtomicBoolean outboxFlushScheduled = new AtomicBoolean(false);
-    private final AtomicBoolean runtimeStarted = new AtomicBoolean(false);
 
     private MqttClient client;
     private MqttCredential credential;
@@ -103,9 +102,6 @@ public final class MqttManager implements MqttTransport {
             }
             if (client != null && client.isConnected()) {
                 ensureSubscribed();
-                if (runtimeStarted.compareAndSet(false, true)) {
-                    DeviceCommandManager.get(context).start();
-                }
                 schedulePendingOutboxFlush();
                 startHeartbeatLoop();
                 return;
@@ -330,9 +326,7 @@ public final class MqttManager implements MqttTransport {
     private void afterConnected(boolean reconnect) throws Exception {
         /* 必须先订阅，再恢复本地状态和分批重放 durable outbox。 */
         ensureSubscribed();
-        if (runtimeStarted.compareAndSet(false, true)) {
-            DeviceCommandManager.get(context).start();
-        }
+        DeviceCommandManager.get(context).start();
         schedulePendingOutboxFlush();
         UpgradeManager.get(context).resumePendingResult();
         reportHeartbeat();
