@@ -1,0 +1,1039 @@
+name: Apply PB13 cash configuration fix
+
+on:
+  push:
+    branches:
+      - fix/cash-config-pb13-20260803
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/cash-config-pb13-20260803
+          fetch-depth: 0
+
+      - name: Apply focused source changes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{path}: expected one match, found {count}\n--- pattern ---\n{old}")
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          def require(path, value):
+              text = Path(path).read_text(encoding="utf-8")
+              if value not in text:
+                  raise RuntimeError(f"{path}: missing required text: {value}")
+
+          # PB13改为与PC15电子锁相同的高电平导通MOS控制逻辑。
+          replace_once(
+              "Control/Core/Inc/main.h",
+              """/* 投币器脉冲输入：PE15。 */
+          #define CoinInput_Pin GPIO_PIN_15
+          #define CoinInput_GPIO_Port GPIOE
+          """,
+              """/* 投币器脉冲输入：PE15。 */
+          #define CoinInput_Pin GPIO_PIN_15
+          #define CoinInput_GPIO_Port GPIOE
+
+          /* 硬币器12V电源MOS控制：PB13，高电平上电，逻辑与PC15电子锁一致。 */
+          #define CoinPower_Pin GPIO_PIN_13
+          #define CoinPower_GPIO_Port GPIOB
+          """
+          )
+
+          replace_once(
+              "Control/Core/Src/gpio.c",
+              """  /* SPI2数码管先关闭输出，防止开机乱码 */
+            HAL_GPIO_WritePin(SPI2_OE_GPIO_Port,SPI2_OE_Pin,GPIO_PIN_SET);
+          """,
+              """  /* SPI2数码管先关闭输出，防止开机乱码 */
+            HAL_GPIO_WritePin(SPI2_OE_GPIO_Port,SPI2_OE_Pin,GPIO_PIN_SET);
+
+            /* PB13驱动低边MOS，默认低电平关闭硬币器12V电源。 */
+            HAL_GPIO_WritePin(CoinPower_GPIO_Port, CoinPower_Pin, GPIO_PIN_RESET);
+          """
+          )
+          replace_once(
+              "Control/Core/Src/gpio.c",
+              """  /*Configure GPIO pins : SPI2_CS_Pin SPI2_OE_Pin */
+            GPIO_InitStruct.Pin = SPI2_CS_Pin|SPI2_OE_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+            HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+          """,
+              """  /*Configure GPIO pins : SPI2_CS_Pin SPI2_OE_Pin CoinPower_Pin */
+            GPIO_InitStruct.Pin = SPI2_CS_Pin|SPI2_OE_Pin|CoinPower_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+            HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+          """
+          )
+
+          # PB13原来残留为SPI2_SCK；当前main.c未初始化SPI2，释放该脚给硬币器电源。
+          replace_once(
+              "Control/Core/Src/spi.c",
+              """    /**SPI2 GPIO Configuration
+              PB13     ------> SPI2_SCK
+              PB15     ------> SPI2_MOSI
+              */
+              GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_15;
+          """,
+              """    /**SPI2 GPIO Configuration
+              PB15     ------> SPI2_MOSI
+              PB13     ------> CoinPower GPIO output
+              */
+              GPIO_InitStruct.Pin = GPIO_PIN_15;
+          """
+          )
+          replace_once(
+              "Control/Core/Src/spi.c",
+              """    /**SPI2 GPIO Configuration
+              PB13     ------> SPI2_SCK
+              PB15     ------> SPI2_MOSI
+              */
+              HAL_GPIO_DeInit(GPIOB, GPIO_PIN_13|GPIO_PIN_15);
+          """,
+              """    /**SPI2 GPIO Configuration
+              PB15     ------> SPI2_MOSI
+              PB13     ------> CoinPower GPIO output
+              */
+              HAL_GPIO_DeInit(GPIOB, GPIO_PIN_15);
+          """
+          )
+
+          replace_once(
+              "Control/Control.ioc",
+              """PB13.Locked=true
+          PB13.Mode=Simplex_Bidirectional_Master
+          PB13.Signal=SPI2_SCK
+          """,
+              """PB13.GPIOParameters=PinState,GPIO_Label
+          PB13.GPIO_Label=CoinPower
+          PB13.Locked=true
+          PB13.PinState=GPIO_PIN_RESET
+          PB13.Signal=GPIO_Output
+          """
+          )
+
+          replace_once(
+              "Control/Task/inc/KeyTask.h",
+              """/*
+           * 三线硬币器只有12V/GND/脉冲，没有物理inhibit，控制板始终接收并上报硬币。
+           * enable_mask 只决定纸钞机是否允许收钞；状态中硬币位始终为1。
+           */
+          """,
+              """/*
+           * enable_mask bit0控制纸钞机，bit1通过PB13控制硬币器12V电源。
+           * 新配置只有在纸钞机返回0x3E/0x5E且硬币器电源状态匹配后才提交版本。
+           */
+          """
+          )
+          replace_once(
+              "Control/Task/inc/KeyTask.h",
+              """/* 三线硬币器无使能引脚，保留接口仅兼容未来硬件版本。 */
+          bool CashHardware_SetCoinEnable(bool enable);
+          """,
+              """/* PB13高电平打开硬币器12V低边MOS，低电平关闭。 */
+          bool CashHardware_SetCoinEnable(bool enable);
+          """
+          )
+
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """static uint8_t BillEscrowType = 0U;
+          static bool BillEnableState = false;
+          static bool CoinEnableState = true;
+          static BillRxState_t BillRxState = BILL_RX_IDLE;
+          static uint32_t BillRxStateTick = 0U;
+          static uint32_t BillPollTick = 0U;
+          static uint8_t BillLastReportStatus = 0xFFU;
+          static uint8_t BillLastType = 0U;
+          static uint32_t CashConfigVersion = 0U;
+          static uint8_t CashEnableMask = CASH_ACCEPT_COIN_MASK;
+          """,
+              """static uint8_t BillEscrowType = 0U;
+          static bool BillEnableState = false;
+          static bool BillRequestedEnable = false;
+          static bool CoinEnableState = false;
+          static BillRxState_t BillRxState = BILL_RX_IDLE;
+          static uint32_t BillRxStateTick = 0U;
+          static uint32_t BillPollTick = 0U;
+          static uint8_t BillLastReportStatus = 0xFFU;
+          static uint8_t BillLastType = 0U;
+          static uint32_t CashConfigVersion = 0U;
+          static uint8_t CashEnableMask = 0U;
+          static bool CashApplyPending = false;
+          static uint32_t CashPendingConfigVersion = 0U;
+          static uint8_t CashPendingEnableMask = 0U;
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """__weak bool CashHardware_SetCoinEnable(bool enable)
+          {
+              /* 三线硬币器没有使能脚，始终处于物理接收状态。 */
+              (void)enable;
+              return true;
+          }
+          """,
+              """bool CashHardware_SetCoinEnable(bool enable)
+          {
+              GPIO_PinState target = enable ? GPIO_PIN_SET : GPIO_PIN_RESET;
+              HAL_GPIO_WritePin(CoinPower_GPIO_Port, CoinPower_Pin, target);
+              return HAL_GPIO_ReadPin(CoinPower_GPIO_Port, CoinPower_Pin) == target;
+          }
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """static void BillAcceptor_SetEnableInternal(bool enable)
+          {
+              BillEnableState = enable;
+              BillAcceptor_StartStateCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
+          }
+
+          static void CoinAcceptor_SetAlwaysOn(void)
+          {
+              CoinEnableState = true;
+              (void)CashHardware_SetCoinEnable(true);
+          }
+          """,
+              """static void CashAcceptance_UpdateActualMask(void)
+          {
+              CashEnableMask =
+                  (BillEnableState ? CASH_ACCEPT_BANKNOTE_MASK : 0U) |
+                  (CoinEnableState ? CASH_ACCEPT_COIN_MASK : 0U);
+          }
+
+          static bool CoinAcceptor_SetEnableInternal(bool enable)
+          {
+              if (!CashHardware_SetCoinEnable(enable))
+              {
+                  CoinEnableState = false;
+                  CashAcceptance_UpdateActualMask();
+                  return false;
+              }
+              CoinEnableState = enable;
+              CashAcceptance_UpdateActualMask();
+              return true;
+          }
+
+          static bool CashAcceptance_CommitPendingIfMatched(void)
+          {
+              if (!CashApplyPending ||
+                  (CashEnableMask != CashPendingEnableMask))
+              {
+                  return false;
+              }
+
+              CashConfigVersion = CashPendingConfigVersion;
+              CashApplyPending = false;
+              CashPendingConfigVersion = 0U;
+              CashPendingEnableMask = 0U;
+              EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+              return true;
+          }
+
+          static void BillAcceptor_SetEnableInternal(bool enable)
+          {
+              BillRequestedEnable = enable;
+              BillAcceptor_StartStateCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
+          }
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
+          {
+              uint8_t valid_mask = CASH_ACCEPT_BANKNOTE_MASK | CASH_ACCEPT_COIN_MASK;
+
+              if ((config_version == 0U) || (config_version > 0x00FFFFFFUL) ||
+                  ((enable_mask & (uint8_t)(~valid_mask)) != 0U))
+              {
+                  CashAcceptance_Disable();
+                  return false;
+              }
+
+              CashConfigVersion = config_version;
+              BillAcceptor_SetEnableInternal(
+                  (enable_mask & CASH_ACCEPT_BANKNOTE_MASK) != 0U);
+              CoinAcceptor_SetAlwaysOn();
+              CashEnableMask = (enable_mask & CASH_ACCEPT_BANKNOTE_MASK) |
+                               CASH_ACCEPT_COIN_MASK;
+              EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+              return true;
+          }
+
+          void CashAcceptance_Disable(void)
+          {
+              /* 只能关闭纸钞机；三线硬币器继续产生必须上报的现金事实。 */
+              BillAcceptor_SetEnableInternal(false);
+              CoinAcceptor_SetAlwaysOn();
+              CashEnableMask = CASH_ACCEPT_COIN_MASK;
+              EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+          }
+          """,
+              """bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
+          {
+              uint8_t valid_mask = CASH_ACCEPT_BANKNOTE_MASK | CASH_ACCEPT_COIN_MASK;
+              bool coin_enable;
+
+              if ((config_version == 0U) || (config_version > 0x00FFFFFFUL) ||
+                  ((enable_mask & (uint8_t)(~valid_mask)) != 0U))
+              {
+                  CashAcceptance_Disable();
+                  return false;
+              }
+
+              coin_enable = (enable_mask & CASH_ACCEPT_COIN_MASK) != 0U;
+              if (!CoinAcceptor_SetEnableInternal(coin_enable))
+              {
+                  CashAcceptance_Disable();
+                  return false;
+              }
+
+              CashPendingConfigVersion = config_version;
+              CashPendingEnableMask = enable_mask;
+              CashApplyPending = true;
+              BillAcceptor_SetEnableInternal(
+                  (enable_mask & CASH_ACCEPT_BANKNOTE_MASK) != 0U);
+              return true;
+          }
+
+          void CashAcceptance_Disable(void)
+          {
+              CashApplyPending = false;
+              CashPendingConfigVersion = 0U;
+              CashPendingEnableMask = 0U;
+              (void)CoinAcceptor_SetEnableInternal(false);
+              BillAcceptor_SetEnableInternal(false);
+              EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+          }
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """static void PulseInput_Scan(PulseInput_t *input)
+          {
+              GPIO_PinState pin_state = HAL_GPIO_ReadPin(input->gpio, input->pin);
+              uint32_t current_tick = HAL_GetTick();
+
+              switch (input->state)
+          """,
+              """static void PulseInput_Scan(PulseInput_t *input)
+          {
+              GPIO_PinState pin_state = HAL_GPIO_ReadPin(input->gpio, input->pin);
+              uint32_t current_tick = HAL_GetTick();
+
+              if (!CoinEnableState)
+              {
+                  input->state = PULSE_IDLE;
+                  input->tick = current_tick;
+                  return;
+              }
+
+              switch (input->state)
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """static void BillAcceptor_ReportStatus(uint8_t status)
+          {
+              BillLastReportStatus = status;
+              if (BillStateCommandPending && (status == BillExpectedStatus))
+              {
+                  BillStateCommandPending = false;
+              }
+              EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+          }
+          """,
+              """static void BillAcceptor_ReportStatus(uint8_t status)
+          {
+              BillLastReportStatus = status;
+              if ((status == ICT_CMD_ENABLE) || (status == ICT_CMD_DISABLE))
+              {
+                  BillEnableState = status == ICT_CMD_ENABLE;
+                  CashAcceptance_UpdateActualMask();
+                  if (BillStateCommandPending && (status == BillExpectedStatus))
+                  {
+                      BillStateCommandPending = false;
+                      BillRequestedEnable = BillEnableState;
+                  }
+                  if (!CashAcceptance_CommitPendingIfMatched())
+                  {
+                      EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+                  }
+              }
+              EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+          }
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """            BillAcceptor_StartStateCommand(
+                          BillEnableState ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
+          """,
+              """            BillAcceptor_StartStateCommand(
+                          BillRequestedEnable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """    BillEnableState = false;
+              CoinEnableState = true;
+              CashEnableMask = CASH_ACCEPT_COIN_MASK;
+              CashConfigVersion = 0U;
+          """,
+              """    BillEnableState = false;
+              BillRequestedEnable = false;
+              CoinEnableState = false;
+              CashEnableMask = 0U;
+              CashConfigVersion = 0U;
+              CashApplyPending = false;
+              CashPendingConfigVersion = 0U;
+              CashPendingEnableMask = 0U;
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """    BillAcceptor_StartStateCommand(ICT_CMD_DISABLE);
+              CoinAcceptor_SetAlwaysOn();
+          """,
+              """    BillAcceptor_StartStateCommand(ICT_CMD_DISABLE);
+              (void)CoinAcceptor_SetEnableInternal(false);
+          """
+          )
+          replace_once(
+              "Control/Task/src/KeyTask.c",
+              """        else
+                  {
+                      BillStateCommandPending = false;
+                      EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+                  }
+          """,
+              """        else
+                  {
+                      BillStateCommandPending = false;
+                      if (CashApplyPending)
+                      {
+                          CashApplyPending = false;
+                          CashPendingConfigVersion = 0U;
+                          CashPendingEnableMask = 0U;
+                          (void)CoinAcceptor_SetEnableInternal(false);
+                          BillRequestedEnable = false;
+                          BillAcceptor_SendCommand(ICT_CMD_DISABLE);
+                          EventGroupSetBits(
+                              &Mesg_event,
+                              MesgEvent_CashAcceptanceStatus);
+                      }
+                      EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
+                  }
+          """
+          )
+
+          # Android根据档位介质生成真实掩码，disable为0，不再强制硬币常开。
+          replace_once(
+              "GouzhuApp/app/src/main/java/com/gouzhu/hardware/SerialCashConfigurationAdapter.java",
+              """/**
+           * 新版 SDK CashConfigurationAdapter 的 ttyS5 实现。
+           *
+           * <p>服务端 cashSale.available=true 固定映射为纸钞机和硬币器同时开启，
+           * 即控制板现金掩码 0x03。硬币器只有12V、GND和脉冲三根线，无法由软件
+           * 物理关闭，因此 available=false 或 disable 只关闭纸钞机，硬币位保持1。</p>
+           */
+          """,
+              """/**
+           * 新版 SDK CashConfigurationAdapter 的 ttyS5 实现。
+           *
+           * <p>bit0控制纸钞机，bit1通过控制板PB13控制硬币器12V电源。
+           * 目标掩码严格按完整cashSaleItems中的介质生成，控制板返回相同版本和
+           * 实际掩码后才视为硬件应用成功。</p>
+           */
+          """
+          )
+          replace_once(
+              "GouzhuApp/app/src/main/java/com/gouzhu/hardware/SerialCashConfigurationAdapter.java",
+              """    private static final int BANKNOTE_MASK = 1;
+              private static final int ALWAYS_ON_COIN_MASK = 2;
+              private static final int CASH_AVAILABLE_MASK = BANKNOTE_MASK | ALWAYS_ON_COIN_MASK;
+          """,
+              """    private static final int BANKNOTE_MASK = 1;
+              private static final int COIN_MASK = 2;
+          """
+          )
+
+          adapter = Path("GouzhuApp/app/src/main/java/com/gouzhu/hardware/SerialCashConfigurationAdapter.java")
+          text = adapter.read_text(encoding="utf-8")
+          start = text.index("    @Override\n    public CashConfigurationResult apply(long configVersion, List<CashTier> tiers) {")
+          end = text.index("    private CashConfigurationResult applyMask", start)
+          new_block = '''    @Override
+              public CashConfigurationResult apply(long configVersion, List<CashTier> tiers) {
+                  if (configVersion <= 0L || configVersion > 0x00FFFFFFL) {
+                      Log.e(TAG, "现金配置版本无效：configVersion=" + configVersion);
+                      disableCashAcceptance();
+                      return CashConfigurationResult.rejected("configVersion超出控制板24位范围");
+                  }
+                  if (tiers == null || tiers.isEmpty()) {
+                      Log.e(TAG, "cashAcceptanceEnabled=true但现金档位为空");
+                      disableCashAcceptance();
+                      return CashConfigurationResult.rejected("可用现金配置的档位不能为空");
+                  }
+
+                  int mask = 0;
+                  for (int index = 0; index < tiers.size(); index++) {
+                      CashTier tier = tiers.get(index);
+                      if (tier == null
+                              || tier.getDenominationAmount() <= 0
+                              || tier.getMarbleQuantity() <= 0
+                              || tier.getTierNo() == null
+                              || tier.getTierNo().trim().isEmpty()) {
+                          Log.e(TAG, "现金档位不完整：index=" + index
+                                  + "，tier=" + summarizeTier(tier));
+                          disableCashAcceptance();
+                          return CashConfigurationResult.rejected("现金档位不完整");
+                      }
+                      if ("banknote".equals(tier.getMediumType())) {
+                          mask |= BANKNOTE_MASK;
+                      } else if ("coin".equals(tier.getMediumType())) {
+                          mask |= COIN_MASK;
+                      } else {
+                          Log.e(TAG, "现金介质不支持：index=" + index
+                                  + "，mediumType=" + tier.getMediumType());
+                          disableCashAcceptance();
+                          return CashConfigurationResult.rejected("不支持的现金介质");
+                      }
+                      Log.d(TAG, "现金档位：index=" + index + "，" + summarizeTier(tier));
+                  }
+
+                  Log.i(TAG, "开始应用现金配置：configVersion=" + configVersion
+                          + "，tierCount=" + tiers.size()
+                          + "，targetMask=0x" + Integer.toHexString(mask));
+                  return applyMask(configVersion, mask);
+              }
+
+              public CashConfigurationResult applyDisabled(long configVersion) {
+                  Log.i(TAG, "平台现金入口不可用，关闭纸钞机和硬币器：configVersion="
+                          + configVersion);
+                  return applyMask(configVersion, 0);
+              }
+
+              @Override
+              public void disableCashAcceptance() {
+                  long version = Math.max(1L, Math.min(0x00FFFFFFL, lastConfigVersion));
+                  long packed = version & 0x00FFFFFFL;
+                  boolean sent = SerialManager.get(context).sendCommand(
+                          CMD_CASH_APPLY,
+                          packed,
+                          true
+                  );
+                  if (sent) {
+                      Log.i(TAG, "已请求关闭纸钞机和硬币器：version=" + version);
+                  } else {
+                      Log.e(TAG, "关闭现金设备命令发送失败：version=" + version
+                              + "，ttyS5可能未连接");
+                  }
+              }
+
+          '''
+          adapter.write_text(text[:start] + new_block + text[end:], encoding="utf-8")
+          replace_once(
+              adapter,
+              """            active.expectedMask = (mask | ALWAYS_ON_COIN_MASK) & 0xFF;
+          """,
+              """            active.expectedMask = mask & 0xFF;
+          """
+          )
+
+          # 现金配置：拒绝低版本，完整配置先作为pending原子保存，硬件成功后切换applied。
+          replace_once(
+              "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandStore.java",
+              """    private static final String META_PENDING_CONFIG = "pending_cash_config_message";
+              private static final String META_CASH_BLOCKED = "cash_blocked";
+          """,
+              """    private static final String META_PENDING_CONFIG = "pending_cash_config_message";
+              private static final String META_PENDING_CONFIG_VERSION = "pending_cash_config_version";
+              private static final String META_PENDING_CONFIG_ENABLED = "pending_cash_config_enabled";
+              private static final String META_PENDING_CONFIG_CHANGE = "pending_cash_config_change";
+              private static final String META_PENDING_CONFIG_SNAPSHOT = "pending_cash_config_snapshot";
+              private static final String META_CASH_BLOCKED = "cash_blocked";
+          """
+          )
+
+          marker = """    public synchronized CashConfigurationRecord loadCashConfiguration() {
+          """
+          insert = '''    public synchronized int getLatestCashConfigVersion() {
+                  return Math.max(
+                          getCashConfigVersion(),
+                          parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
+                  );
+              }
+
+              public synchronized boolean savePendingCashConfiguration(
+                      JSONObject envelope,
+                      int configVersion,
+                      boolean enabled,
+                      boolean changeEnabled,
+                      String snapshotJson
+              ) {
+                  if (envelope == null || configVersion <= 0 || blank(snapshotJson)) {
+                      return false;
+                  }
+                  String messageId = envelope.optString("messageId", "").trim();
+                  if (messageId.isEmpty()) {
+                      return false;
+                  }
+
+                  SQLiteDatabase db = getWritableDatabase();
+                  db.beginTransaction();
+                  try {
+                      int latestVersion = Math.max(
+                              getCashConfigVersion(db),
+                              parsePositiveInt(getMeta(db, META_PENDING_CONFIG_VERSION))
+                      );
+                      if (configVersion <= latestVersion) {
+                          return false;
+                      }
+
+                      ContentValues command = new ContentValues();
+                      command.put("message_id", messageId);
+                      command.put("envelope", envelope.toString());
+                      command.put("state", commandState(envelope));
+                      command.put("updated_at", System.currentTimeMillis());
+                      if (db.insertWithOnConflict(
+                              "commands",
+                              null,
+                              command,
+                              SQLiteDatabase.CONFLICT_REPLACE
+                      ) == -1L) {
+                          return false;
+                      }
+
+                      putMeta(db, META_PENDING_CONFIG, messageId);
+                      putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));
+                      putMeta(db, META_PENDING_CONFIG_ENABLED, enabled ? "1" : "0");
+                      putMeta(db, META_PENDING_CONFIG_CHANGE, changeEnabled ? "1" : "0");
+                      putMeta(db, META_PENDING_CONFIG_SNAPSHOT, snapshotJson);
+                      db.setTransactionSuccessful();
+                      return true;
+                  } finally {
+                      db.endTransaction();
+                  }
+              }
+
+              public synchronized boolean commitPendingCashConfiguration(String messageId) {
+                  if (blank(messageId)) {
+                      return false;
+                  }
+                  SQLiteDatabase db = getWritableDatabase();
+                  db.beginTransaction();
+                  try {
+                      if (!messageId.equals(getMeta(db, META_PENDING_CONFIG))) {
+                          return false;
+                      }
+                      int version = parsePositiveInt(
+                              getMeta(db, META_PENDING_CONFIG_VERSION));
+                      String snapshot = getMeta(db, META_PENDING_CONFIG_SNAPSHOT);
+                      if (version <= 0 || blank(snapshot)) {
+                          return false;
+                      }
+
+                      ContentValues values = new ContentValues();
+                      values.put("id", 1);
+                      values.put("config_version", version);
+                      values.put(
+                              "enabled",
+                              "1".equals(getMeta(db, META_PENDING_CONFIG_ENABLED)) ? 1 : 0
+                      );
+                      values.put(
+                              "change_enabled",
+                              "1".equals(getMeta(db, META_PENDING_CONFIG_CHANGE)) ? 1 : 0
+                      );
+                      values.put("snapshot_json", snapshot);
+                      values.put("updated_at", System.currentTimeMillis());
+                      if (db.insertWithOnConflict(
+                              "cash_configuration",
+                              null,
+                              values,
+                              SQLiteDatabase.CONFLICT_REPLACE
+                      ) == -1L) {
+                          return false;
+                      }
+
+                      clearPendingCashConfiguration(db);
+                      db.setTransactionSuccessful();
+                      return true;
+                  } finally {
+                      db.endTransaction();
+                  }
+              }
+
+              public synchronized void clearPendingCashConfiguration(String messageId) {
+                  SQLiteDatabase db = getWritableDatabase();
+                  db.beginTransaction();
+                  try {
+                      String pendingMessageId = getMeta(db, META_PENDING_CONFIG);
+                      if (blank(messageId) || messageId.equals(pendingMessageId)) {
+                          clearPendingCashConfiguration(db);
+                      }
+                      db.setTransactionSuccessful();
+                  } finally {
+                      db.endTransaction();
+                  }
+              }
+
+          '''
+          replace_once(
+              "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandStore.java",
+              marker,
+              insert + marker
+          )
+          replace_once(
+              "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandStore.java",
+              """    public synchronized void clearPendingConfigMessageId() {
+                  deleteMeta(META_PENDING_CONFIG);
+              }
+          """,
+              """    public synchronized void clearPendingConfigMessageId() {
+                  clearPendingCashConfiguration(null);
+              }
+          """
+          )
+          replace_once(
+              "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandStore.java",
+              """    private void putMeta(String key, String value) {
+                  ContentValues values = new ContentValues();
+                  values.put("key", key);
+                  values.put("value", safe(value));
+                  getWritableDatabase().insertWithOnConflict(
+                          "meta", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+              }
+
+              private String getMeta(String key) {
+                  try (Cursor cursor = getReadableDatabase().query(
+                          "meta", new String[]{"value"}, "key=?",
+                          new String[]{key}, null, null, null)) {
+                      return cursor.moveToFirst() ? safe(cursor.getString(0)) : "";
+                  }
+              }
+
+              private void deleteMeta(String key) {
+                  getWritableDatabase().delete("meta", "key=?", new String[]{key});
+              }
+          """,
+              """    private void putMeta(String key, String value) {
+                  putMeta(getWritableDatabase(), key, value);
+              }
+
+              private static void putMeta(SQLiteDatabase db, String key, String value) {
+                  ContentValues values = new ContentValues();
+                  values.put("key", key);
+                  values.put("value", safe(value));
+                  db.insertWithOnConflict(
+                          "meta", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+              }
+
+              private String getMeta(String key) {
+                  return getMeta(getReadableDatabase(), key);
+              }
+
+              private static String getMeta(SQLiteDatabase db, String key) {
+                  try (Cursor cursor = db.query(
+                          "meta", new String[]{"value"}, "key=?",
+                          new String[]{key}, null, null, null)) {
+                      return cursor.moveToFirst() ? safe(cursor.getString(0)) : "";
+                  }
+              }
+
+              private void deleteMeta(String key) {
+                  deleteMeta(getWritableDatabase(), key);
+              }
+
+              private static void deleteMeta(SQLiteDatabase db, String key) {
+                  db.delete("meta", "key=?", new String[]{key});
+              }
+
+              private static int getCashConfigVersion(SQLiteDatabase db) {
+                  try (Cursor cursor = db.query(
+                          "cash_configuration",
+                          new String[]{"config_version"},
+                          "id=1",
+                          null,
+                          null,
+                          null,
+                          null)) {
+                      return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+                  }
+              }
+
+              private static int parsePositiveInt(String value) {
+                  try {
+                      return Math.max(0, Integer.parseInt(safe(value)));
+                  } catch (Throwable error) {
+                      return 0;
+                  }
+              }
+
+              private static void clearPendingCashConfiguration(SQLiteDatabase db) {
+                  deleteMeta(db, META_PENDING_CONFIG);
+                  deleteMeta(db, META_PENDING_CONFIG_VERSION);
+                  deleteMeta(db, META_PENDING_CONFIG_ENABLED);
+                  deleteMeta(db, META_PENDING_CONFIG_CHANGE);
+                  deleteMeta(db, META_PENDING_CONFIG_SNAPSHOT);
+              }
+          """
+          )
+
+          runtime = Path("GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java")
+          text = runtime.read_text(encoding="utf-8")
+          replace_once(
+              runtime,
+              """        recoverWithoutRepeatingPhysicalAction();
+                  reapplyCashConfiguration();
+          """,
+              """        recoverWithoutRepeatingPhysicalAction();
+                  discardInterruptedCashConfiguration();
+                  reapplyCashConfiguration();
+          """
+          )
+          text = runtime.read_text(encoding="utf-8")
+          start = text.index("    private void acceptCashConfiguration(SdkCommandDecoder.DecodedCommand decoded) {")
+          end = text.index("    private String validateCashConfiguration", start)
+          replacement = '''    private void acceptCashConfiguration(SdkCommandDecoder.DecodedCommand decoded) {
+                  final CashConfigurationCommandData config;
+                  try {
+                      config = decoded.sdkCommand.requireData(
+                              CashConfigurationCommandData.class
+                      );
+                  } catch (Throwable error) {
+                      store.saveCommand(decoded.envelope);
+                      publishSdkGenericTerminal(
+                              decoded,
+                              false,
+                              "CASH_CONFIGURATION_INVALID",
+                              messageOf(error)
+                      );
+                      return;
+                  }
+
+                  String validationError = validateCashConfiguration(config);
+                  if (validationError != null) {
+                      store.saveCommand(decoded.envelope);
+                      publishSdkConfigurationTerminal(
+                              decoded,
+                              false,
+                              safeConfigVersion(config),
+                              "CASH_CONFIGURATION_INVALID",
+                              validationError
+                      );
+                      return;
+                  }
+
+                  long configVersion = config.getConfigVersion();
+                  if (configVersion <= store.getLatestCashConfigVersion()) {
+                      store.saveCommand(decoded.envelope);
+                      publishSdkConfigurationTerminal(
+                              decoded,
+                              false,
+                              configVersion,
+                              "CASH_CONFIGURATION_STALE",
+                              "configVersion必须高于本地已接收版本"
+                      );
+                      return;
+                  }
+
+                  boolean enabled = config.isCashAcceptanceEnabled();
+                  List<CashTier> tiers = toCashTiers(config);
+                  String messageId = decoded.sdkCommand.getMessageId();
+                  if (!store.savePendingCashConfiguration(
+                          decoded.envelope,
+                          (int) configVersion,
+                          enabled,
+                          config.isChangeEnabled(),
+                          decoded.envelope.toString()
+                  )) {
+                      publishSdkConfigurationTerminal(
+                              decoded,
+                              false,
+                              configVersion,
+                              "LOCAL_STORAGE_ERROR",
+                              "完整现金配置无法原子保存为待应用版本"
+                      );
+                      return;
+                  }
+
+                  liveCommands.put(messageId, decoded);
+                  if (!publishSdkAck(decoded)) {
+                      liveCommands.remove(messageId);
+                      store.clearPendingCashConfiguration(messageId);
+                      cashAdapter.disableCashAcceptance();
+                      reportStorageFault("现金配置ACK无法写入outbox");
+                      return;
+                  }
+
+                  hardwareExecutor.execute(() -> {
+                      CashConfigurationResult result = enabled
+                              ? cashAdapter.apply(configVersion, tiers)
+                              : cashAdapter.applyDisabled(configVersion);
+                      boolean hardwareApplied = result.isApplied();
+                      boolean success = hardwareApplied
+                              && store.commitPendingCashConfiguration(messageId);
+                      String resultCode;
+                      String resultMessage;
+
+                      if (success) {
+                          resultCode = "CASH_CONFIGURATION_APPLIED";
+                          resultMessage = "现金配置已由控制板确认并切换为最近成功版本";
+                      } else {
+                          cashAdapter.disableCashAcceptance();
+                          store.clearPendingCashConfiguration(messageId);
+                          resultCode = hardwareApplied
+                                  ? "LOCAL_STORAGE_ERROR"
+                                  : "CASH_CONFIGURATION_REJECTED";
+                          resultMessage = hardwareApplied
+                                  ? "控制板已应用，但最近成功版本切换失败，已执行安全关闭"
+                                  : safe(result.getMessage());
+                      }
+
+                      if (!publishSdkConfigurationTerminal(
+                              decoded,
+                              success,
+                              configVersion,
+                              resultCode,
+                              resultMessage
+                      )) {
+                          reportStorageFault("现金配置终态无法写入outbox");
+                      }
+                      liveCommands.remove(messageId);
+                  });
+              }
+
+          '''
+          runtime.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+
+          marker = """    private void recoverWithoutRepeatingPhysicalAction() {
+          """
+          insert = '''    private void discardInterruptedCashConfiguration() {
+                  String messageId = store.getPendingConfigMessageId();
+                  if (blank(messageId)) {
+                      return;
+                  }
+                  store.clearPendingCashConfiguration(messageId);
+                  cashAdapter.disableCashAcceptance();
+                  MqttManager.get(context).reportFault(
+                          "CASH_CONFIGURATION_INTERRUPTED",
+                          "检测到进程重启前未完成的现金配置",
+                          3,
+                          "已保留最近成功版本并关闭现金设备；messageId=" + messageId
+                  );
+              }
+
+          '''
+          replace_once(runtime, marker, insert + marker)
+          replace_once(
+              runtime,
+              """        JSONArray items = data == null
+                          ? null
+                          : data.optJSONArray("cashSaleItems");
+                  if (data == null || items == null) {
+                      return;
+                  }
+
+                  List<CashTier> tiers = new ArrayList<>();
+                  for (int index = 0; index < items.length(); index++) {
+          """,
+              """        JSONArray items = data == null
+                          ? null
+                          : data.optJSONArray("cashSaleItems");
+                  if (data == null || (record.enabled && items == null)) {
+                      return;
+                  }
+
+                  List<CashTier> tiers = new ArrayList<>();
+                  int itemCount = items == null ? 0 : items.length();
+                  for (int index = 0; index < itemCount; index++) {
+          """
+          )
+
+          # 协议同步：PB13高电平上电，bit1不再固定为1。
+          replace_once(
+              "ANDROID_COMMUNICATION_PROTOCOL.md",
+              """| `0xFF` | EmergencyStop | 0 | 停止电机；纸钞机关闭，硬币脉冲仍必须记录 |
+          """,
+              """| `0xFF` | EmergencyStop | 0 | 停止电机；关闭纸钞机和PB13硬币器电源 |
+          """
+          )
+          replace_once(
+              "ANDROID_COMMUNICATION_PROTOCOL.md",
+              """```text
+          bit0 = 纸钞机接收状态
+          bit1 = 三线硬币脉冲输入状态
+          ```
+
+          当前硬币器只有：
+
+          ```text
+          12V
+          GND
+          投币脉冲
+          ```
+
+          没有 inhibit/enable 控制线，因此：
+
+          - bit1实际状态始终为1；
+          - `CashAcceptanceDisable` 只能关闭纸钞机；
+          - 软件不得丢弃硬币脉冲；
+          - 即使设备异常或无珠，进入的硬币也必须作为现金事实上报平台处理。
+          """,
+              """```text
+          bit0 = 纸钞机实际接收状态
+          bit1 = 硬币器12V电源状态
+          ```
+
+          硬币器接口仍为12V、GND和投币脉冲，但12V供电由PB13控制低边MOS：
+
+          - PB13高电平：MOS导通，硬币器上电，bit1=1；
+          - PB13低电平：MOS截止，硬币器断电，bit1=0；
+          - PB13控制极性与PC15电子锁一致；
+          - 上电默认关闭纸钞机和硬币器；
+          - 新configVersion只有在纸钞机返回`0x3E/0x5E`且实际掩码匹配后才提交；
+          - 未启用硬币器时忽略PE15脉冲，不生成现金事实。
+          """
+          )
+
+          # 静态一致性检查。
+          require("Control/Core/Inc/main.h", "#define CoinPower_Pin GPIO_PIN_13")
+          require("Control/Control.ioc", "PB13.Signal=GPIO_Output")
+          require("Control/Task/src/KeyTask.c", "CashAcceptance_CommitPendingIfMatched")
+          require("GouzhuApp/app/src/main/java/com/gouzhu/hardware/SerialCashConfigurationAdapter.java", "private static final int COIN_MASK = 2;")
+          require("GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java", "CASH_CONFIGURATION_STALE")
+          require("GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandStore.java", "commitPendingCashConfiguration")
+          if "ALWAYS_ON_COIN_MASK" in adapter.read_text(encoding="utf-8"):
+              raise RuntimeError("SerialCashConfigurationAdapter仍含硬币常开逻辑")
+          PY
+
+          git diff --check
+
+      - name: Commit focused changes
+        shell: bash
+        run: |
+          git rm .github/workflows/apply-cash-pb13-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Control GouzhuApp ANDROID_COMMUNICATION_PROTOCOL.md
+          git commit -m "修复PB13硬币器电源与现金配置提交时序"
+          git push origin HEAD:fix/cash-config-pb13-20260803
