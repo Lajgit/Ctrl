@@ -237,8 +237,32 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
                             "硬件适配器已停止"
                     );
                 }
+                if (operation.validationResultCode != null) {
+                    return HardwareExecutionResult.failed(
+                            operation.actual,
+                            operation.validationResultCode,
+                            operation.validationResultMessage
+                    );
+                }
                 if (operation.terminalEvent == completedEvent
                         && operation.resultCode == 0) {
+                    if (!operation.started) {
+                        return HardwareExecutionResult.failed(
+                                operation.actual,
+                                "CONTROLLER_START_MISSING",
+                                "未收到本次操作的启动事件，不接受完成终态"
+                        );
+                    }
+                    if (!operation.collect
+                            && (!operation.progressSeen
+                            || operation.actual <= 0
+                            || operation.actual != operation.requested)) {
+                        return HardwareExecutionResult.failed(
+                                operation.actual,
+                                "ACTUAL_QUANTITY_MISMATCH",
+                                "出珠完成终态与真实光眼计数不一致"
+                        );
+                    }
                     return HardwareExecutionResult.success(operation.actual);
                 }
                 return HardwareExecutionResult.failed(
@@ -265,14 +289,39 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
             return;
         }
         int token = (int) ((packed >>> 24) & 0xFF);
-        int actual = (int) (packed & 0x00FFFFFFL);
+        int value = (int) (packed & 0x00FFFFFFL);
+        int resultCode = expandCode & 0xFF;
         if (token != operation.token) {
             return;
         }
 
-        operation.actual = Math.max(operation.actual, actual);
+        Log.i(
+                TAG,
+                "收到控制板操作事件：code2=0x" + Integer.toHexString(code2)
+                        + "，token=" + token
+                        + "，value=" + value
+                        + "，resultCode=0x" + Integer.toHexString(resultCode)
+                        + "，messageId=" + operation.messageId
+                        + "，requested=" + operation.requested
+                        + "，started=" + operation.started
+                        + "，progressSeen=" + operation.progressSeen
+                        + "，actual=" + operation.actual
+        );
+
         Observer currentObserver = observer;
         if (code2 == operation.startedEvent) {
+            if (value != operation.requested) {
+                Log.w(
+                        TAG,
+                        "忽略疑似旧启动事件：token=" + token
+                                + "，reportedRequested=" + value
+                                + "，expectedRequested=" + operation.requested
+                );
+                return;
+            }
+            if (operation.started) {
+                return;
+            }
             operation.started = true;
             boolean persisted = currentObserver != null
                     && currentObserver.onStarted(
@@ -287,6 +336,23 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
             return;
         }
         if (code2 == operation.progressEvent) {
+            if (!operation.started) {
+                Log.w(TAG, "忽略启动事件之前的进度事件：token=" + token);
+                return;
+            }
+            if (value < operation.actual
+                    || (!operation.collect && value > operation.requested)) {
+                Log.w(
+                        TAG,
+                        "忽略无效进度事件：token=" + token
+                                + "，value=" + value
+                                + "，actual=" + operation.actual
+                                + "，requested=" + operation.requested
+                );
+                return;
+            }
+            operation.actual = value;
+            operation.progressSeen = true;
             if (currentObserver != null) {
                 currentObserver.onProgress(
                         operation.messageId,
@@ -298,8 +364,33 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
             return;
         }
         if (code2 == operation.completedEvent || code2 == operation.failedEvent) {
+            if (code2 == operation.completedEvent) {
+                if (!operation.started) {
+                    Log.w(TAG, "忽略启动事件之前的完成终态：token=" + token);
+                    return;
+                }
+                if (!operation.collect
+                        && (!operation.progressSeen
+                        || value <= 0
+                        || value != operation.requested)) {
+                    Log.w(
+                            TAG,
+                            "忽略不可信的出珠完成终态：token=" + token
+                                    + "，value=" + value
+                                    + "，requested=" + operation.requested
+                                    + "，progressSeen=" + operation.progressSeen
+                    );
+                    return;
+                }
+            }
+
+            operation.actual = value;
             operation.terminalEvent = code2;
-            operation.resultCode = expandCode & 0xFF;
+            operation.resultCode = resultCode;
+            if (code2 == operation.completedEvent && resultCode != 0) {
+                operation.validationResultCode = "CONTROLLER_COMPLETED_WITH_ERROR";
+                operation.validationResultMessage = "控制板完成事件携带非零结果码";
+            }
             operation.latch.countDown();
         }
     }
@@ -342,8 +433,11 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
         int failedEvent;
         int terminalEvent;
         int resultCode;
+        String validationResultCode;
+        String validationResultMessage;
         boolean collect;
         boolean started;
+        boolean progressSeen;
         volatile boolean cancelled;
     }
 
