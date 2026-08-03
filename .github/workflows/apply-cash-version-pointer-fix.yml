@@ -40,22 +40,21 @@ jobs:
           replace_once(
               adapter,
               "    @Override\n    public void disableCashAcceptance() {",
-              """    public void markApplied(long configVersion) {
-                  if (configVersion > 0L && configVersion <= 0x00FFFFFFL) {
-                      lastAppliedConfigVersion = configVersion;
-                  }
-              }
-
-              @Override
-              public void disableCashAcceptance() {"""
+              "    public void markApplied(long configVersion) {\n"
+              "        if (configVersion > 0L && configVersion <= 0x00FFFFFFL) {\n"
+              "            lastAppliedConfigVersion = configVersion;\n"
+              "        }\n"
+              "    }\n\n"
+              "    @Override\n"
+              "    public void disableCashAcceptance() {"
           )
           replace_once(
               adapter,
               "        long version = Math.max(1L, Math.min(0x00FFFFFFL, lastConfigVersion));",
-              """        long version = Math.max(
-                          1L,
-                          Math.min(0x00FFFFFFL, lastAppliedConfigVersion)
-                  );"""
+              "        long version = Math.max(\n"
+              "                1L,\n"
+              "                Math.min(0x00FFFFFFL, lastAppliedConfigVersion)\n"
+              "        );"
           )
           replace_once(
               adapter,
@@ -66,24 +65,24 @@ jobs:
           runtime = "GouzhuApp/app/src/main/java/com/gouzhu/mqtt/PlatformCommandRuntime.java"
           replace_once(
               runtime,
-              """            if (success) {
-                  resultCode = "CASH_CONFIGURATION_APPLIED";""",
-              """            if (success) {
-                  cashAdapter.markApplied(configVersion);
-                  resultCode = "CASH_CONFIGURATION_APPLIED";"""
+              "            if (success) {\n"
+              "                resultCode = \"CASH_CONFIGURATION_APPLIED\";",
+              "            if (success) {\n"
+              "                cashAdapter.markApplied(configVersion);\n"
+              "                resultCode = \"CASH_CONFIGURATION_APPLIED\";"
           )
           replace_once(
               runtime,
-              """                        safe(result.getMessage())
-                  );
-              }
-          });""",
-              """                        safe(result.getMessage())
-                  );
-              } else {
-                  cashAdapter.markApplied(record.configVersion);
-              }
-          });"""
+              "                        safe(result.getMessage())\n"
+              "                );\n"
+              "            }\n"
+              "        });",
+              "                        safe(result.getMessage())\n"
+              "                );\n"
+              "            } else {\n"
+              "                cashAdapter.markApplied(record.configVersion);\n"
+              "            }\n"
+              "        });"
           )
           PY
           git diff --check
