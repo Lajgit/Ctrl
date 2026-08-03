@@ -19,6 +19,7 @@ import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 import org.eclipse.paho.client.mqttv3.MqttCallbackExtended;
 import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
+import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.json.JSONObject;
@@ -41,6 +42,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class MqttManager implements MqttTransport {
 
     private static final String TAG = "GouzhuMqtt";
+    private static final int MQTT_MAX_INFLIGHT = 32;
+    private static final int MQTT_INFLIGHT_HIGH_WATERMARK = 28;
+    private static final int MQTT_REASON_CODE_MAX_INFLIGHT = 32202;
+    private static final long OUTBOX_FLUSH_DELAY_MS = 200L;
     private static volatile MqttManager instance;
 
     private final Context context;
@@ -48,6 +53,8 @@ public final class MqttManager implements MqttTransport {
             Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean connecting = new AtomicBoolean(false);
     private final AtomicBoolean reconnectScheduled = new AtomicBoolean(false);
+    private final AtomicBoolean outboxFlushScheduled = new AtomicBoolean(false);
+    private final AtomicBoolean runtimeStarted = new AtomicBoolean(false);
 
     private MqttClient client;
     private MqttCredential credential;
@@ -96,6 +103,10 @@ public final class MqttManager implements MqttTransport {
             }
             if (client != null && client.isConnected()) {
                 ensureSubscribed();
+                if (runtimeStarted.compareAndSet(false, true)) {
+                    DeviceCommandManager.get(context).start();
+                }
+                schedulePendingOutboxFlush();
                 startHeartbeatLoop();
                 return;
             }
@@ -112,12 +123,12 @@ public final class MqttManager implements MqttTransport {
             options.setAutomaticReconnect(true);
             options.setConnectionTimeout(10);
             options.setKeepAliveInterval(current.getKeepAliveSeconds());
+            options.setMaxInflight(MQTT_MAX_INFLIGHT);
             options.setUserName(current.getUsername());
             options.setPassword(current.getPassword().toCharArray());
 
             client.setCallback(new CallbackImpl());
             client.connect(options);
-            afterConnected(false);
         } catch (Throwable error) {
             Log.e(TAG, "MQTT连接失败", error);
             broadcastStatus("mqtt", "MQTT连接失败");
@@ -147,12 +158,35 @@ public final class MqttManager implements MqttTransport {
         if (topic == null || topic.isEmpty() || client == null || !client.isConnected()) {
             return false;
         }
+        int normalizedQos = Math.max(0, Math.min(2, qos));
         try {
+            if (normalizedQos > 0) {
+                IMqttDeliveryToken[] pendingTokens = client.getPendingDeliveryTokens();
+                int pendingCount = pendingTokens == null ? 0 : pendingTokens.length;
+                if (pendingCount >= MQTT_INFLIGHT_HIGH_WATERMARK) {
+                    Log.w(
+                            TAG,
+                            "MQTT发布暂缓，等待在途消息确认：pending="
+                                    + pendingCount + "，topic=" + topic
+                    );
+                    schedulePendingOutboxFlush();
+                    return false;
+                }
+            }
+
             MqttMessage message = new MqttMessage(payload);
-            message.setQos(Math.max(0, Math.min(2, qos)));
+            message.setQos(normalizedQos);
             message.setRetained(retained);
             client.publish(topic, message);
             return true;
+        } catch (MqttException error) {
+            if (error.getReasonCode() == MQTT_REASON_CODE_MAX_INFLIGHT) {
+                Log.w(TAG, "MQTT在途窗口已满，稍后重放outbox：topic=" + topic);
+                schedulePendingOutboxFlush();
+            } else {
+                Log.e(TAG, "MQTT发布失败，topic=" + topic, error);
+            }
+            return false;
         } catch (Throwable error) {
             Log.e(TAG, "MQTT发布失败，topic=" + topic, error);
             return false;
@@ -294,10 +328,12 @@ public final class MqttManager implements MqttTransport {
     }
 
     private void afterConnected(boolean reconnect) throws Exception {
-        /* 必须先订阅，再恢复本地状态和重放 durable outbox。 */
+        /* 必须先订阅，再恢复本地状态和分批重放 durable outbox。 */
         ensureSubscribed();
-        DeviceCommandManager.get(context).start();
-        DeviceCommandManager.get(context).flushPending();
+        if (runtimeStarted.compareAndSet(false, true)) {
+            DeviceCommandManager.get(context).start();
+        }
+        schedulePendingOutboxFlush();
         UpgradeManager.get(context).resumePendingResult();
         reportHeartbeat();
         reportStatus();
@@ -324,6 +360,19 @@ public final class MqttManager implements MqttTransport {
 
     private void reportHeartbeat() {
         publishReport("heartbeat", "{}");
+        schedulePendingOutboxFlush();
+    }
+
+    private void schedulePendingOutboxFlush() {
+        if (!outboxFlushScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        executor.schedule(() -> {
+            outboxFlushScheduled.set(false);
+            if (isConnected()) {
+                DeviceCommandManager.get(context).flushPending();
+            }
+        }, OUTBOX_FLUSH_DELAY_MS, TimeUnit.MILLISECONDS);
     }
 
     private boolean publishReport(String key, String payload) {
@@ -477,6 +526,7 @@ public final class MqttManager implements MqttTransport {
 
         @Override
         public void deliveryComplete(IMqttDeliveryToken token) {
+            schedulePendingOutboxFlush();
         }
     }
 
