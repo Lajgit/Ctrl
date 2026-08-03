@@ -19,8 +19,8 @@ void BillAcceptor_RxCpltCallback(void);
 void BillAcceptor_Reset(void);
 
 /*
- * 三线硬币器只有12V/GND/脉冲，没有物理inhibit，控制板始终接收并上报硬币。
- * enable_mask 只决定纸钞机是否允许收钞；状态中硬币位始终为1。
+ * enable_mask bit0控制纸钞机，bit1通过PB13控制硬币器12V电源。
+ * 新配置只有在纸钞机返回0x3E/0x5E且硬币器电源状态匹配后才提交版本。
  */
 bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version);
 void CashAcceptance_Disable(void);
@@ -38,7 +38,7 @@ uint16_t CashEvent_GetPendingSequence(void);
 void CashEvent_ConfirmTransport(uint16_t sequence);
 void CashEvent_RestorePending(void);
 
-/* 三线硬币器无使能引脚，保留接口仅兼容未来硬件版本。 */
+/* PB13高电平打开硬币器12V低边MOS，低电平关闭。 */
 bool CashHardware_SetCoinEnable(bool enable);
 
 #endif

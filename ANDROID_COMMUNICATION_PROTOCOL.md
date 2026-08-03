@@ -78,29 +78,23 @@ CRC覆盖字节0～10，初值 `0xFFFF`，反向多项式 `0xA001`。
 | `0x1B` | BoardEventStored | Data1=原事件Code2；Data2=token | Android已持久化关键硬件事件 |
 | `0x20` | HardwareStatusRequest | 0 | 查询硬件状态和未确认现金 |
 | `0xF0` | BoardRestart | `0x424F5441`进入Bootloader | 重启 |
-| `0xFF` | EmergencyStop | 0 | 停止电机；纸钞机关闭，硬币脉冲仍必须记录 |
+| `0xFF` | EmergencyStop | 0 | 停止电机；关闭纸钞机和PB13硬币器电源 |
 
 ### 4.1 现金状态掩码
 
 ```text
-bit0 = 纸钞机接收状态
-bit1 = 三线硬币脉冲输入状态
+bit0 = 纸钞机实际接收状态
+bit1 = 硬币器12V电源状态
 ```
 
-当前硬币器只有：
+硬币器接口仍为12V、GND和投币脉冲，但12V供电由PB13控制低边MOS：
 
-```text
-12V
-GND
-投币脉冲
-```
-
-没有 inhibit/enable 控制线，因此：
-
-- bit1实际状态始终为1；
-- `CashAcceptanceDisable` 只能关闭纸钞机；
-- 软件不得丢弃硬币脉冲；
-- 即使设备异常或无珠，进入的硬币也必须作为现金事实上报平台处理。
+- PB13高电平：MOS导通，硬币器上电，bit1=1；
+- PB13低电平：MOS截止，硬币器断电，bit1=0；
+- PB13控制极性与PC15电子锁一致；
+- 上电默认关闭纸钞机和硬币器；
+- 新configVersion只有在纸钞机返回`0x3E/0x5E`且实际掩码匹配后才提交；
+- 未启用硬币器时忽略PE15脉冲，不生成现金事实。
 
 ## 5. 控制板 → Android
 

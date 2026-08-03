@@ -28,6 +28,10 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
     private static final String META_ACTIVE_COLLECT = "active_collect";
     private static final String META_BOARD_VERSION = "board_version";
     private static final String META_PENDING_CONFIG = "pending_cash_config_message";
+    private static final String META_PENDING_CONFIG_VERSION = "pending_cash_config_version";
+    private static final String META_PENDING_CONFIG_ENABLED = "pending_cash_config_enabled";
+    private static final String META_PENDING_CONFIG_CHANGE = "pending_cash_config_change";
+    private static final String META_PENDING_CONFIG_SNAPSHOT = "pending_cash_config_snapshot";
     private static final String META_CASH_BLOCKED = "cash_blocked";
 
     public DeviceCommandStore(Context context) {
@@ -269,6 +273,126 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
                 "cash_configuration", null, values, SQLiteDatabase.CONFLICT_REPLACE) != -1L;
     }
 
+    public synchronized int getLatestCashConfigVersion() {
+        return Math.max(
+                getCashConfigVersion(),
+                parsePositiveInt(getMeta(META_PENDING_CONFIG_VERSION))
+        );
+    }
+
+    public synchronized boolean savePendingCashConfiguration(
+            JSONObject envelope,
+            int configVersion,
+            boolean enabled,
+            boolean changeEnabled,
+            String snapshotJson
+    ) {
+        if (envelope == null || configVersion <= 0 || blank(snapshotJson)) {
+            return false;
+        }
+        String messageId = envelope.optString("messageId", "").trim();
+        if (messageId.isEmpty()) {
+            return false;
+        }
+
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            int latestVersion = Math.max(
+                    getCashConfigVersion(db),
+                    parsePositiveInt(getMeta(db, META_PENDING_CONFIG_VERSION))
+            );
+            if (configVersion <= latestVersion) {
+                return false;
+            }
+
+            ContentValues command = new ContentValues();
+            command.put("message_id", messageId);
+            command.put("envelope", envelope.toString());
+            command.put("state", commandState(envelope));
+            command.put("updated_at", System.currentTimeMillis());
+            if (db.insertWithOnConflict(
+                    "commands",
+                    null,
+                    command,
+                    SQLiteDatabase.CONFLICT_REPLACE
+            ) == -1L) {
+                return false;
+            }
+
+            putMeta(db, META_PENDING_CONFIG, messageId);
+            putMeta(db, META_PENDING_CONFIG_VERSION, String.valueOf(configVersion));
+            putMeta(db, META_PENDING_CONFIG_ENABLED, enabled ? "1" : "0");
+            putMeta(db, META_PENDING_CONFIG_CHANGE, changeEnabled ? "1" : "0");
+            putMeta(db, META_PENDING_CONFIG_SNAPSHOT, snapshotJson);
+            db.setTransactionSuccessful();
+            return true;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public synchronized boolean commitPendingCashConfiguration(String messageId) {
+        if (blank(messageId)) {
+            return false;
+        }
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            if (!messageId.equals(getMeta(db, META_PENDING_CONFIG))) {
+                return false;
+            }
+            int version = parsePositiveInt(
+                    getMeta(db, META_PENDING_CONFIG_VERSION));
+            String snapshot = getMeta(db, META_PENDING_CONFIG_SNAPSHOT);
+            if (version <= 0 || blank(snapshot)) {
+                return false;
+            }
+
+            ContentValues values = new ContentValues();
+            values.put("id", 1);
+            values.put("config_version", version);
+            values.put(
+                    "enabled",
+                    "1".equals(getMeta(db, META_PENDING_CONFIG_ENABLED)) ? 1 : 0
+            );
+            values.put(
+                    "change_enabled",
+                    "1".equals(getMeta(db, META_PENDING_CONFIG_CHANGE)) ? 1 : 0
+            );
+            values.put("snapshot_json", snapshot);
+            values.put("updated_at", System.currentTimeMillis());
+            if (db.insertWithOnConflict(
+                    "cash_configuration",
+                    null,
+                    values,
+                    SQLiteDatabase.CONFLICT_REPLACE
+            ) == -1L) {
+                return false;
+            }
+
+            clearPendingCashConfiguration(db);
+            db.setTransactionSuccessful();
+            return true;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public synchronized void clearPendingCashConfiguration(String messageId) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            String pendingMessageId = getMeta(db, META_PENDING_CONFIG);
+            if (blank(messageId) || messageId.equals(pendingMessageId)) {
+                clearPendingCashConfiguration(db);
+            }
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
+    }
+
     public synchronized CashConfigurationRecord loadCashConfiguration() {
         try (Cursor cursor = getReadableDatabase().query(
                 "cash_configuration",
@@ -347,7 +471,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
     }
 
     public synchronized void clearPendingConfigMessageId() {
-        deleteMeta(META_PENDING_CONFIG);
+        clearPendingCashConfiguration(null);
     }
 
     public synchronized void setActiveDispense(String messageId) {
@@ -442,15 +566,23 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
     }
 
     private void putMeta(String key, String value) {
+        putMeta(getWritableDatabase(), key, value);
+    }
+
+    private static void putMeta(SQLiteDatabase db, String key, String value) {
         ContentValues values = new ContentValues();
         values.put("key", key);
         values.put("value", safe(value));
-        getWritableDatabase().insertWithOnConflict(
+        db.insertWithOnConflict(
                 "meta", null, values, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     private String getMeta(String key) {
-        try (Cursor cursor = getReadableDatabase().query(
+        return getMeta(getReadableDatabase(), key);
+    }
+
+    private static String getMeta(SQLiteDatabase db, String key) {
+        try (Cursor cursor = db.query(
                 "meta", new String[]{"value"}, "key=?",
                 new String[]{key}, null, null, null)) {
             return cursor.moveToFirst() ? safe(cursor.getString(0)) : "";
@@ -458,7 +590,40 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
     }
 
     private void deleteMeta(String key) {
-        getWritableDatabase().delete("meta", "key=?", new String[]{key});
+        deleteMeta(getWritableDatabase(), key);
+    }
+
+    private static void deleteMeta(SQLiteDatabase db, String key) {
+        db.delete("meta", "key=?", new String[]{key});
+    }
+
+    private static int getCashConfigVersion(SQLiteDatabase db) {
+        try (Cursor cursor = db.query(
+                "cash_configuration",
+                new String[]{"config_version"},
+                "id=1",
+                null,
+                null,
+                null,
+                null)) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
+    }
+
+    private static int parsePositiveInt(String value) {
+        try {
+            return Math.max(0, Integer.parseInt(safe(value)));
+        } catch (Throwable error) {
+            return 0;
+        }
+    }
+
+    private static void clearPendingCashConfiguration(SQLiteDatabase db) {
+        deleteMeta(db, META_PENDING_CONFIG);
+        deleteMeta(db, META_PENDING_CONFIG_VERSION);
+        deleteMeta(db, META_PENDING_CONFIG_ENABLED);
+        deleteMeta(db, META_PENDING_CONFIG_CHANGE);
+        deleteMeta(db, META_PENDING_CONFIG_SNAPSHOT);
     }
 
     private static String commandState(JSONObject envelope) {

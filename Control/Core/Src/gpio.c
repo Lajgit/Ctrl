@@ -77,6 +77,9 @@ void MX_GPIO_Init(void)
   /* SPI2数码管先关闭输出，防止开机乱码 */
   HAL_GPIO_WritePin(SPI2_OE_GPIO_Port,SPI2_OE_Pin,GPIO_PIN_SET);
 
+  /* PB13驱动低边MOS，默认低电平关闭硬币器12V电源。 */
+  HAL_GPIO_WritePin(CoinPower_GPIO_Port, CoinPower_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pins : LED_Pin Valve_Pin Lock_Valve_Pin SPI3_CS_Pin */
   GPIO_InitStruct.Pin = LED_Pin|Valve_Pin|Lock_Valve_Pin|SPI3_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -136,8 +139,8 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : SPI2_CS_Pin SPI2_OE_Pin */
-  GPIO_InitStruct.Pin = SPI2_CS_Pin|SPI2_OE_Pin;
+  /*Configure GPIO pins : SPI2_CS_Pin SPI2_OE_Pin CoinPower_Pin */
+  GPIO_InitStruct.Pin = SPI2_CS_Pin|SPI2_OE_Pin|CoinPower_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
