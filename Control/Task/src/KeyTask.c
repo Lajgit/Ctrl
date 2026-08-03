@@ -509,7 +509,12 @@ static void BillAcceptor_HandleByte(uint8_t data)
     {
         if (data == ICT_RESP_POWER_ON_2)
         {
+            /* ICT106上电握手：收到80H 8FH后必须在2秒内先回复02H。 */
+            BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
             BillAcceptor_SetRxState(BILL_RX_IDLE);
+            BillPollTick = HAL_GetTick();
+
+            /* 握手完成后再恢复平台期望的启用或禁用状态。 */
             BillAcceptor_StartStateCommand(
                 BillRequestedEnable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
             return;
