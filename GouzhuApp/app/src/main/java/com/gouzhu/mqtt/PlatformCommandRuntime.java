@@ -67,6 +67,7 @@ final class PlatformCommandRuntime {
     private static final int EVT_BEAD_LOW = 0x21;
     private static final int EVT_BEAD_EMPTY = 0x22;
     private static final int EVT_BEAD_REFILLED = 0x23;
+    private static final int OUTBOX_FLUSH_BATCH_SIZE = 4;
 
     private final Context context;
     private final DeviceCommandStore store;
@@ -86,6 +87,7 @@ final class PlatformCommandRuntime {
             pendingCollectRequests = new ConcurrentHashMap<>();
 
     private boolean receiverRegistered;
+    private long lastCashDeviceStatus = Long.MIN_VALUE;
 
     private final SerialMarbleHardwareAdapter.Observer hardwareObserver =
             new SerialMarbleHardwareAdapter.Observer() {
@@ -488,11 +490,18 @@ final class PlatformCommandRuntime {
     }
 
     void flushPending() {
+        int remaining = OUTBOX_FLUSH_BATCH_SIZE;
         for (DeviceCommandStore.OutboxItem item : store.listCommandResults()) {
-            MqttManager.get(context).reportCommandResult(item.payload);
+            if (remaining-- <= 0
+                    || !MqttManager.get(context).reportCommandResult(item.payload)) {
+                return;
+            }
         }
         for (DeviceCommandStore.OutboxItem item : store.listCashEvents()) {
-            MqttManager.get(context).reportCashEvent(item.payload);
+            if (remaining-- <= 0
+                    || !MqttManager.get(context).reportCashEvent(item.payload)) {
+                return;
+            }
         }
     }
 
@@ -799,7 +808,10 @@ final class PlatformCommandRuntime {
                 persistCashFact(packed, expandCode);
                 break;
             case EVT_CASH_DEVICE_STATUS:
-                Log.i(TAG, "现金设备诊断=0x" + Long.toHexString(packed));
+                if (packed != lastCashDeviceStatus) {
+                    lastCashDeviceStatus = packed;
+                    Log.i(TAG, "现金设备诊断=0x" + Long.toHexString(packed));
+                }
                 break;
             case EVT_BEAD_STOCK:
                 broadcastHardwareStatus("库存：" + packed + " 珠");
