@@ -1,5 +1,7 @@
 package com.gouzhu.mqtt;
 
+import android.util.Log;
+
 import com.pinball.xiaoda.device.sdk.hardware.CollectRequest;
 import com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandMapper;
 import com.pinball.xiaoda.device.sdk.hardware.DispenseRequest;
@@ -10,12 +12,18 @@ import com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResultCodec;
 import com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand;
 import com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
 
 /** 新版 SDK MQTT 命令、硬件请求和结果编码的唯一入口。 */
 public final class SdkCommandDecoder {
+
+    /** 现金配置完整 JSON 使用独立标签，便于 Logcat 单独过滤。 */
+    private static final String CASH_CONFIG_JSON_TAG = "GouzhuCashConfigJson";
+    private static final String CASH_CONFIG_COMMAND = "sync_cash_configuration";
+    private static final int LOG_CHUNK_SIZE = 3000;
 
     private final DeviceMqttCommandCodec codec = new DeviceMqttCommandCodec();
     private final DeviceHardwareCommandMapper hardwareMapper =
@@ -31,6 +39,16 @@ public final class SdkCommandDecoder {
     ) {
         byte[] safePayload = payload == null ? new byte[0] : payload;
         try {
+            String rawJson = new String(safePayload, StandardCharsets.UTF_8);
+            JSONObject envelope = new JSONObject(rawJson);
+
+            /*
+             * 现金配置日志在 SDK 强类型校验前输出。这样即使配置字段错误、版本越界
+             * 或档位不完整，现场仍能看到服务器实际下发的完整 JSON，便于联调定位。
+             * 这里只打印 sync_cash_configuration；其他可能含业务令牌的指令不打印原文。
+             */
+            logCashConfigurationJson(topic, safePayload.length, envelope);
+
             DeviceMqttCommand<?> sdkCommand = codec.decode(
                     topic,
                     safePayload,
@@ -38,7 +56,7 @@ public final class SdkCommandDecoder {
                     nowMillis
             );
             return new DecodedCommand(
-                    new JSONObject(new String(safePayload, StandardCharsets.UTF_8)),
+                    envelope,
                     sdkCommand,
                     hardwareMapper,
                     resultCodec
@@ -49,6 +67,75 @@ public final class SdkCommandDecoder {
                     error
             );
         }
+    }
+
+    /**
+     * 完整打印 sync_cash_configuration 信封和 data 中所有字段。
+     *
+     * <p>日志包含 messageId、deviceNo、commandType、timestamp，以及 data 下的
+     * configVersion、cashAcceptanceEnabled、changeEnabled 和 cashSaleItems 全量内容。
+     * 长 JSON 按 3000 字符分段，避免 Logcat 单条日志被截断。</p>
+     */
+    private static void logCashConfigurationJson(
+            String topic,
+            int payloadBytes,
+            JSONObject envelope
+    ) {
+        if (envelope == null
+                || !CASH_CONFIG_COMMAND.equals(envelope.optString("commandType", ""))) {
+            return;
+        }
+
+        JSONObject data = envelope.optJSONObject("data");
+        JSONArray items = data == null ? null : data.optJSONArray("cashSaleItems");
+        Log.i(
+                CASH_CONFIG_JSON_TAG,
+                "收到MQTT现金配置：topic=" + safe(topic)
+                        + "，payloadBytes=" + payloadBytes
+                        + "，messageId=" + envelope.optString("messageId", "")
+                        + "，data.configVersion="
+                        + (data == null ? "<缺失>" : String.valueOf(data.opt("configVersion")))
+                        + "，data.cashAcceptanceEnabled="
+                        + (data == null
+                        ? "<缺失>"
+                        : String.valueOf(data.opt("cashAcceptanceEnabled")))
+                        + "，data.changeEnabled="
+                        + (data == null ? "<缺失>" : String.valueOf(data.opt("changeEnabled")))
+                        + "，data.cashSaleItems数量=" + (items == null ? -1 : items.length())
+        );
+
+        String prettyJson;
+        try {
+            prettyJson = envelope.toString(2);
+        } catch (Throwable error) {
+            prettyJson = envelope.toString();
+        }
+        logLong(CASH_CONFIG_JSON_TAG, "现金配置完整JSON：\n" + prettyJson);
+    }
+
+    /** 将长日志分段输出，并标注当前段和总段数。 */
+    private static void logLong(String tag, String content) {
+        String safeContent = content == null ? "null" : content;
+        if (safeContent.isEmpty()) {
+            Log.i(tag, "现金配置完整JSON为空");
+            return;
+        }
+
+        int total = (safeContent.length() + LOG_CHUNK_SIZE - 1) / LOG_CHUNK_SIZE;
+        for (int start = 0, index = 1;
+             start < safeContent.length();
+             start += LOG_CHUNK_SIZE, index++) {
+            int end = Math.min(safeContent.length(), start + LOG_CHUNK_SIZE);
+            Log.i(
+                    tag,
+                    "cashConfig[" + index + "/" + total + "] "
+                            + safeContent.substring(start, end)
+            );
+        }
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
     }
 
     private static String messageOf(Throwable error) {
