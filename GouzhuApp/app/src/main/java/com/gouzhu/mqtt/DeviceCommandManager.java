@@ -2,13 +2,15 @@ package com.gouzhu.mqtt;
 
 import android.content.Context;
 
+import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.transaction.TransactionOccupancyManager;
+
+import org.json.JSONObject;
+
+import java.nio.charset.StandardCharsets;
+
 /**
- * 平台统一现金与硬件命令门面。
- *
- * <p>具体状态机、SDK协议校验、SQLite outbox 和 ttyS5 硬件适配由
- * {@link PlatformCommandRuntime} 实现。人工结案指令由
- * {@link OperationResolutionManager} 按operationNo精确收尾；该指令不会
- * 继续出珠，补充库存和控制板复位必须由工作人员按下K1补珠键完成。</p>
+ * Platform command facade with one persisted device-wide transaction occupancy lock.
  */
 public final class DeviceCommandManager {
 
@@ -23,13 +25,20 @@ public final class DeviceCommandManager {
 
     private static volatile DeviceCommandManager instance;
 
+    private final Context context;
     private final PlatformCommandRuntime runtime;
     private final OperationResolutionManager resolutionManager;
+    private final CollectionSessionManager collectionManager;
+    private final TransactionOccupancyManager occupancy;
+    private final DeviceCommandStore store;
 
     private DeviceCommandManager(Context context) {
-        Context applicationContext = context.getApplicationContext();
-        runtime = new PlatformCommandRuntime(applicationContext);
-        resolutionManager = new OperationResolutionManager(applicationContext);
+        this.context = context.getApplicationContext();
+        runtime = new PlatformCommandRuntime(this.context);
+        resolutionManager = new OperationResolutionManager(this.context);
+        collectionManager = new CollectionSessionManager(this.context);
+        occupancy = TransactionOccupancyManager.get(this.context);
+        store = new DeviceCommandStore(this.context);
     }
 
     public static DeviceCommandManager get(Context context) {
@@ -44,45 +53,189 @@ public final class DeviceCommandManager {
     }
 
     public void start() {
-        // 先注册人工结案硬件状态监听，再启动主运行时，避免漏掉恢复事件。
+        occupancy.start();
         resolutionManager.start();
+        collectionManager.start();
         runtime.start();
+        // Recovery must not depend on MainActivity being visible. The persisted requestNo
+        // remains authoritative and the same QR purchase is queried/recreated idempotently.
+        PaymentManager.get(context).resumePendingPayment();
     }
 
     public void stop() {
         runtime.stop();
+        collectionManager.stop();
         resolutionManager.stop();
+        occupancy.stop();
     }
 
     public void handleCommand(String topic, byte[] payload) {
+        if (collectionManager.handlesResolution(payload)) {
+            collectionManager.handleResolution(topic, payload);
+            return;
+        }
         if (resolutionManager.handles(payload)) {
             resolutionManager.handleCommand(topic, payload);
             return;
         }
+        if (collectionManager.handlesCollect(payload)) {
+            collectionManager.handleCollect(topic, payload);
+            return;
+        }
+
+        JSONObject envelope = parseEnvelope(payload);
+        String commandType = envelope == null
+                ? ""
+                : envelope.optString("commandType", "");
+        if ("cash_event_response".equals(commandType)) {
+            runtime.handleCommand(topic, payload);
+            JSONObject data = envelope.optJSONObject("data");
+            occupancy.onCashEventResponse(
+                    data == null ? "" : data.optString("status", "")
+            );
+            return;
+        }
+        if ("sync_cash_configuration".equals(commandType)) {
+            JSONObject data = envelope.optJSONObject("data");
+            boolean enablesCash = data != null
+                    && data.optBoolean("cashAcceptanceEnabled", false);
+            TransactionOccupancyManager.Snapshot occupied = occupancy.current();
+            if (enablesCash && occupied != null) {
+                rejectCommand(
+                        topic,
+                        payload,
+                        "DEVICE_TRANSACTION_OCCUPIED",
+                        "cash cannot be enabled while "
+                                + occupied.ownerType + " is " + occupied.phase
+                );
+                return;
+            }
+            runtime.handleCommand(topic, payload);
+            return;
+        }
+        if (!"dispense_marbles".equals(commandType)) {
+            runtime.handleCommand(topic, payload);
+            return;
+        }
+
+        String messageId = envelope.optString("messageId", "").trim();
+        JSONObject data = envelope.optJSONObject("data");
+        String operationNo = data == null
+                ? ""
+                : data.optString("operationNo", "").trim();
+        TransactionOccupancyManager.DispenseReservation reservation =
+                occupancy.reserveDispense(messageId, operationNo);
+        if (!reservation.allowed) {
+            rejectCommand(
+                    topic,
+                    payload,
+                    reservation.resultCode == null || reservation.resultCode.isEmpty()
+                            ? "DEVICE_TRANSACTION_OCCUPIED"
+                            : reservation.resultCode,
+                    reservation.reason
+            );
+            return;
+        }
+
         runtime.handleCommand(topic, payload);
+        DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
+        if (active != null && messageId.equals(active.messageId)) {
+            occupancy.commitDispense(reservation);
+        } else {
+            occupancy.rollbackDispense(reservation);
+        }
     }
 
     public boolean startPendingCollection() {
-        return runtime.startPendingCollection();
+        return collectionManager.startPendingCollection();
     }
 
     public boolean finishPendingCollection() {
-        return runtime.finishPendingCollection();
+        return collectionManager.finishPendingCollection();
     }
 
     public boolean hasPendingCollection() {
-        return runtime.hasPendingCollection();
+        return collectionManager.hasPendingCollection();
     }
 
     public int getRunningStatus() {
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+        if (snapshot != null) {
+            if (TransactionOccupancyManager.PHASE_BLOCKED.equals(snapshot.phase)
+                    || TransactionOccupancyManager.PHASE_REFUNDING.equals(snapshot.phase)) {
+                return 2;
+            }
+            return 1;
+        }
         return resolutionManager.getRunningStatus();
     }
 
     public void requestActivePhysicalOrderState() {
         runtime.broadcastActivePhysicalOrderState();
+        collectionManager.broadcastCurrentState();
     }
 
     public void flushPending() {
         runtime.flushPending();
+    }
+
+    private void rejectCommand(
+            String topic,
+            byte[] payload,
+            String resultCode,
+            String reason
+    ) {
+        try {
+            SdkCommandDecoder.DecodedCommand decoded = new SdkCommandDecoder().decode(
+                    topic,
+                    payload,
+                    com.gouzhu.util.DeviceUtil.requireDeviceNo(context),
+                    System.currentTimeMillis()
+            );
+            if (store.hasCommand(decoded.sdkCommand.getMessageId())) {
+                for (DeviceCommandStore.OutboxItem item : store.listCommandResults()) {
+                    if (decoded.sdkCommand.getMessageId().equals(item.sourceMessageId)) {
+                        MqttManager.get(context).reportCommandResult(item.payload);
+                    }
+                }
+                return;
+            }
+            SdkCommandDecoder.EncodedResult terminal = decoded.genericTerminal(
+                    decoded.sdkCommand.getMessageId() + "-result",
+                    false,
+                    resultCode,
+                    reason == null || reason.trim().isEmpty()
+                            ? "device is processing another transaction"
+                            : reason,
+                    System.currentTimeMillis()
+            );
+            if (store.saveCommand(decoded.envelope)
+                    && store.saveCommandResult(
+                    terminal.sourceMessageId,
+                    terminal.eventNo,
+                    terminal.resultStatus,
+                    terminal.payload
+            )) {
+                MqttManager.get(context).reportCommandResult(terminal.payload);
+            }
+        } catch (Throwable error) {
+            MqttManager.get(context).reportFault(
+                    resultCode,
+                    "rejected command could not be encoded",
+                    3,
+                    error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()
+            );
+        }
+    }
+
+    private static JSONObject parseEnvelope(byte[] payload) {
+        try {
+            return new JSONObject(new String(
+                    payload == null ? new byte[0] : payload,
+                    StandardCharsets.UTF_8
+            ));
+        } catch (Throwable error) {
+            return null;
+        }
     }
 }
