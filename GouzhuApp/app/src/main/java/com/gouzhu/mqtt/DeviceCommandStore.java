@@ -1028,7 +1028,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             if (!saveCommandEnvelope(db, envelope, "failed")) {
                 return false;
             }
-            putMeta(db, META_CASH_BLOCKED, "1");
+
             String receiptKey = sourceMessageId + "|" + eventNo + "|"
                     + resultStatus;
             if (!saveOutbox(
@@ -1079,7 +1079,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             if (!updateCommandState(db, messageId, "failed")) {
                 return null;
             }
-            putMeta(db, META_CASH_BLOCKED, "1");
+
             String receiptKey = messageId + "|" + eventNo + "|"
                     + resultStatus;
             if (!saveOutbox(

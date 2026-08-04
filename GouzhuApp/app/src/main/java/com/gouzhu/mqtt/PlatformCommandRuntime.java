@@ -523,6 +523,17 @@ final class PlatformCommandRuntime {
 
         boolean enabled = config.isCashAcceptanceEnabled();
         if (enabled && !canEnableCash()) {
+            Log.w(
+                    TAG,
+                    "现金启用被门禁拒绝："
+                            + "protocolReady=" + controllerProtocolReady
+                            + ", activeOrder=" + store.hasActivePhysicalOrder()
+                            + ", physicalBlocked=" + store.isPhysicalBlocked()
+                            + ", cashBlocked=" + store.isCashBlocked()
+                            + ", boardVersion=0x"
+                            + Long.toHexString(store.getBoardVersion())
+            );
+
             cashAdapter.disableCashAcceptance();
             persistAndPublishConfigurationFailure(
                     decoded,
@@ -831,9 +842,24 @@ final class PlatformCommandRuntime {
                     Log.i(TAG, "cash device status=0x" + Long.toHexString(packed));
                 }
                 break;
-            case EVT_BEAD_STOCK:
+            case EVT_BEAD_STOCK: {
+                boolean hasStock = packed > 0L;
+                boolean wasCashBlocked = store.isCashBlocked();
+
+                // cash_blocked只表示真实库存/硬件阻塞，
+                // 不再表示历史现金配置失败。
+                store.setCashBlocked(!hasStock);
+
                 broadcastHardwareStatus("stock: " + packed);
+
+                if (!hasStock) {
+                    cashAdapter.disableCashAcceptance();
+                } else if (wasCashBlocked && canEnableCash()) {
+                    // 自动修复旧版本遗留的cash_blocked=1。
+                    reapplyCashConfiguration();
+                }
                 break;
+            }
             case EVT_BEAD_LOW:
                 broadcastHardwareStatus("stock low: " + packed);
                 break;
