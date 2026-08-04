@@ -127,7 +127,7 @@
                 android:scaleType="fitCenter"
                 android:visibility="gone" />
 
-            <Button
+            <com.gouzhu.widget.SafePaymentCancelButton
                 android:id="@+id/button_cancel_payment"
                 style="@style/Widget.Gouzhu.ActionButton"
                 android:layout_width="240dp"
