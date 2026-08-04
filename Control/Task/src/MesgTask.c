@@ -6,7 +6,6 @@
 Event_Handle_t Mesg_event;
 
 extern Tx_HandleTypeDef Tx1;
-extern ListHandle_t ResendList;
 
 static uint32_t MakeOperationData(const HardwareOperation_t *operation,
                                   uint32_t value)
@@ -31,6 +30,15 @@ static uint32_t MakeCashAcceptanceData(void)
            (CashAcceptance_GetConfigVersion() & 0x00FFFFFFUL);
 }
 
+static bool SendMesgWithResend(uint8_t code_2, uint32_t data, uint8_t expandCode)
+{
+    return Comm_SendMesg_FillData_withResend(&Tx1,
+                                             Board_to_Android,
+                                             code_2,
+                                             data,
+                                             expandCode) != 0U;
+}
+
 void Mesg_Task(void)
 {
     const HardwareOperation_t *operation;
@@ -41,13 +49,12 @@ void Mesg_Task(void)
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseStarted))
     {
         operation = Hardware_GetDispenseReport();
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          DispenseStarted,
-                                          MakeOperationData(operation, operation->requested),
-                                          HW_RESULT_OK,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_DispenseStarted);
+        if (SendMesgWithResend(DispenseStarted,
+                               MakeOperationData(operation, operation->requested),
+                               HW_RESULT_OK))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_DispenseStarted);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseProgress))
@@ -64,37 +71,34 @@ void Mesg_Task(void)
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseCompleted))
     {
         operation = Hardware_GetDispenseReport();
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          DispenseCompleted,
-                                          MakeOperationData(operation, operation->actual),
-                                          operation->result,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_DispenseCompleted);
+        if (SendMesgWithResend(DispenseCompleted,
+                               MakeOperationData(operation, operation->actual),
+                               operation->result))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_DispenseCompleted);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseFailed))
     {
         operation = Hardware_GetDispenseReport();
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          DispenseFailed,
-                                          MakeOperationData(operation, operation->actual),
-                                          operation->result,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_DispenseFailed);
+        if (SendMesgWithResend(DispenseFailed,
+                               MakeOperationData(operation, operation->actual),
+                               operation->result))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_DispenseFailed);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectStarted))
     {
         operation = Hardware_GetCollectReport();
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          CollectStarted,
-                                          MakeOperationData(operation, operation->requested),
-                                          HW_RESULT_OK,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CollectStarted);
+        if (SendMesgWithResend(CollectStarted,
+                               MakeOperationData(operation, operation->requested),
+                               HW_RESULT_OK))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_CollectStarted);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectProgress))
@@ -111,51 +115,50 @@ void Mesg_Task(void)
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectCompleted))
     {
         operation = Hardware_GetCollectReport();
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          CollectCompleted,
-                                          MakeOperationData(operation, operation->actual),
-                                          operation->result,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CollectCompleted);
+        if (SendMesgWithResend(CollectCompleted,
+                               MakeOperationData(operation, operation->actual),
+                               operation->result))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_CollectCompleted);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectFailed))
     {
         operation = Hardware_GetCollectReport();
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          CollectFailed,
-                                          MakeOperationData(operation, operation->actual),
-                                          operation->result,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CollectFailed);
+        if (SendMesgWithResend(CollectFailed,
+                               MakeOperationData(operation, operation->actual),
+                               operation->result))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_CollectFailed);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashAccepted))
     {
         if (CashEvent_HasPending())
         {
-            Comm_SendMesg_FillData_withResend(
-                &Tx1,
-                Board_to_Android,
-                CashAccepted,
-                MakeCashAcceptedData(),
-                (uint8_t)CashEvent_GetPendingSequence(),
-                &ResendList);
+            if (SendMesgWithResend(CashAccepted,
+                                   MakeCashAcceptedData(),
+                                   (uint8_t)CashEvent_GetPendingSequence()))
+            {
+                EventGroupClearBits(&Mesg_event, MesgEvent_CashAccepted);
+            }
         }
-        EventGroupClearBits(&Mesg_event, MesgEvent_CashAccepted);
+        else
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_CashAccepted);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashAcceptanceStatus))
     {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          CashAcceptanceStatus,
-                                          MakeCashAcceptanceData(),
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+        if (SendMesgWithResend(CashAcceptanceStatus,
+                               MakeCashAcceptanceData(),
+                               0x00U))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_CashDeviceStatus))
@@ -180,46 +183,42 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadLowStock))
     {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          BeadLowStock,
-                                          Hardware_GetBeadStock(),
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BeadLowStock);
+        if (SendMesgWithResend(BeadLowStock,
+                               Hardware_GetBeadStock(),
+                               0x00U))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_BeadLowStock);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadEmpty))
     {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          BeadEmpty,
-                                          Hardware_GetBeadStock(),
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BeadEmpty);
+        if (SendMesgWithResend(BeadEmpty,
+                               Hardware_GetBeadStock(),
+                               0x00U))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_BeadEmpty);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BeadRefilled))
     {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          BeadRefilled,
-                                          Hardware_GetBeadStock(),
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BeadRefilled);
+        if (SendMesgWithResend(BeadRefilled,
+                               Hardware_GetBeadStock(),
+                               0x00U))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_BeadRefilled);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_BackendSettingsRequest))
     {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          BackendSettingsRequest,
-                                          1U,
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_BackendSettingsRequest);
+        if (SendMesgWithResend(BackendSettingsRequest,
+                               1U,
+                               0x00U))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_BackendSettingsRequest);
+        }
     }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_Unlock))
@@ -234,13 +233,12 @@ void Mesg_Task(void)
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_VersionRequest))
     {
-        Comm_SendMesg_FillData_withResend(&Tx1,
-                                          Board_to_Android,
-                                          VersionReport,
-                                          VERSION,
-                                          0x00U,
-                                          &ResendList);
-        EventGroupClearBits(&Mesg_event, MesgEvent_VersionRequest);
+        if (SendMesgWithResend(VersionReport,
+                               VERSION,
+                               0x00U))
+        {
+            EventGroupClearBits(&Mesg_event, MesgEvent_VersionRequest);
+        }
     }
 
     Resend_Task();

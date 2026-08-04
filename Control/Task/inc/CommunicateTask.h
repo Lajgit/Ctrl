@@ -2,7 +2,6 @@
 #define __COMMUNICATETASK_H__
 
 #include "port_communicate.h"
-#include "app_list.h"
 
 
 #define Mesg_Head 0xAA
@@ -29,7 +28,7 @@ typedef struct
 
 ///
 uint8_t Comm_SendMesg_FillData(Tx_HandleTypeDef *Tx, uint8_t code_1, uint8_t code_2, uint32_t data, uint8_t expandCode);
-uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *Tx, uint8_t code_1, uint8_t code_2, uint32_t data, uint8_t expandCode, ListHandle_t *List);
+uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *Tx, uint8_t code_1, uint8_t code_2, uint32_t data, uint8_t expandCode);
 
 void Resend_Task(void);
 void MesgDeal_Task(void);

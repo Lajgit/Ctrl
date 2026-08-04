@@ -14,11 +14,43 @@ static void USART_RemoveCashResend(uint16_t sequence);
 static void USART_RemoveBoardEventResend(uint8_t event_code, uint8_t token);
 static bool USART_IsDurableBoardEvent(uint8_t code2);
 
-ListHandle_t ResendList, DealList;
-static ListNode_t ResendList_buffer[100];
+#define PENDING_TX_ENTRY_COUNT 100U
+#define RETIRED_FRAME_ID_COUNT 255U
+#define FRAME_ID_RETIRE_TIME 5000U
+
+typedef enum
+{
+    PENDING_TX_KIND_NONE = 0,
+    PENDING_TX_KIND_LINE_ACK,
+    PENDING_TX_KIND_CASH_EVENT,
+    PENDING_TX_KIND_PHYSICAL_EVENT
+} PendingTxKind_t;
+
+typedef struct
+{
+    bool used;
+    bool durable;
+    bool lineAcked;
+    uint8_t frameId;
+    Mesg_TypeDef frame;
+    uint32_t lastSendTick;
+    uint8_t resendCount;
+    PendingTxKind_t kind;
+} PendingTxEntry_t;
+
+typedef struct
+{
+    bool used;
+    uint8_t frameId;
+    uint32_t retiredTick;
+} RetiredFrameId_t;
+
+ListHandle_t DealList;
 static ListNode_t DealList_buffer[100];
 
-static Mesg_TypeDef MesgTable[256];
+static PendingTxEntry_t PendingTxTable[PENDING_TX_ENTRY_COUNT];
+static RetiredFrameId_t RetiredFrameIds[RETIRED_FRAME_ID_COUNT];
+static uint8_t NextFrameId = 0U;
 static uint8_t rx1_buffer[512];
 static Mesg_TypeDef Receive1_mesg;
 
@@ -120,49 +152,219 @@ static bool USART_IsDurableBoardEvent(uint8_t code2)
            (code2 == CollectFailed);
 }
 
-static void USART_ConfirmBoardEvent(Mesg_TypeDef *mesg)
+static bool PendingTx_IsDurableCode(uint8_t code2)
 {
-    Mesg_TypeDef *original = &MesgTable[mesg->ID];
+    return (code2 == CashAccepted) || USART_IsDurableBoardEvent(code2);
+}
 
-    /* 原样 ACK 只确认线路；现金和关键操作事件需业务层显式持久化确认。 */
-    if ((original->Code2 == CashAccepted) ||
-        USART_IsDurableBoardEvent(original->Code2))
+static PendingTxKind_t PendingTx_GetKind(uint8_t code2)
+{
+    if (code2 == CashAccepted)
+    {
+        return PENDING_TX_KIND_CASH_EVENT;
+    }
+    if (USART_IsDurableBoardEvent(code2))
+    {
+        return PENDING_TX_KIND_PHYSICAL_EVENT;
+    }
+    return PENDING_TX_KIND_LINE_ACK;
+}
+
+static bool PendingTx_IsFrameIdUsed(uint8_t frame_id)
+{
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    {
+        if (PendingTxTable[i].used && (PendingTxTable[i].frameId == frame_id))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool PendingTx_IsFrameIdRetired(uint8_t frame_id, uint32_t now)
+{
+    uint16_t i;
+    for (i = 0U; i < RETIRED_FRAME_ID_COUNT; i++)
+    {
+        if (RetiredFrameIds[i].used &&
+            (RetiredFrameIds[i].frameId == frame_id) &&
+            ((now - RetiredFrameIds[i].retiredTick) < FRAME_ID_RETIRE_TIME))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void PendingTx_RetireFrameId(uint8_t frame_id)
+{
+    uint16_t i;
+    uint16_t selected = 0U;
+    uint32_t now = HAL_GetTick();
+    uint32_t oldest_age = 0U;
+
+    if (frame_id == 0U)
     {
         return;
     }
-    List_DeleteNode(&ResendList, mesg->ID);
+
+    for (i = 0U; i < RETIRED_FRAME_ID_COUNT; i++)
+    {
+        if (RetiredFrameIds[i].used &&
+            (RetiredFrameIds[i].frameId == frame_id))
+        {
+            RetiredFrameIds[i].retiredTick = now;
+            return;
+        }
+    }
+
+    for (i = 0U; i < RETIRED_FRAME_ID_COUNT; i++)
+    {
+        if (!RetiredFrameIds[i].used ||
+            ((now - RetiredFrameIds[i].retiredTick) >= FRAME_ID_RETIRE_TIME))
+        {
+            selected = i;
+            break;
+        }
+        if ((now - RetiredFrameIds[i].retiredTick) >= oldest_age)
+        {
+            oldest_age = now - RetiredFrameIds[i].retiredTick;
+            selected = i;
+        }
+    }
+
+    RetiredFrameIds[selected].used = true;
+    RetiredFrameIds[selected].frameId = frame_id;
+    RetiredFrameIds[selected].retiredTick = now;
+}
+
+static uint8_t PendingTx_AllocateFrameId(bool skip_retired)
+{
+    uint16_t attempts;
+    uint8_t candidate;
+    uint32_t now = HAL_GetTick();
+
+    for (attempts = 0U; attempts < 255U; attempts++)
+    {
+        NextFrameId++;
+        if (NextFrameId == 0U)
+        {
+            NextFrameId = 1U;
+        }
+        candidate = NextFrameId;
+        if (PendingTx_IsFrameIdUsed(candidate))
+        {
+            continue;
+        }
+        if (skip_retired && PendingTx_IsFrameIdRetired(candidate, now))
+        {
+            continue;
+        }
+        return candidate;
+    }
+    return 0U;
+}
+
+static PendingTxEntry_t *PendingTx_FindFreeEntry(void)
+{
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    {
+        if (!PendingTxTable[i].used)
+        {
+            return &PendingTxTable[i];
+        }
+    }
+    return NULL;
+}
+
+static void PendingTx_RemoveEntry(PendingTxEntry_t *entry, bool retire_frame_id)
+{
+    uint8_t frame_id;
+
+    if ((entry == NULL) || !entry->used)
+    {
+        return;
+    }
+
+    frame_id = entry->frameId;
+    memset(entry, 0, sizeof(*entry));
+    if (retire_frame_id)
+    {
+        PendingTx_RetireFrameId(frame_id);
+    }
+}
+
+static bool PendingTx_IsEchoMatch(const PendingTxEntry_t *entry, const Mesg_TypeDef *echo)
+{
+    if ((entry == NULL) || !entry->used || (echo == NULL))
+    {
+        return false;
+    }
+
+    return (entry->frame.ID == echo->ID) &&
+           (entry->frame.Code1 == echo->Code1) &&
+           (entry->frame.Code2 == echo->Code2) &&
+           (entry->frame.Data1 == echo->Data1) &&
+           (entry->frame.Data2 == echo->Data2) &&
+           (entry->frame.Data3 == echo->Data3) &&
+           (entry->frame.Data4 == echo->Data4) &&
+           (entry->frame.ACKbyte == echo->ACKbyte) &&
+           (entry->frame.ExpandCode == echo->ExpandCode);
+}
+
+static void USART_ConfirmBoardEvent(Mesg_TypeDef *mesg)
+{
+    uint16_t i;
+
+    /* 原样 ACK 只确认线路；现金和关键操作事件需业务层显式持久化确认。 */
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    {
+        if (PendingTx_IsEchoMatch(&PendingTxTable[i], mesg))
+        {
+            if (PendingTxTable[i].durable)
+            {
+                PendingTxTable[i].lineAcked = true;
+            }
+            else
+            {
+                PendingTx_RemoveEntry(&PendingTxTable[i], true);
+            }
+            return;
+        }
+    }
 }
 
 static void USART_RemoveCashResend(uint16_t sequence)
 {
-    ListNode_t *current = ResendList.Head;
-    while (current != NULL)
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
     {
-        ListNode_t *next = current->Next;
-        Mesg_TypeDef *original = &MesgTable[current->ID];
-        if ((original->Code2 == CashAccepted) &&
-            (USART_GetCashSequence(original) == sequence))
+        if (PendingTxTable[i].used &&
+            (PendingTxTable[i].kind == PENDING_TX_KIND_CASH_EVENT) &&
+            (PendingTxTable[i].frame.Code2 == CashAccepted) &&
+            (USART_GetCashSequence(&PendingTxTable[i].frame) == sequence))
         {
-            List_DeleteNode(&ResendList, current->ID);
+            PendingTx_RemoveEntry(&PendingTxTable[i], true);
         }
-        current = next;
     }
 }
 
 static void USART_RemoveBoardEventResend(uint8_t event_code, uint8_t token)
 {
-    ListNode_t *current = ResendList.Head;
-    while (current != NULL)
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
     {
-        ListNode_t *next = current->Next;
-        Mesg_TypeDef *original = &MesgTable[current->ID];
-        if ((original->Code2 == event_code) &&
-            (original->Data1 == token) &&
+        if (PendingTxTable[i].used &&
+            (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
+            (PendingTxTable[i].frame.Code2 == event_code) &&
+            (PendingTxTable[i].frame.Data1 == token) &&
             USART_IsDurableBoardEvent(event_code))
         {
-            List_DeleteNode(&ResendList, current->ID);
+            PendingTx_RemoveEntry(&PendingTxTable[i], true);
         }
-        current = next;
     }
 }
 
@@ -237,22 +439,76 @@ static void USART1_Deal(void *rx_mesg)
     }
 }
 
-static uint8_t USART_SendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
+static void USART_FillFrameBytes(Mesg_TypeDef *mesg, uint8_t data[14])
 {
-    static uint8_t id = 0U;
-    uint8_t data[14];
     uint16_t crc;
 
-    id++;
-    mesg->ResendID = 0U;
-    mesg->ID = id;
-    MesgTable[id] = *mesg;
-    memcpy(data, mesg, sizeof(data));
+    data[0] = Mesg_Head;
+    data[1] = mesg->ResendID;
+    data[2] = mesg->ID;
+    data[3] = mesg->Code1;
+    data[4] = mesg->Code2;
+    data[5] = mesg->Data1;
+    data[6] = mesg->Data2;
+    data[7] = mesg->Data3;
+    data[8] = mesg->Data4;
+    data[9] = mesg->ACKbyte;
+    data[10] = mesg->ExpandCode;
     crc = CRC16_calculate(data, 11U);
     data[11] = (uint8_t)(crc >> 8U);
     data[12] = (uint8_t)crc;
+    data[13] = Mesg_Tail;
+    mesg->Head = Mesg_Head;
+    mesg->CRC16_H = data[11];
+    mesg->CRC16_L = data[12];
+    mesg->Tail = Mesg_Tail;
+}
+
+static void USART_TransmitMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
+{
+    uint8_t data[14];
+
+    USART_FillFrameBytes(mesg, data);
     tx->Transimit(tx, data, sizeof(data));
-    return id;
+}
+
+static uint8_t USART_SendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
+{
+    uint8_t frame_id;
+    PendingTxEntry_t *entry = NULL;
+
+    if (mesg->ACKbyte == 0x01U)
+    {
+        entry = PendingTx_FindFreeEntry();
+        if (entry == NULL)
+        {
+            return 0U;
+        }
+    }
+
+    frame_id = PendingTx_AllocateFrameId(mesg->ACKbyte == 0x01U);
+    if (frame_id == 0U)
+    {
+        return 0U;
+    }
+
+    mesg->ResendID = 0U;
+    mesg->ID = frame_id;
+    USART_TransmitMesg(tx, mesg);
+
+    if (entry != NULL)
+    {
+        entry->used = true;
+        entry->durable = PendingTx_IsDurableCode(mesg->Code2);
+        entry->lineAcked = false;
+        entry->frameId = frame_id;
+        entry->frame = *mesg;
+        entry->lastSendTick = HAL_GetTick();
+        entry->resendCount = 0U;
+        entry->kind = PendingTx_GetKind(mesg->Code2);
+    }
+
+    return frame_id;
 }
 
 uint8_t Comm_SendMesg_FillData(Tx_HandleTypeDef *tx,
@@ -279,10 +535,8 @@ uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *tx,
                                           uint8_t code_1,
                                           uint8_t code_2,
                                           uint32_t data,
-                                          uint8_t expandCode,
-                                          ListHandle_t *list)
+                                          uint8_t expandCode)
 {
-    uint8_t id;
     Mesg_TypeDef mesg = {0};
     mesg.Head = Mesg_Head;
     mesg.Code1 = code_1;
@@ -294,44 +548,28 @@ uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *tx,
     mesg.ACKbyte = 0x01U;
     mesg.ExpandCode = expandCode;
     mesg.Tail = Mesg_Tail;
-    id = USART_SendMesg(tx, &mesg);
-    List_AddNode(list, id, HAL_GetTick());
-    return id;
+    return USART_SendMesg(tx, &mesg);
 }
 
-static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
+static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, PendingTxEntry_t *entry)
 {
-    uint8_t data[14];
-    uint16_t crc;
-    bool durable = (mesg->Code2 == CashAccepted) ||
-                   USART_IsDurableBoardEvent(mesg->Code2);
-
-    mesg->ResendID++;
-    if ((mesg->ResendID > Max_Resend_Times) && !durable)
+    if ((entry == NULL) || !entry->used)
     {
         return 1U;
     }
-    if (durable && mesg->ResendID > Max_Resend_Times)
+
+    entry->resendCount++;
+    if ((entry->resendCount > Max_Resend_Times) && !entry->durable)
     {
-        mesg->ResendID = 1U;
+        return 1U;
+    }
+    if (entry->durable && (entry->resendCount > Max_Resend_Times))
+    {
+        entry->resendCount = 1U;
     }
 
-    data[0] = Mesg_Head;
-    data[1] = mesg->ResendID;
-    data[2] = mesg->ID;
-    data[3] = mesg->Code1;
-    data[4] = mesg->Code2;
-    data[5] = mesg->Data1;
-    data[6] = mesg->Data2;
-    data[7] = mesg->Data3;
-    data[8] = mesg->Data4;
-    data[9] = mesg->ACKbyte;
-    data[10] = mesg->ExpandCode;
-    crc = CRC16_calculate(data, 11U);
-    data[11] = (uint8_t)(crc >> 8U);
-    data[12] = (uint8_t)crc;
-    data[13] = Mesg_Tail;
-    tx->Transimit(tx, data, sizeof(data));
+    entry->frame.ResendID = entry->resendCount;
+    USART_TransmitMesg(tx, &entry->frame);
     return 0U;
 }
 
@@ -360,24 +598,22 @@ static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
 
 void Resend_Task(void)
 {
-    ListNode_t *current = ResendList.Head;
+    uint16_t i;
     uint32_t current_time = HAL_GetTick();
-    while (current != NULL)
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
     {
-        ListNode_t *next = current->Next;
-        if (current_time - current->Value > ResendTrigger_Time)
+        if (PendingTxTable[i].used &&
+            ((current_time - PendingTxTable[i].lastSendTick) > ResendTrigger_Time))
         {
-            bool durable = (MesgTable[current->ID].Code2 == CashAccepted) ||
-                           USART_IsDurableBoardEvent(MesgTable[current->ID].Code2);
-            USART_ReSendMesg(&Tx1, &(MesgTable[current->ID]));
-            current->Value = current_time;
-            if (!durable &&
-                (MesgTable[current->ID].ResendID >= Max_Resend_Times))
+            if (USART_ReSendMesg(&Tx1, &PendingTxTable[i]) != 0U)
             {
-                List_DeleteNode(&ResendList, current->ID);
+                PendingTx_RemoveEntry(&PendingTxTable[i], true);
+            }
+            else
+            {
+                PendingTxTable[i].lastSendTick = current_time;
             }
         }
-        current = next;
     }
 }
 
@@ -401,8 +637,10 @@ void Communicate_Init(void)
     Rx_InitTypeDef rx_init;
     Tx_InitTypeDef tx_init;
 
-    List_Create(&ResendList, ResendList_buffer, 100U);
     List_Create(&DealList, DealList_buffer, 100U);
+    memset(PendingTxTable, 0, sizeof(PendingTxTable));
+    memset(RetiredFrameIds, 0, sizeof(RetiredFrameIds));
+    NextFrameId = 0U;
     rx_init.huart = &huart1;
     rx_init.RingBuf = rx1_buffer;
     rx_init.RingBuf_Size = sizeof(rx1_buffer);
