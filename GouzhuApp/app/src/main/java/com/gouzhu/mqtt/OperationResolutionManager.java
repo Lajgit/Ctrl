@@ -102,7 +102,8 @@ final class OperationResolutionManager {
                 setLocalResetRequired(false);
                 executor.execute(() -> {
                     sleepQuietly(100L);
-                    restoreCashAcceptanceIfSafe();
+                    // 主运行时会在BEAD_REFILLED后恢复现金配置；这里只刷新平台状态，
+                    // 避免同一时刻重复发送两次现金配置命令。
                     MqttManager.get(context).reportStatus();
                 });
             }
@@ -819,7 +820,7 @@ final class OperationResolutionManager {
     ) {
         try (Cursor cursor = db.query(
                 "commands",
-                new String[]{"envelope"},
+                new String[]{"envelope", "state"},
                 null,
                 null,
                 null,
@@ -828,14 +829,23 @@ final class OperationResolutionManager {
         )) {
             while (cursor.moveToNext()) {
                 JSONObject envelope = parseObject(cursor.getString(0));
+                String state = cursor.getString(1);
                 if (envelope == null
                         || !DISPENSE_COMMAND_TYPE.equals(
                         envelope.optString("commandType", ""))) {
                     continue;
                 }
                 JSONObject data = envelope.optJSONObject("data");
-                if (data != null && operationNo.equals(
+                if (data == null || !operationNo.equals(
                         data.optString("operationNo", "").trim())) {
+                    continue;
+                }
+                boolean terminalEvidence = data.optBoolean("deviceTerminal", false)
+                        || "terminal".equals(state)
+                        || "finishing".equals(state)
+                        || "blocked".equals(state)
+                        || "resolved".equals(state);
+                if (terminalEvidence) {
                     return true;
                 }
             }
