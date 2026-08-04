@@ -55,4 +55,7 @@ public final class AppConfig {
     /** 会员存珠界面事件广播。 */
     public static final String ACTION_COLLECTION_EVENT =
             "com.gouzhu.action.COLLECTION_EVENT";
+
+    public static final String ACTION_DISPENSE_ORDER_EVENT =
+            "com.gouzhu.action.DISPENSE_ORDER_EVENT";
 }

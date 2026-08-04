@@ -30,6 +30,8 @@ public final class SerialManager {
     private static volatile SerialManager instance;
 
     private static final int NORMAL_FRAME_LENGTH = 14;
+    private static final int CMD_CASH_APPLY_V21 = 0x18;
+    private static final int CMD_CASH_APPLY_V22 = 0x33;
 
     private static final int BOOT_SOF_1 = 0xAA;
     private static final int BOOT_SOF_2 = 0x5A;
@@ -150,8 +152,33 @@ public final class SerialManager {
             return false;
         }
 
-        byte[] frame = buildNormalFrame(code2, data, requireEcho);
+        byte[] frame = buildNormalFrame(normalizeCommandCode(code2), data, requireEcho);
         return writeRaw(frame);
+    }
+
+    public boolean sendCommandAndWaitEcho(
+            int code2,
+            long data,
+            long timeoutMs
+    ) throws InterruptedException {
+        if (!isOpen() || bootMode) {
+            return false;
+        }
+        byte[] frame = buildNormalFrame(normalizeCommandCode(code2), data, true);
+        CountDownLatch latch = new CountDownLatch(1);
+        pendingEcho = frame;
+        pendingEchoLatch = latch;
+
+        if (!writeRaw(frame)) {
+            pendingEcho = null;
+            pendingEchoLatch = null;
+            return false;
+        }
+
+        boolean confirmed = latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        pendingEcho = null;
+        pendingEchoLatch = null;
+        return confirmed;
     }
 
     /**
@@ -299,28 +326,6 @@ public final class SerialManager {
         }
     }
 
-    private boolean sendCommandAndWaitEcho(
-            int code2,
-            long data,
-            long timeoutMs
-    ) throws InterruptedException {
-        byte[] frame = buildNormalFrame(code2, data, true);
-        CountDownLatch latch = new CountDownLatch(1);
-        pendingEcho = frame;
-        pendingEchoLatch = latch;
-
-        if (!writeRaw(frame)) {
-            pendingEcho = null;
-            pendingEchoLatch = null;
-            return false;
-        }
-
-        boolean confirmed = latch.await(timeoutMs, TimeUnit.MILLISECONDS);
-        pendingEcho = null;
-        pendingEchoLatch = null;
-        return confirmed;
-    }
-
     private byte[] buildNormalFrame(int code2, long data, boolean requireEcho) {
         byte[] frame = new byte[NORMAL_FRAME_LENGTH];
         frame[0] = (byte) 0xAA;
@@ -433,11 +438,16 @@ public final class SerialManager {
 
         Intent intent = new Intent(AppConfig.ACTION_BOARD_EVENT);
         intent.setPackage(context.getPackageName());
+        intent.putExtra("frameId", frame[2] & 0xFF);
         intent.putExtra("code2", frame[4] & 0xFF);
         intent.putExtra("data", data);
         intent.putExtra("expandCode", frame[10] & 0xFF);
         intent.putExtra("raw", frame);
         context.sendBroadcast(intent);
+    }
+
+    private static int normalizeCommandCode(int code2) {
+        return code2 == CMD_CASH_APPLY_V21 ? CMD_CASH_APPLY_V22 : code2;
     }
 
     private BootReply sendBootRequest(

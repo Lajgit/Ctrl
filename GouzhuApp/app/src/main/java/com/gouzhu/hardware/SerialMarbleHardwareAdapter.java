@@ -18,32 +18,22 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 新版 SDK MarbleHardwareAdapter 的 ttyS5 实现。
- *
- * <p>同步接口在专用硬件线程执行，内部等待控制板真实光眼终态。Android 主线程
- * 只接收广播并唤醒等待线程。实际数量只取控制板 PD3/PD4 累计结果。</p>
+ * ttyS5 hardware adapter for the single active dispense order protocol.
  */
 public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter {
 
-    private static final String TAG = "GouzhuHardwareV2";
+    private static final String TAG = "GouzhuHardwareV22";
 
-    private static final int CMD_DISPENSE_START = 0x01;
-    private static final int CMD_COLLECT_START = 0x02;
-    private static final int CMD_COLLECT_STOP = 0x03;
-    private static final int CMD_BOARD_EVENT_STORED = 0x1B;
+    private static final int CMD_DISPENSE_START_ORDER = 0x30;
+    private static final int CMD_DISPENSE_TERMINAL_ACK = 0x31;
     private static final int CMD_EMERGENCY_STOP = 0xFF;
 
-    private static final int EVT_DISPENSE_STARTED = 0x01;
-    private static final int EVT_DISPENSE_PROGRESS = 0x02;
-    private static final int EVT_DISPENSE_COMPLETED = 0x03;
-    private static final int EVT_DISPENSE_FAILED = 0x04;
-    private static final int EVT_COLLECT_STARTED = 0x05;
-    private static final int EVT_COLLECT_PROGRESS = 0x06;
-    private static final int EVT_COLLECT_COMPLETED = 0x07;
-    private static final int EVT_COLLECT_FAILED = 0x08;
+    private static final int EVT_DISPENSE_PROGRESS = 0x40;
+    private static final int EVT_DISPENSE_TERMINAL = 0x41;
 
+    private static final long START_ECHO_TIMEOUT_MS = 2500L;
+    private static final long TERMINAL_ACK_ECHO_TIMEOUT_MS = 2500L;
     private static final long DISPENSE_MAX_WAIT_MS = 5L * 60L * 1000L;
-    private static final long COLLECT_EXTRA_WAIT_MS = 15_000L;
 
     private final Context context;
     private final Object operationLock = new Object();
@@ -59,6 +49,7 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
                 return;
             }
             onBoardEvent(
+                    intent.getIntExtra("frameId", -1),
                     intent.getIntExtra("code2", -1),
                     intent.getLongExtra("data", 0L),
                     intent.getIntExtra("expandCode", 0)
@@ -103,179 +94,143 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
 
     @Override
     public HardwareExecutionResult dispense(DispenseRequest request) {
+        return HardwareExecutionResult.failed(
+                0,
+                "ORDER_SEQUENCE_REQUIRED",
+                "single-order protocol requires an allocated orderSequence"
+        );
+    }
+
+    public HardwareExecutionResult dispenseOrder(
+            DispenseRequest request,
+            int orderSequence
+    ) {
         if (request == null) {
-            return HardwareExecutionResult.failed(0, "PARAM_INVALID", "出珠请求为空");
+            return HardwareExecutionResult.failed(0, "PARAM_INVALID", "dispense request is null");
         }
         int quantity = request.getQuantity();
-        if (quantity <= 0 || quantity > 0xFFFF) {
-            return HardwareExecutionResult.failed(
-                    0,
-                    "PARAM_INVALID",
-                    "出珠数量必须为1..65535"
-            );
+        if (orderSequence <= 0 || orderSequence > 0xFFFF) {
+            return HardwareExecutionResult.failed(0, "PARAM_INVALID", "orderSequence must be 1..65535");
         }
-        return execute(
-                request.getMessageId(),
-                quantity,
-                CMD_DISPENSE_START,
-                EVT_DISPENSE_STARTED,
-                EVT_DISPENSE_PROGRESS,
-                EVT_DISPENSE_COMPLETED,
-                EVT_DISPENSE_FAILED,
-                DISPENSE_MAX_WAIT_MS
-        );
+        if (quantity <= 0 || quantity > 0xFFFF) {
+            return HardwareExecutionResult.failed(0, "PARAM_INVALID", "quantity must be 1..65535");
+        }
+        return execute(safe(request.getMessageId()), orderSequence, quantity);
     }
 
     @Override
     public HardwareExecutionResult collect(CollectRequest request) {
-        if (request == null) {
-            return HardwareExecutionResult.failed(0, "PARAM_INVALID", "存珠请求为空");
-        }
-        int maximum = request.getMaximumQuantity();
-        if (maximum <= 0 || maximum > 0xFFFF) {
-            return HardwareExecutionResult.failed(
-                    0,
-                    "PARAM_INVALID",
-                    "存珠数量上限必须为1..65535"
-            );
-        }
-        int timeoutSeconds = Math.max(1, request.getSessionTimeoutSeconds());
-        return execute(
-                request.getMessageId(),
-                maximum,
-                CMD_COLLECT_START,
-                EVT_COLLECT_STARTED,
-                EVT_COLLECT_PROGRESS,
-                EVT_COLLECT_COMPLETED,
-                EVT_COLLECT_FAILED,
-                timeoutSeconds * 1000L + COLLECT_EXTRA_WAIT_MS
+        return HardwareExecutionResult.failed(
+                0,
+                "COLLECT_MAINTENANCE_ONLY",
+                "collect is a local maintenance function in the single-order protocol"
         );
     }
 
     public boolean stopCollect(String messageId) {
-        PendingOperation active = pending;
-        if (active == null || !active.collect || !active.messageId.equals(messageId)) {
-            return false;
-        }
-        long packed = (long) active.token << 24;
-        return SerialManager.get(context).sendCommand(CMD_COLLECT_STOP, packed, true);
+        return false;
     }
 
     public void emergencyStop() {
         SerialManager.get(context).sendCommand(CMD_EMERGENCY_STOP, 0L, true);
     }
 
-    /** Android 已持久化控制板关键事件后，显式停止该事件重发。 */
-    public boolean confirmBoardEventStored(int eventCode, int token) {
-        long packed = ((long) (eventCode & 0xFF) << 24)
-                | ((long) (token & 0xFF) << 16);
-        return SerialManager.get(context).sendCommand(
-                CMD_BOARD_EVENT_STORED,
-                packed,
-                true
-        );
-    }
-
-    public static int tokenForMessageId(String messageId) {
-        int hash = messageId == null ? 1 : messageId.hashCode();
-        return Math.floorMod(hash, 255) + 1;
-    }
-
     private HardwareExecutionResult execute(
             String messageId,
-            int quantity,
-            int startCommand,
-            int startedEvent,
-            int progressEvent,
-            int completedEvent,
-            int failedEvent,
-            long timeoutMs
+            int orderSequence,
+            int quantity
     ) {
         synchronized (operationLock) {
             if (pending != null) {
                 return HardwareExecutionResult.failed(
                         0,
                         "DEVICE_BUSY",
-                        "存在其他未完成物理操作"
+                        "another physical order is active"
                 );
             }
 
             PendingOperation operation = new PendingOperation();
-            operation.messageId = safe(messageId);
-            operation.token = tokenForMessageId(messageId);
+            operation.messageId = messageId;
+            operation.orderSequence = orderSequence;
             operation.requested = quantity;
-            operation.startCommand = startCommand;
-            operation.startedEvent = startedEvent;
-            operation.progressEvent = progressEvent;
-            operation.completedEvent = completedEvent;
-            operation.failedEvent = failedEvent;
-            operation.collect = startCommand == CMD_COLLECT_START;
             pending = operation;
 
             try {
-                long packed = ((long) operation.token << 24)
-                        | (quantity & 0x00FFFFFFL);
-                if (!SerialManager.get(context).sendCommand(startCommand, packed, true)) {
-                    return HardwareExecutionResult.failed(
-                            0,
-                            "CONTROLLER_OFFLINE",
-                            "控制板启动命令发送失败"
-                    );
+                long startData = packOrderData(orderSequence, quantity);
+                boolean startEchoed = SerialManager.get(context).sendCommandAndWaitEcho(
+                        CMD_DISPENSE_START_ORDER,
+                        startData,
+                        START_ECHO_TIMEOUT_MS
+                );
+                if (!startEchoed) {
+                    Log.w(TAG, "DispenseStartOrder echo timeout, waiting for terminal: seq="
+                            + orderSequence);
                 }
 
-                if (!operation.latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                if (!operation.latch.await(DISPENSE_MAX_WAIT_MS, TimeUnit.MILLISECONDS)) {
                     return HardwareExecutionResult.failed(
-                            operation.actual,
+                            operation.lastProgressActual,
                             "CONTROLLER_RESULT_TIMEOUT",
-                            "控制板未在限定时间返回可靠终态"
+                            "controller did not return DispenseTerminal"
                     );
                 }
                 if (operation.cancelled) {
                     return HardwareExecutionResult.failed(
-                            operation.actual,
+                            operation.lastProgressActual,
                             "ADAPTER_STOPPED",
-                            "硬件适配器已停止"
+                            "hardware adapter stopped"
                     );
                 }
-                if (operation.validationResultCode != null) {
+                ControllerTerminalEvidence evidence = operation.terminalEvidence;
+                if (evidence == null) {
                     return HardwareExecutionResult.failed(
-                            operation.actual,
-                            operation.validationResultCode,
-                            operation.validationResultMessage
+                            operation.lastProgressActual,
+                            "CONTROLLER_TERMINAL_MISSING",
+                            "terminal evidence is missing"
                     );
                 }
-                if (operation.terminalEvent == completedEvent
-                        && operation.resultCode == 0) {
-                    if (!operation.started) {
-                        return HardwareExecutionResult.failed(
-                                operation.actual,
-                                "CONTROLLER_START_MISSING",
-                                "未收到本次操作的启动事件，不接受完成终态"
-                        );
-                    }
-                    if (!operation.collect
-                            && (!operation.progressSeen
-                            || operation.actual <= 0
-                            || operation.actual != operation.requested)) {
-                        return HardwareExecutionResult.failed(
-                                operation.actual,
-                                "ACTUAL_QUANTITY_MISMATCH",
-                                "出珠完成终态与真实光眼计数不一致"
-                        );
-                    }
-                    return HardwareExecutionResult.success(operation.actual);
+
+                long ackData = packTerminalAckData(orderSequence, evidence.frameId);
+                boolean ackEchoed = SerialManager.get(context).sendCommandAndWaitEcho(
+                        CMD_DISPENSE_TERMINAL_ACK,
+                        ackData,
+                        TERMINAL_ACK_ECHO_TIMEOUT_MS
+                );
+                Observer currentObserver = observer;
+                if (currentObserver != null) {
+                    currentObserver.onTerminalAckEcho(messageId, evidence, ackEchoed);
+                }
+                if (!ackEchoed) {
+                    return HardwareExecutionResult.failed(
+                            finalActual(operation),
+                            "CONTROLLER_TERMINAL_ACK_TIMEOUT",
+                            "DispenseTerminalAck echo timeout"
+                    );
+                }
+
+                if (evidence.controllerResultCode == 0
+                        && evidence.terminalActual > 0
+                        && evidence.terminalActual == quantity) {
+                    return HardwareExecutionResult.success(evidence.terminalActual);
+                }
+                if (evidence.terminalActual < evidence.lastProgressActual) {
+                    return HardwareExecutionResult.failed(
+                            evidence.lastProgressActual,
+                            "CONTROLLER_ACTUAL_REGRESSION",
+                            "terminal actual is lower than last progress actual"
+                    );
                 }
                 return HardwareExecutionResult.failed(
-                        operation.actual,
-                        boardResultName(operation.resultCode),
-                        "控制板返回失败或部分完成终态"
+                        finalActual(operation),
+                        boardResultName(evidence.controllerResultCode),
+                        "controller terminal is failed, zero, or partial"
                 );
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
                 return HardwareExecutionResult.failed(
-                        operation.actual,
+                        operation.lastProgressActual,
                         "INTERRUPTED",
-                        "等待硬件终态被中断"
+                        "interrupted while waiting for controller terminal"
                 );
             } finally {
                 pending = null;
@@ -283,119 +238,77 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
         }
     }
 
-    private void onBoardEvent(int code2, long packed, int expandCode) {
+    private void onBoardEvent(int frameId, int code2, long packed, int expandCode) {
         PendingOperation operation = pending;
         if (operation == null) {
             return;
         }
-        int token = (int) ((packed >>> 24) & 0xFF);
-        int value = (int) (packed & 0x00FFFFFFL);
-        int resultCode = expandCode & 0xFF;
-        if (token != operation.token) {
+
+        int orderSequence = (int) ((packed >>> 16) & 0xFFFF);
+        int value = (int) (packed & 0xFFFF);
+        if (orderSequence != operation.orderSequence) {
             return;
         }
 
-        Log.i(
-                TAG,
-                "收到控制板操作事件：code2=0x" + Integer.toHexString(code2)
-                        + "，token=" + token
-                        + "，value=" + value
-                        + "，resultCode=0x" + Integer.toHexString(resultCode)
-                        + "，messageId=" + operation.messageId
-                        + "，requested=" + operation.requested
-                        + "，started=" + operation.started
-                        + "，progressSeen=" + operation.progressSeen
-                        + "，actual=" + operation.actual
+        if (code2 == EVT_DISPENSE_PROGRESS) {
+            if (value < operation.lastProgressActual || value > operation.requested) {
+                Log.w(TAG, "Ignoring invalid progress: seq=" + orderSequence
+                        + ", actual=" + value
+                        + ", last=" + operation.lastProgressActual
+                        + ", requested=" + operation.requested);
+                return;
+            }
+            operation.lastProgressActual = value;
+            Observer currentObserver = observer;
+            if (currentObserver != null) {
+                currentObserver.onProgress(operation.messageId, orderSequence, value);
+            }
+            return;
+        }
+
+        if (code2 != EVT_DISPENSE_TERMINAL || frameId < 0 || frameId > 0xFF) {
+            return;
+        }
+
+        ControllerTerminalEvidence evidence = new ControllerTerminalEvidence(
+                frameId,
+                orderSequence,
+                value,
+                expandCode & 0xFF,
+                operation.lastProgressActual,
+                System.currentTimeMillis()
         );
 
         Observer currentObserver = observer;
-        if (code2 == operation.startedEvent) {
-            if (value != operation.requested) {
-                Log.w(
-                        TAG,
-                        "忽略疑似旧启动事件：token=" + token
-                                + "，reportedRequested=" + value
-                                + "，expectedRequested=" + operation.requested
-                );
-                return;
-            }
-            if (operation.started) {
-                return;
-            }
-            operation.started = true;
-            boolean persisted = currentObserver != null
-                    && currentObserver.onStarted(
-                            operation.messageId,
-                            code2,
-                            token,
-                            operation.requested
-                    );
-            if (persisted) {
-                confirmBoardEventStored(code2, token);
-            }
+        boolean persisted = currentObserver != null
+                && currentObserver.onTerminalEvidence(operation.messageId, evidence);
+        if (!persisted) {
             return;
         }
-        if (code2 == operation.progressEvent) {
-            if (!operation.started) {
-                Log.w(TAG, "忽略启动事件之前的进度事件：token=" + token);
-                return;
-            }
-            if (value < operation.actual
-                    || (!operation.collect && value > operation.requested)) {
-                Log.w(
-                        TAG,
-                        "忽略无效进度事件：token=" + token
-                                + "，value=" + value
-                                + "，actual=" + operation.actual
-                                + "，requested=" + operation.requested
-                );
-                return;
-            }
-            operation.actual = value;
-            operation.progressSeen = true;
-            if (currentObserver != null) {
-                currentObserver.onProgress(
-                        operation.messageId,
-                        code2,
-                        token,
-                        operation.actual
-                );
-            }
-            return;
-        }
-        if (code2 == operation.completedEvent || code2 == operation.failedEvent) {
-            if (code2 == operation.completedEvent) {
-                if (!operation.started) {
-                    Log.w(TAG, "忽略启动事件之前的完成终态：token=" + token);
-                    return;
-                }
-                if (!operation.collect
-                        && (!operation.progressSeen
-                        || value <= 0
-                        || value != operation.requested)) {
-                    Log.w(
-                            TAG,
-                            "忽略不可信的出珠完成终态：token=" + token
-                                    + "，value=" + value
-                                    + "，requested=" + operation.requested
-                                    + "，progressSeen=" + operation.progressSeen
-                    );
-                    return;
-                }
-            }
 
-            operation.actual = value;
-            operation.terminalEvent = code2;
-            operation.resultCode = resultCode;
-            if (code2 == operation.completedEvent && resultCode != 0) {
-                operation.validationResultCode = "CONTROLLER_COMPLETED_WITH_ERROR";
-                operation.validationResultMessage = "控制板完成事件携带非零结果码";
-            }
-            operation.latch.countDown();
-        }
+        operation.terminalEvidence = evidence;
+        operation.latch.countDown();
     }
 
-    private static String boardResultName(int code) {
+    private static long packOrderData(int orderSequence, int value) {
+        return ((long) (orderSequence & 0xFFFF) << 16)
+                | (long) (value & 0xFFFF);
+    }
+
+    private static long packTerminalAckData(int orderSequence, int frameId) {
+        return ((long) (orderSequence & 0xFFFF) << 16)
+                | ((long) (frameId & 0xFF) << 8);
+    }
+
+    private static int finalActual(PendingOperation operation) {
+        ControllerTerminalEvidence evidence = operation.terminalEvidence;
+        if (evidence == null) {
+            return Math.max(0, operation.lastProgressActual);
+        }
+        return Math.max(evidence.lastProgressActual, evidence.terminalActual);
+    }
+
+    public static String boardResultName(int code) {
         switch (code) {
             case 0:
                 return "OK";
@@ -411,6 +324,10 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
                 return "ABORTED";
             case 6:
                 return "NOT_ACTIVE";
+            case 7:
+                return "CONTROLLER_BLOCKED";
+            case 8:
+                return "ORDER_SEQUENCE_MISMATCH";
             default:
                 return "CONTROLLER_ERROR_" + code;
         }
@@ -423,27 +340,50 @@ public final class SerialMarbleHardwareAdapter implements MarbleHardwareAdapter 
     private static final class PendingOperation {
         final CountDownLatch latch = new CountDownLatch(1);
         String messageId;
-        int token;
+        int orderSequence;
         int requested;
-        int actual;
-        int startCommand;
-        int startedEvent;
-        int progressEvent;
-        int completedEvent;
-        int failedEvent;
-        int terminalEvent;
-        int resultCode;
-        String validationResultCode;
-        String validationResultMessage;
-        boolean collect;
-        boolean started;
-        boolean progressSeen;
+        int lastProgressActual;
+        volatile ControllerTerminalEvidence terminalEvidence;
         volatile boolean cancelled;
     }
 
-    public interface Observer {
-        boolean onStarted(String messageId, int eventCode, int token, int requested);
+    public static final class ControllerTerminalEvidence {
+        public final int frameId;
+        public final int orderSequence;
+        public final int terminalActual;
+        public final int controllerResultCode;
+        public final int lastProgressActual;
+        public final long receivedAt;
 
-        void onProgress(String messageId, int eventCode, int token, int actual);
+        public ControllerTerminalEvidence(
+                int frameId,
+                int orderSequence,
+                int terminalActual,
+                int controllerResultCode,
+                int lastProgressActual,
+                long receivedAt
+        ) {
+            this.frameId = frameId;
+            this.orderSequence = orderSequence;
+            this.terminalActual = terminalActual;
+            this.controllerResultCode = controllerResultCode;
+            this.lastProgressActual = lastProgressActual;
+            this.receivedAt = receivedAt;
+        }
+    }
+
+    public interface Observer {
+        void onProgress(String messageId, int orderSequence, int actual);
+
+        boolean onTerminalEvidence(
+                String messageId,
+                ControllerTerminalEvidence evidence
+        );
+
+        void onTerminalAckEcho(
+                String messageId,
+                ControllerTerminalEvidence evidence,
+                boolean echoed
+        );
     }
 }

@@ -6,6 +6,8 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 
+import com.gouzhu.hardware.SerialMarbleHardwareAdapter;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -22,11 +24,11 @@ import java.util.List;
 public final class DeviceCommandStore extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "gouzhu_platform_control_v2.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
 
-    private static final String META_ACTIVE_DISPENSE = "active_dispense";
-    private static final String META_ACTIVE_COLLECT = "active_collect";
     private static final String META_BOARD_VERSION = "board_version";
+    private static final String META_NEXT_ORDER_SEQUENCE = "next_order_sequence";
+    private static final String META_PHYSICAL_BLOCKED = "physical_blocked";
     private static final String META_PENDING_CONFIG = "pending_cash_config_message";
     private static final String META_LATEST_CONFIG_VERSION = "latest_cash_config_version";
     private static final String META_PENDING_CONFIG_VERSION = "pending_cash_config_version";
@@ -76,11 +78,14 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
                 + "updated_at INTEGER NOT NULL)");
         db.execSQL("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
         db.execSQL("CREATE INDEX idx_outbox_kind_id ON outbox(kind,id)");
+        createActivePhysicalOrderTable(db);
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        throw new IllegalStateException("V2数据库不支持旧结构兼容升级");
+        if (oldVersion < 2) {
+            createActivePhysicalOrderTable(db);
+        }
     }
 
     public synchronized boolean saveCommand(JSONObject envelope) {
@@ -118,6 +123,402 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
 
     public synchronized boolean hasCommand(String messageId) {
         return loadCommand(messageId) != null;
+    }
+
+    public synchronized CreatePhysicalOrderResult createActivePhysicalOrder(
+            JSONObject envelope,
+            int requestedQuantity
+    ) {
+        CreatePhysicalOrderResult result = new CreatePhysicalOrderResult();
+        if (envelope == null || requestedQuantity <= 0 || requestedQuantity > 0xFFFF) {
+            result.resultCode = "PARAM_INVALID";
+            return result;
+        }
+        String messageId = envelope.optString("messageId", "").trim();
+        JSONObject data = envelope.optJSONObject("data");
+        if (messageId.isEmpty() || data == null) {
+            result.resultCode = "COMMAND_INVALID";
+            return result;
+        }
+
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            if (hasActivePhysicalOrder(db)) {
+                result.resultCode = "PREVIOUS_PHYSICAL_ORDER_ACTIVE";
+                return result;
+            }
+
+            int sequence = parsePositiveInt(getMeta(db, META_NEXT_ORDER_SEQUENCE));
+            if (sequence <= 0 || sequence > 0xFFFF) {
+                sequence = 1;
+            }
+            int nextSequence = sequence >= 0xFFFF ? 1 : sequence + 1;
+            long now = System.currentTimeMillis();
+
+            data.put("orderSequence", sequence);
+            data.put("deviceStartRequested", true);
+            data.put("deviceActualQuantity", 0);
+            data.put("deviceTerminal", false);
+            data.put("deviceStartRequestedAt", now);
+            if (!saveCommandEnvelope(db, envelope, "dispensing")) {
+                result.resultCode = "LOCAL_STORAGE_ERROR";
+                return result;
+            }
+
+            ContentValues values = new ContentValues();
+            values.put("id", 1);
+            values.put("message_id", messageId);
+            values.put("order_sequence", sequence);
+            values.put("requested_quantity", requestedQuantity);
+            values.put("state", "DISPENSING");
+            values.put("last_progress_actual", 0);
+            values.put("terminal_ack_sent", 0);
+            values.put("terminal_ack_echoed", 0);
+            values.put("created_at", now);
+            values.put("updated_at", now);
+            if (db.insert("active_physical_order", null, values) == -1L) {
+                result.resultCode = "LOCAL_STORAGE_ERROR";
+                return result;
+            }
+
+            putMeta(db, META_NEXT_ORDER_SEQUENCE, String.valueOf(nextSequence));
+            db.setTransactionSuccessful();
+            result.success = true;
+            result.messageId = messageId;
+            result.orderSequence = sequence;
+            result.requestedQuantity = requestedQuantity;
+            result.resultCode = "OK";
+            return result;
+        } catch (Throwable error) {
+            result.resultCode = "LOCAL_STORAGE_ERROR";
+            result.resultMessage = messageOf(error);
+            return result;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public synchronized ActivePhysicalOrder loadActivePhysicalOrder() {
+        try (Cursor cursor = getReadableDatabase().query(
+                "active_physical_order",
+                new String[]{
+                        "message_id",
+                        "order_sequence",
+                        "requested_quantity",
+                        "state",
+                        "last_progress_actual",
+                        "terminal_frame_id",
+                        "terminal_actual",
+                        "controller_terminal_actual",
+                        "terminal_result_code",
+                        "terminal_received_at",
+                        "terminal_event_no",
+                        "terminal_payload",
+                        "terminal_result_status",
+                        "terminal_ack_sent",
+                        "terminal_ack_echoed",
+                        "blocked_reason"
+                },
+                "id=1",
+                null,
+                null,
+                null,
+                null)) {
+            if (!cursor.moveToFirst()) {
+                return null;
+            }
+            ActivePhysicalOrder result = new ActivePhysicalOrder();
+            result.messageId = cursor.getString(0);
+            result.orderSequence = cursor.getInt(1);
+            result.requestedQuantity = cursor.getInt(2);
+            result.state = cursor.getString(3);
+            result.lastProgressActual = cursor.getInt(4);
+            result.terminalFrameId = cursor.isNull(5) ? -1 : cursor.getInt(5);
+            result.terminalActual = cursor.isNull(6) ? -1 : cursor.getInt(6);
+            result.controllerTerminalActual = cursor.isNull(7) ? -1 : cursor.getInt(7);
+            result.terminalResultCode = cursor.isNull(8) ? -1 : cursor.getInt(8);
+            result.terminalReceivedAt = cursor.isNull(9) ? 0L : cursor.getLong(9);
+            result.terminalEventNo = cursor.getString(10);
+            result.terminalPayload = cursor.getString(11);
+            result.terminalResultStatus = cursor.getString(12);
+            result.terminalAckSent = cursor.getInt(13) != 0;
+            result.terminalAckEchoed = cursor.getInt(14) != 0;
+            result.blockedReason = cursor.getString(15);
+            return result;
+        }
+    }
+
+    public synchronized boolean hasActivePhysicalOrder() {
+        return hasActivePhysicalOrder(getReadableDatabase());
+    }
+
+    public synchronized boolean updatePhysicalProgress(
+            int orderSequence,
+            int actual
+    ) {
+        if (orderSequence <= 0 || actual < 0 || actual > 0xFFFF) {
+            return false;
+        }
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ActivePhysicalOrder active = loadActivePhysicalOrder(db);
+            if (active == null || active.orderSequence != orderSequence) {
+                return false;
+            }
+            int safeActual = Math.max(active.lastProgressActual, actual);
+            ContentValues values = new ContentValues();
+            values.put("last_progress_actual", safeActual);
+            values.put("updated_at", System.currentTimeMillis());
+            boolean updated = db.update(
+                    "active_physical_order",
+                    values,
+                    "id=1 AND order_sequence=?",
+                    new String[]{String.valueOf(orderSequence)}
+            ) == 1;
+            if (updated) {
+                db.setTransactionSuccessful();
+            }
+            return updated;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public synchronized TerminalStoreResult savePhysicalTerminalAndOutbox(
+            JSONObject envelope,
+            SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence,
+            boolean success,
+            int finalActual,
+            String resultCode,
+            String resultMessage,
+            String eventNo,
+            String resultStatus,
+            String payload
+    ) {
+        TerminalStoreResult result = new TerminalStoreResult();
+        if (envelope == null || evidence == null || blank(eventNo)
+                || blank(resultStatus) || blank(payload)) {
+            result.resultCode = "PARAM_INVALID";
+            return result;
+        }
+        String messageId = envelope.optString("messageId", "").trim();
+        JSONObject data = envelope.optJSONObject("data");
+        if (messageId.isEmpty() || data == null) {
+            result.resultCode = "COMMAND_INVALID";
+            return result;
+        }
+
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ActivePhysicalOrder active = loadActivePhysicalOrder(db);
+            if (active == null
+                    || !messageId.equals(active.messageId)
+                    || active.orderSequence != evidence.orderSequence) {
+                result.resultCode = "PHYSICAL_ORDER_NOT_ACTIVE";
+                return result;
+            }
+
+            if (active.terminalFrameId >= 0) {
+                boolean sameTerminal = active.terminalFrameId == evidence.frameId
+                        && active.controllerTerminalActual == evidence.terminalActual
+                        && active.terminalResultCode == evidence.controllerResultCode;
+                if (sameTerminal) {
+                    String storedPayload = blank(active.terminalPayload)
+                            ? payload
+                            : active.terminalPayload;
+                    String storedEventNo = blank(active.terminalEventNo)
+                            ? eventNo
+                            : active.terminalEventNo;
+                    String storedStatus = blank(active.terminalResultStatus)
+                            ? resultStatus
+                            : active.terminalResultStatus;
+                    if (!saveOutbox(
+                            db,
+                            messageId + "|" + storedEventNo + "|" + storedStatus,
+                            "command_result",
+                            messageId,
+                            storedEventNo,
+                            storedStatus,
+                            storedPayload
+                    )) {
+                        result.resultCode = "LOCAL_STORAGE_ERROR";
+                        return result;
+                    }
+                    db.setTransactionSuccessful();
+                    result.success = true;
+                    result.duplicate = true;
+                    result.eventNo = storedEventNo;
+                    result.resultStatus = storedStatus;
+                    result.payload = storedPayload;
+                    return result;
+                }
+
+                data.put("terminalConflictFrameId", evidence.frameId);
+                data.put("terminalConflictActual", evidence.terminalActual);
+                data.put("terminalConflictResultCode", evidence.controllerResultCode);
+                data.put("terminalConflictReceivedAt", evidence.receivedAt);
+                data.put("blockedReason", "PHYSICAL_TERMINAL_CONFLICT");
+                if (!saveCommandEnvelope(db, envelope, "blocked")) {
+                    result.resultCode = "LOCAL_STORAGE_ERROR";
+                    return result;
+                }
+                ContentValues values = new ContentValues();
+                values.put("state", "BLOCKED");
+                values.put("blocked_reason", "PHYSICAL_TERMINAL_CONFLICT");
+                values.put("updated_at", System.currentTimeMillis());
+                db.update("active_physical_order", values, "id=1", null);
+                putMeta(db, META_PHYSICAL_BLOCKED, "1");
+                db.setTransactionSuccessful();
+                result.success = true;
+                result.conflict = true;
+                result.resultCode = "PHYSICAL_TERMINAL_CONFLICT";
+                return result;
+            }
+
+            long now = System.currentTimeMillis();
+            data.put("deviceActualQuantity", finalActual);
+            data.put("deviceTerminal", true);
+            data.put("deviceTerminalAt", now);
+            data.put("deviceResultCode", safe(resultCode));
+            data.put("deviceResultMessage", safe(resultMessage));
+            data.put("controllerTerminalFrameId", evidence.frameId);
+            data.put("controllerTerminalActual", evidence.terminalActual);
+            data.put("controllerTerminalResultCode", evidence.controllerResultCode);
+            data.put("controllerTerminalReceivedAt", evidence.receivedAt);
+            data.put("lastProgressActual", evidence.lastProgressActual);
+            data.put("terminalEventNo", eventNo);
+
+            if (!saveCommandEnvelope(db, envelope, success ? "terminal" : "blocked")) {
+                result.resultCode = "LOCAL_STORAGE_ERROR";
+                return result;
+            }
+            ContentValues values = new ContentValues();
+            values.put("state", success ? "FINISHING" : "BLOCKED");
+            values.put("last_progress_actual", Math.max(
+                    evidence.lastProgressActual,
+                    Math.max(0, active.lastProgressActual)
+            ));
+            values.put("terminal_frame_id", evidence.frameId);
+            values.put("terminal_actual", finalActual);
+            values.put("controller_terminal_actual", evidence.terminalActual);
+            values.put("terminal_result_code", evidence.controllerResultCode);
+            values.put("terminal_received_at", evidence.receivedAt);
+            values.put("terminal_event_no", eventNo);
+            values.put("terminal_payload", payload);
+            values.put("terminal_result_status", resultStatus);
+            values.put("terminal_ack_sent", 0);
+            values.put("terminal_ack_echoed", 0);
+            values.put("blocked_reason", success ? "" : safe(resultCode));
+            values.put("updated_at", now);
+            if (db.update(
+                    "active_physical_order",
+                    values,
+                    "id=1 AND order_sequence=?",
+                    new String[]{String.valueOf(evidence.orderSequence)}
+            ) != 1) {
+                result.resultCode = "LOCAL_STORAGE_ERROR";
+                return result;
+            }
+            if (!saveOutbox(
+                    db,
+                    messageId + "|" + eventNo + "|" + resultStatus,
+                    "command_result",
+                    messageId,
+                    eventNo,
+                    resultStatus,
+                    payload
+            )) {
+                result.resultCode = "LOCAL_STORAGE_ERROR";
+                return result;
+            }
+            putMeta(db, META_PHYSICAL_BLOCKED, success ? "0" : "1");
+            db.setTransactionSuccessful();
+            result.success = true;
+            result.eventNo = eventNo;
+            result.resultStatus = resultStatus;
+            result.payload = payload;
+            result.resultCode = "OK";
+            return result;
+        } catch (Throwable error) {
+            result.resultCode = "LOCAL_STORAGE_ERROR";
+            result.resultMessage = messageOf(error);
+            return result;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public synchronized boolean markTerminalAckEchoed(
+            int orderSequence,
+            int terminalFrameId,
+            boolean terminalSuccess
+    ) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ActivePhysicalOrder active = loadActivePhysicalOrder(db);
+            if (active == null
+                    || active.orderSequence != orderSequence
+                    || active.terminalFrameId != terminalFrameId) {
+                return false;
+            }
+            if (terminalSuccess) {
+                db.delete("active_physical_order", "id=1", null);
+                putMeta(db, META_PHYSICAL_BLOCKED, "0");
+            } else {
+                ContentValues values = new ContentValues();
+                values.put("state", "BLOCKED");
+                values.put("terminal_ack_sent", 1);
+                values.put("terminal_ack_echoed", 1);
+                values.put("blocked_reason", blank(active.blockedReason)
+                        ? "PHYSICAL_TERMINAL_FAILED"
+                        : active.blockedReason);
+                values.put("updated_at", System.currentTimeMillis());
+                db.update("active_physical_order", values, "id=1", null);
+                putMeta(db, META_PHYSICAL_BLOCKED, "1");
+            }
+            db.setTransactionSuccessful();
+            return true;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public synchronized boolean markTerminalAckSentWithoutEcho(
+            int orderSequence,
+            int terminalFrameId
+    ) {
+        ContentValues values = new ContentValues();
+        values.put("terminal_ack_sent", 1);
+        values.put("updated_at", System.currentTimeMillis());
+        return getWritableDatabase().update(
+                "active_physical_order",
+                values,
+                "id=1 AND order_sequence=? AND terminal_frame_id=?",
+                new String[]{
+                        String.valueOf(orderSequence),
+                        String.valueOf(terminalFrameId)
+                }
+        ) == 1;
+    }
+
+    public synchronized void markActivePhysicalBlocked(String reason) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ContentValues values = new ContentValues();
+            values.put("state", "BLOCKED");
+            values.put("blocked_reason", safe(reason));
+            values.put("updated_at", System.currentTimeMillis());
+            db.update("active_physical_order", values, "id=1", null);
+            putMeta(db, META_PHYSICAL_BLOCKED, "1");
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
     }
 
     public synchronized boolean saveCommandResult(
@@ -618,7 +1019,12 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
 
     public synchronized boolean isCashEnabled() {
         CashConfigurationRecord record = loadCashConfiguration();
-        return record != null && record.enabled && !record.changeEnabled && !isCashBlocked();
+        return record != null
+                && record.enabled
+                && !record.changeEnabled
+                && !isCashBlocked()
+                && !isPhysicalBlocked()
+                && !hasActivePhysicalOrder();
     }
 
     public synchronized void setCashBlocked(boolean blocked) {
@@ -627,6 +1033,12 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
 
     public synchronized boolean isCashBlocked() {
         return "1".equals(getMeta(META_CASH_BLOCKED));
+    }
+
+    public synchronized boolean isPhysicalBlocked() {
+        ActivePhysicalOrder active = loadActivePhysicalOrder();
+        return "1".equals(getMeta(META_PHYSICAL_BLOCKED))
+                || (active != null && "BLOCKED".equals(active.state));
     }
 
     public synchronized void setPendingConfigMessageId(String messageId) {
@@ -641,30 +1053,6 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         clearPendingCashConfiguration((String) null);
     }
 
-    public synchronized void setActiveDispense(String messageId) {
-        putMeta(META_ACTIVE_DISPENSE, safe(messageId));
-    }
-
-    public synchronized String getActiveDispense() {
-        return getMeta(META_ACTIVE_DISPENSE);
-    }
-
-    public synchronized void clearActiveDispense() {
-        deleteMeta(META_ACTIVE_DISPENSE);
-    }
-
-    public synchronized void setActiveCollect(String messageId) {
-        putMeta(META_ACTIVE_COLLECT, safe(messageId));
-    }
-
-    public synchronized String getActiveCollect() {
-        return getMeta(META_ACTIVE_COLLECT);
-    }
-
-    public synchronized void clearActiveCollect() {
-        deleteMeta(META_ACTIVE_COLLECT);
-    }
-
     public synchronized void saveBoardVersion(long value) {
         putMeta(META_BOARD_VERSION, Long.toUnsignedString(value));
     }
@@ -674,6 +1062,92 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             return Long.parseUnsignedLong(getMeta(META_BOARD_VERSION));
         } catch (Throwable error) {
             return 0L;
+        }
+    }
+
+    private static void createActivePhysicalOrderTable(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS active_physical_order ("
+                + "id INTEGER PRIMARY KEY CHECK(id = 1),"
+                + "message_id TEXT NOT NULL UNIQUE,"
+                + "order_sequence INTEGER NOT NULL,"
+                + "requested_quantity INTEGER NOT NULL,"
+                + "state TEXT NOT NULL,"
+                + "last_progress_actual INTEGER NOT NULL DEFAULT 0,"
+                + "terminal_frame_id INTEGER,"
+                + "terminal_actual INTEGER,"
+                + "controller_terminal_actual INTEGER,"
+                + "terminal_result_code INTEGER,"
+                + "terminal_received_at INTEGER,"
+                + "terminal_event_no TEXT,"
+                + "terminal_payload TEXT,"
+                + "terminal_result_status TEXT,"
+                + "terminal_ack_sent INTEGER NOT NULL DEFAULT 0,"
+                + "terminal_ack_echoed INTEGER NOT NULL DEFAULT 0,"
+                + "blocked_reason TEXT,"
+                + "created_at INTEGER NOT NULL,"
+                + "updated_at INTEGER NOT NULL)");
+    }
+
+    private static boolean hasActivePhysicalOrder(SQLiteDatabase db) {
+        try (Cursor cursor = db.query(
+                "active_physical_order",
+                new String[]{"id"},
+                "id=1",
+                null,
+                null,
+                null,
+                null)) {
+            return cursor.moveToFirst();
+        }
+    }
+
+    private static ActivePhysicalOrder loadActivePhysicalOrder(SQLiteDatabase db) {
+        try (Cursor cursor = db.query(
+                "active_physical_order",
+                new String[]{
+                        "message_id",
+                        "order_sequence",
+                        "requested_quantity",
+                        "state",
+                        "last_progress_actual",
+                        "terminal_frame_id",
+                        "terminal_actual",
+                        "controller_terminal_actual",
+                        "terminal_result_code",
+                        "terminal_received_at",
+                        "terminal_event_no",
+                        "terminal_payload",
+                        "terminal_result_status",
+                        "terminal_ack_sent",
+                        "terminal_ack_echoed",
+                        "blocked_reason"
+                },
+                "id=1",
+                null,
+                null,
+                null,
+                null)) {
+            if (!cursor.moveToFirst()) {
+                return null;
+            }
+            ActivePhysicalOrder result = new ActivePhysicalOrder();
+            result.messageId = cursor.getString(0);
+            result.orderSequence = cursor.getInt(1);
+            result.requestedQuantity = cursor.getInt(2);
+            result.state = cursor.getString(3);
+            result.lastProgressActual = cursor.getInt(4);
+            result.terminalFrameId = cursor.isNull(5) ? -1 : cursor.getInt(5);
+            result.terminalActual = cursor.isNull(6) ? -1 : cursor.getInt(6);
+            result.controllerTerminalActual = cursor.isNull(7) ? -1 : cursor.getInt(7);
+            result.terminalResultCode = cursor.isNull(8) ? -1 : cursor.getInt(8);
+            result.terminalReceivedAt = cursor.isNull(9) ? 0L : cursor.getLong(9);
+            result.terminalEventNo = cursor.getString(10);
+            result.terminalPayload = cursor.getString(11);
+            result.terminalResultStatus = cursor.getString(12);
+            result.terminalAckSent = cursor.getInt(13) != 0;
+            result.terminalAckEchoed = cursor.getInt(14) != 0;
+            result.blockedReason = cursor.getString(15);
+            return result;
         }
     }
 
@@ -885,8 +1359,8 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         if (data.optBoolean("deviceTerminal", false)) {
             return "terminal";
         }
-        if (data.optBoolean("deviceStarted", false)) {
-            return "started";
+        if (data.optBoolean("deviceStartRequested", false)) {
+            return "dispensing";
         }
         return "received";
     }
@@ -908,6 +1382,55 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
 
     private static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static String messageOf(Throwable error) {
+        if (error == null) {
+            return "unknown";
+        }
+        String message = error.getMessage();
+        return message == null || message.trim().isEmpty()
+                ? error.getClass().getSimpleName()
+                : message;
+    }
+
+    public static final class CreatePhysicalOrderResult {
+        public boolean success;
+        public String messageId;
+        public int orderSequence;
+        public int requestedQuantity;
+        public String resultCode;
+        public String resultMessage;
+    }
+
+    public static final class ActivePhysicalOrder {
+        public String messageId;
+        public int orderSequence;
+        public int requestedQuantity;
+        public String state;
+        public int lastProgressActual;
+        public int terminalFrameId = -1;
+        public int terminalActual = -1;
+        public int controllerTerminalActual = -1;
+        public int terminalResultCode = -1;
+        public long terminalReceivedAt;
+        public String terminalEventNo;
+        public String terminalPayload;
+        public String terminalResultStatus;
+        public boolean terminalAckSent;
+        public boolean terminalAckEchoed;
+        public String blockedReason;
+    }
+
+    public static final class TerminalStoreResult {
+        public boolean success;
+        public boolean duplicate;
+        public boolean conflict;
+        public String eventNo;
+        public String resultStatus;
+        public String payload;
+        public String resultCode;
+        public String resultMessage;
     }
 
     public static final class OutboxItem {

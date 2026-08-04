@@ -15,7 +15,6 @@ import com.gouzhu.serial.SerialManager;
 import com.gouzhu.util.DeviceUtil;
 import com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult;
 import com.pinball.xiaoda.device.sdk.hardware.CashTier;
-import com.pinball.xiaoda.device.sdk.hardware.CollectRequest;
 import com.pinball.xiaoda.device.sdk.hardware.DispenseRequest;
 import com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult;
 import com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData;
@@ -25,6 +24,7 @@ import com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowledgement;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -39,34 +39,27 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 平台统一现金和物理操作状态机。
- *
- * <p>每一张纸币或每一个投币脉冲都作为独立现金事实上报。设备不在本地按金额
- * 计算珠数，也不等待上一笔现金业务完成后才接收下一笔。平台按设备现金会话累计
- * 金额，并另行下发 dispense_marbles；只有该命令能够启动出珠电机。</p>
+ * Platform command runtime backed by one active physical dispense order.
  */
 final class PlatformCommandRuntime {
 
-    private static final String TAG = "GouzhuPlatformV2";
+    private static final String TAG = "GouzhuPlatformV22";
 
     private static final int CMD_VERSION = 0x00;
     private static final int CMD_CASH_EVENT_STORED = 0x1A;
     private static final int CMD_HARDWARE_STATUS = 0x20;
+    private static final int CMD_DISPENSE_TERMINAL_ACK = 0x31;
 
     private static final int EVT_VERSION = 0x00;
-    private static final int EVT_DISPENSE_STARTED = 0x01;
-    private static final int EVT_DISPENSE_COMPLETED = 0x03;
-    private static final int EVT_DISPENSE_FAILED = 0x04;
-    private static final int EVT_COLLECT_STARTED = 0x05;
-    private static final int EVT_COLLECT_PROGRESS = 0x06;
-    private static final int EVT_COLLECT_COMPLETED = 0x07;
-    private static final int EVT_COLLECT_FAILED = 0x08;
     private static final int EVT_CASH_ACCEPTED = 0x10;
     private static final int EVT_CASH_DEVICE_STATUS = 0x12;
     private static final int EVT_BEAD_STOCK = 0x20;
     private static final int EVT_BEAD_LOW = 0x21;
     private static final int EVT_BEAD_EMPTY = 0x22;
     private static final int EVT_BEAD_REFILLED = 0x23;
+    private static final int EVT_DISPENSE_TERMINAL = 0x41;
+
+    private static final long TERMINAL_ACK_ECHO_TIMEOUT_MS = 2500L;
     private static final int OUTBOX_FLUSH_BATCH_SIZE = 4;
 
     private final Context context;
@@ -76,15 +69,13 @@ final class PlatformCommandRuntime {
     private final SerialCashConfigurationAdapter cashAdapter;
     private final ExecutorService hardwareExecutor =
             Executors.newSingleThreadExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "购珠机-平台硬件V2");
+                Thread thread = new Thread(runnable, "gouzhu-platform-hardware-v22");
                 thread.setDaemon(true);
                 return thread;
             });
 
     private final ConcurrentHashMap<String, SdkCommandDecoder.DecodedCommand>
             liveCommands = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, CollectRequest>
-            pendingCollectRequests = new ConcurrentHashMap<>();
 
     private boolean receiverRegistered;
     private long lastCashDeviceStatus = Long.MIN_VALUE;
@@ -92,55 +83,36 @@ final class PlatformCommandRuntime {
     private final SerialMarbleHardwareAdapter.Observer hardwareObserver =
             new SerialMarbleHardwareAdapter.Observer() {
                 @Override
-                public boolean onStarted(
-                        String messageId,
-                        int eventCode,
-                        int token,
-                        int requested
-                ) {
-                    JSONObject envelope = store.loadCommand(messageId);
-                    JSONObject data = envelope == null
-                            ? null
-                            : envelope.optJSONObject("data");
-                    if (data == null) {
-                        return false;
-                    }
-                    try {
-                        data.put("deviceStarted", true);
-                        data.put("deviceStartedAt", System.currentTimeMillis());
-                        data.put("deviceRequestedQuantity", requested);
-                        return store.saveCommand(envelope);
-                    } catch (Throwable error) {
-                        reportStorageFault("硬件启动状态保存失败：" + messageOf(error));
-                        return false;
-                    }
+                public void onProgress(String messageId, int orderSequence, int actual) {
+                    store.updatePhysicalProgress(orderSequence, actual);
+                    DeviceCommandStore.ActivePhysicalOrder active =
+                            store.loadActivePhysicalOrder();
+                    int requested = active == null ? 0 : active.requestedQuantity;
+                    broadcastDispenseOrder(
+                            "progress",
+                            orderSequence,
+                            requested,
+                            actual,
+                            0,
+                            "dispense progress"
+                    );
                 }
 
                 @Override
-                public void onProgress(
+                public boolean onTerminalEvidence(
                         String messageId,
-                        int eventCode,
-                        int token,
-                        int actual
+                        SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence
                 ) {
-                    JSONObject envelope = store.loadCommand(messageId);
-                    JSONObject data = envelope == null
-                            ? null
-                            : envelope.optJSONObject("data");
-                    if (data != null) {
-                        try {
-                            data.put("deviceActualQuantity", actual);
-                            store.saveCommand(envelope);
-                        } catch (Throwable error) {
-                            reportStorageFault("硬件进度保存失败：" + messageOf(error));
-                        }
-                    }
-                    if (eventCode == EVT_COLLECT_PROGRESS) {
-                        broadcastCollection(
-                                DeviceCommandManager.COLLECTION_PROGRESS,
-                                "已存入 " + actual + " 珠"
-                        );
-                    }
+                    return persistTerminalEvidence(messageId, evidence);
+                }
+
+                @Override
+                public void onTerminalAckEcho(
+                        String messageId,
+                        SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence,
+                        boolean echoed
+                ) {
+                    handleTerminalAckEcho(messageId, evidence, echoed);
                 }
             };
 
@@ -151,6 +123,7 @@ final class PlatformCommandRuntime {
                 return;
             }
             handleBoardEvent(
+                    intent.getIntExtra("frameId", -1),
                     intent.getIntExtra("code2", -1),
                     intent.getLongExtra("data", 0L),
                     intent.getIntExtra("expandCode", 0)
@@ -186,9 +159,13 @@ final class PlatformCommandRuntime {
         cashAdapter.markApplied(store.getCashConfigVersion());
         SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
         SerialManager.get(context).sendCommand(CMD_HARDWARE_STATUS, 0L, false);
-        recoverWithoutRepeatingPhysicalAction();
+        recoverActivePhysicalOrder();
         discardInterruptedCashConfiguration();
-        reapplyCashConfiguration();
+        if (canEnableCash()) {
+            reapplyCashConfiguration();
+        } else {
+            cashAdapter.disableCashAcceptance();
+        }
     }
 
     synchronized void stop() {
@@ -213,10 +190,10 @@ final class PlatformCommandRuntime {
                     System.currentTimeMillis()
             );
         } catch (Throwable error) {
-            Log.e(TAG, "拒绝未通过SDK校验的平台命令", error);
+            Log.e(TAG, "reject invalid sdk command", error);
             MqttManager.get(context).reportFault(
                     "COMMAND_PROTOCOL_INVALID",
-                    "平台命令校验失败",
+                    "platform command validation failed",
                     3,
                     messageOf(error)
             );
@@ -263,7 +240,7 @@ final class PlatformCommandRuntime {
                             decoded,
                             false,
                             "UNSUPPORTED_COMMAND",
-                            "不支持的指令类型：" + commandType
+                            "unsupported command type: " + commandType
                     );
                 }
                 break;
@@ -285,208 +262,118 @@ final class PlatformCommandRuntime {
             return;
         }
 
-        if (request.getQuantity() <= 0 || request.getQuantity() > 0xFFFF) {
+        int quantity = request.getQuantity();
+        if (quantity <= 0 || quantity > 0xFFFF) {
             store.saveCommand(decoded.envelope);
             publishSdkGenericTerminal(
                     decoded,
                     false,
                     "PARAM_INVALID",
-                    "quantity必须为1..65535"
+                    "quantity must be 1..65535"
             );
             return;
         }
-        if (hasActiveOperation()) {
+
+        DeviceCommandStore.CreatePhysicalOrderResult createResult =
+                store.createActivePhysicalOrder(decoded.envelope, quantity);
+        if (!createResult.success) {
             store.saveCommand(decoded.envelope);
             publishSdkGenericTerminal(
                     decoded,
                     false,
-                    "DEVICE_BUSY",
-                    "设备存在未完成物理任务"
+                    safe(createResult.resultCode, "PREVIOUS_PHYSICAL_ORDER_ACTIVE"),
+                    blank(createResult.resultMessage)
+                            ? "previous physical order is still active"
+                            : createResult.resultMessage
             );
             return;
         }
 
-        String messageId = request.getMessageId();
-        int token = SerialMarbleHardwareAdapter.tokenForMessageId(messageId);
-        if (!preparePhysicalCommand(decoded.envelope, token, true)) {
-            reportStorageFault("出珠指令无法持久化");
+        liveCommands.put(createResult.messageId, decoded);
+        if (!publishSdkAck(decoded)) {
+            store.markActivePhysicalBlocked("LOCAL_ACK_OUTBOX_FAILED");
+            liveCommands.remove(createResult.messageId);
+            reportStorageFault("dispense acknowledgement could not be saved");
             return;
         }
 
-        store.setActiveDispense(messageId);
-        liveCommands.put(messageId, decoded);
-        if (!publishSdkAck(decoded)) {
-            liveCommands.remove(messageId);
-            store.clearActiveDispense();
-            reportStorageFault("出珠ACK无法写入outbox，未启动电机");
-            return;
-        }
+        cashAdapter.disableCashAcceptance();
+        broadcastDispenseOrder(
+                "started",
+                createResult.orderSequence,
+                createResult.requestedQuantity,
+                0,
+                0,
+                "dispense started"
+        );
 
         hardwareExecutor.execute(() -> {
-            HardwareExecutionResult result = marbleAdapter.dispense(request);
-            finishPhysicalOperation(
-                    decoded,
-                    result,
-                    false,
-                    result.isSuccessful()
-                            ? EVT_DISPENSE_COMPLETED
-                            : EVT_DISPENSE_FAILED
+            HardwareExecutionResult result = marbleAdapter.dispenseOrder(
+                    request,
+                    createResult.orderSequence
             );
+            if (result == null) {
+                store.markActivePhysicalBlocked("HARDWARE_RESULT_MISSING");
+                broadcastDispenseOrder(
+                        "blocked",
+                        createResult.orderSequence,
+                        createResult.requestedQuantity,
+                        0,
+                        -1,
+                        "hardware result missing"
+                );
+                return;
+            }
+            String resultCode = safe(result.getResultCode());
+            if ("CONTROLLER_RESULT_TIMEOUT".equals(resultCode)
+                    || "CONTROLLER_TERMINAL_MISSING".equals(resultCode)) {
+                store.markActivePhysicalBlocked(resultCode);
+                broadcastDispenseOrder(
+                        "blocked",
+                        createResult.orderSequence,
+                        createResult.requestedQuantity,
+                        Math.max(0, result.getActualQuantity()),
+                        -1,
+                        safe(result.getResultMessage())
+                );
+                reportPhysicalUnknown(
+                        createResult.messageId,
+                        Math.max(0, result.getActualQuantity()),
+                        safe(result.getResultMessage())
+                );
+            }
         });
     }
 
     private void acceptCollect(SdkCommandDecoder.DecodedCommand decoded) {
-        final CollectRequest request;
-        try {
-            request = decoded.toCollectRequest(System.currentTimeMillis());
-        } catch (Throwable error) {
-            store.saveCommand(decoded.envelope);
+        if (store.saveCommand(decoded.envelope)) {
             publishSdkGenericTerminal(
                     decoded,
                     false,
-                    "SDK_HARDWARE_MAPPING_FAILED",
-                    messageOf(error)
+                    "COLLECT_MAINTENANCE_ONLY",
+                    "collect is a local maintenance function"
             );
-            return;
-        }
-
-        if (request.getMaximumQuantity() <= 0
-                || request.getMaximumQuantity() > 0xFFFF) {
-            store.saveCommand(decoded.envelope);
-            publishSdkGenericTerminal(
-                    decoded,
-                    false,
-                    "PARAM_INVALID",
-                    "maximumQuantity必须为1..65535"
-            );
-            return;
-        }
-        if (hasActiveOperation()) {
-            store.saveCommand(decoded.envelope);
-            publishSdkGenericTerminal(
-                    decoded,
-                    false,
-                    "DEVICE_BUSY",
-                    "设备存在未完成物理任务"
-            );
-            return;
-        }
-
-        String messageId = request.getMessageId();
-        int token = SerialMarbleHardwareAdapter.tokenForMessageId(messageId);
-        if (!preparePhysicalCommand(decoded.envelope, token, false)) {
-            reportStorageFault("存珠指令无法持久化");
-            return;
-        }
-
-        store.setActiveCollect(messageId);
-        liveCommands.put(messageId, decoded);
-        pendingCollectRequests.put(messageId, request);
-        if (!publishSdkAck(decoded)) {
-            pendingCollectRequests.remove(messageId);
-            liveCommands.remove(messageId);
-            store.clearActiveCollect();
-            reportStorageFault("存珠ACK无法写入outbox，未启动电机");
-            return;
-        }
-
-        broadcastCollection(
-                DeviceCommandManager.COLLECTION_READY,
-                "请倒入珠子，再点击开始存珠"
-        );
-    }
-
-    private boolean preparePhysicalCommand(
-            JSONObject envelope,
-            int token,
-            boolean startRequested
-    ) {
-        JSONObject data = envelope.optJSONObject("data");
-        if (data == null || token <= 0) {
-            return false;
-        }
-        try {
-            data.put("boardToken", token);
-            data.put("deviceStartRequested", startRequested);
-            data.put("deviceStarted", false);
-            data.put("deviceTerminal", false);
-            data.put("deviceActualQuantity", 0);
-            if (startRequested) {
-                data.put("deviceStartRequestedAt", System.currentTimeMillis());
-            }
-            return store.saveCommand(envelope);
-        } catch (Throwable error) {
-            return false;
         }
     }
 
     synchronized boolean startPendingCollection() {
-        String messageId = store.getActiveCollect();
-        CollectRequest request = pendingCollectRequests.get(messageId);
-        SdkCommandDecoder.DecodedCommand decoded = liveCommands.get(messageId);
-        JSONObject envelope = store.loadCommand(messageId);
-        JSONObject data = envelope == null
-                ? null
-                : envelope.optJSONObject("data");
-        if (request == null || decoded == null || data == null) {
-            broadcastCollection(
-                    DeviceCommandManager.COLLECTION_FAILED,
-                    "存珠任务缺少当前SDK上下文，禁止恢复或重复启动硬件"
-            );
-            return false;
-        }
-        if (data.optBoolean("deviceStartRequested", false)
-                || data.optBoolean("deviceStarted", false)) {
-            broadcastCollection(
-                    DeviceCommandManager.COLLECTION_FAILED,
-                    "该存珠任务已经请求过硬件，禁止重复启动"
-            );
-            return false;
-        }
-
-        try {
-            data.put("deviceStartRequested", true);
-            data.put("deviceStartRequestedAt", System.currentTimeMillis());
-            if (!store.saveCommand(envelope)) {
-                throw new IllegalStateException("存珠启动状态保存失败");
-            }
-        } catch (Throwable error) {
-            broadcastCollection(
-                    DeviceCommandManager.COLLECTION_FAILED,
-                    messageOf(error)
-            );
-            return false;
-        }
-
-        hardwareExecutor.execute(() -> {
-            HardwareExecutionResult result = marbleAdapter.collect(request);
-            finishPhysicalOperation(
-                    decoded,
-                    result,
-                    true,
-                    result.isSuccessful()
-                            ? EVT_COLLECT_COMPLETED
-                            : EVT_COLLECT_FAILED
-            );
-        });
         broadcastCollection(
-                DeviceCommandManager.COLLECTION_STARTED,
-                "存珠启动请求已发送，等待控制板真实计数"
+                DeviceCommandManager.COLLECTION_FAILED,
+                "collect is a local maintenance function"
         );
-        return true;
+        return false;
     }
 
     synchronized boolean finishPendingCollection() {
-        String messageId = store.getActiveCollect();
-        return !blank(messageId) && marbleAdapter.stopCollect(messageId);
+        return false;
     }
 
     boolean hasPendingCollection() {
-        return !blank(store.getActiveCollect());
+        return false;
     }
 
     int getRunningStatus() {
-        return hasActiveOperation() ? 1 : 0;
+        return store.hasActivePhysicalOrder() ? 1 : 0;
     }
 
     void flushPending() {
@@ -509,9 +396,7 @@ final class PlatformCommandRuntime {
         String messageId = decoded.sdkCommand.getMessageId();
         final CashConfigurationCommandData config;
         try {
-            config = decoded.sdkCommand.requireData(
-                    CashConfigurationCommandData.class
-            );
+            config = decoded.sdkCommand.requireData(CashConfigurationCommandData.class);
         } catch (Throwable error) {
             cashAdapter.disableCashAcceptance();
             persistAndPublishConfigurationFailure(
@@ -541,13 +426,24 @@ final class PlatformCommandRuntime {
             persistAndPublishConfigurationFailure(
                     decoded,
                     "CASH_CONFIGURATION_STALE",
-                    "configVersion必须高于本地已接收版本",
+                    "configVersion must be greater than local latest version",
                     false
             );
             return;
         }
 
         boolean enabled = config.isCashAcceptanceEnabled();
+        if (enabled && !canEnableCash()) {
+            cashAdapter.disableCashAcceptance();
+            persistAndPublishConfigurationFailure(
+                    decoded,
+                    "PHYSICAL_ORDER_ACTIVE",
+                    "cash cannot be enabled while a physical order is active or blocked",
+                    false
+            );
+            return;
+        }
+
         List<CashTier> tiers = toCashTiers(config);
         final SdkCommandDecoder.EncodedResult acknowledgement;
         final SdkCommandDecoder.EncodedResult interruptedTerminal;
@@ -561,13 +457,12 @@ final class PlatformCommandRuntime {
                     messageId + "-result",
                     false,
                     "CASH_CONFIGURATION_INTERRUPTED",
-                    "现金配置处理被进程重启中断",
+                    "cash configuration was interrupted by app restart",
                     nowMillis
             );
         } catch (Throwable error) {
             cashAdapter.disableCashAcceptance();
-            reportStorageFault(
-                    "现金配置专用回执生成失败：" + messageOf(error));
+            reportStorageFault("cash configuration receipt encode failed: " + messageOf(error));
             return;
         }
 
@@ -588,7 +483,7 @@ final class PlatformCommandRuntime {
             persistAndPublishConfigurationFailure(
                     decoded,
                     "LOCAL_STORAGE_ERROR",
-                    "完整现金配置、ACK和中断终态无法原子保存",
+                    "cash configuration, ack, and interrupted terminal could not be saved",
                     false
             );
             return;
@@ -608,7 +503,7 @@ final class PlatformCommandRuntime {
                                 messageId + "-result",
                                 true,
                                 "CASH_CONFIGURATION_APPLIED",
-                                "现金配置已应用",
+                                "cash configuration applied",
                                 System.currentTimeMillis()
                         );
                     } catch (Throwable error) {
@@ -616,7 +511,8 @@ final class PlatformCommandRuntime {
                         persistAndPublishConfigurationFailure(
                                 decoded,
                                 "LOCAL_STORAGE_ERROR",
-                                "现金配置成功回执生成失败：" + messageOf(error),
+                                "cash configuration success terminal encode failed: "
+                                        + messageOf(error),
                                 true
                         );
                         return;
@@ -637,7 +533,7 @@ final class PlatformCommandRuntime {
                         persistAndPublishConfigurationFailure(
                                 decoded,
                                 "LOCAL_STORAGE_ERROR",
-                                "控制板已应用，但本地applied与success回执原子提交失败",
+                                "controller applied cash config but local transaction failed",
                                 true
                         );
                     }
@@ -647,7 +543,7 @@ final class PlatformCommandRuntime {
                             decoded,
                             "CASH_CONFIGURATION_APPLY_FAILED",
                             result == null
-                                    ? "现金配置适配器未返回结果"
+                                    ? "cash adapter did not return a result"
                                     : safe(result.getMessage()),
                             true
                     );
@@ -658,143 +554,130 @@ final class PlatformCommandRuntime {
         });
     }
 
-    private String validateCashConfiguration(CashConfigurationCommandData config) {
-        if (config == null || config.getConfigVersion() == null
-                || config.getConfigVersion() <= 0L
-                || config.getConfigVersion() > 0x00FFFFFFL) {
-            return "configVersion必须为1..16777215";
-        }
-        if (config.isChangeEnabled()) {
-            return "当前设备不支持找零，changeEnabled必须为false";
-        }
-        if (!config.isCashAcceptanceEnabled()) {
-            return null;
-        }
-
-        List<CashConfigurationCommandData.CashSaleItem> items =
-                config.getCashSaleItems();
-        if (items == null || items.isEmpty()) {
-            return "启用现金时cashSaleItems不能为空";
-        }
-
-        Set<String> unique = new HashSet<>();
-        for (CashConfigurationCommandData.CashSaleItem item : items) {
-            if (item == null
-                    || item.getDenominationAmount() == null
-                    || item.getMarbleQuantity() == null) {
-                return "现金档位字段不完整";
-            }
-            String medium = safe(item.getCashMediumType());
-            int amount = item.getDenominationAmount();
-            int quantity = item.getMarbleQuantity();
-            String tierNo = safe(item.getCashSaleTierNo());
-            if (!"banknote".equals(medium) && !"coin".equals(medium)) {
-                return "cashMediumType仅支持banknote或coin";
-            }
-            if (amount <= 0 || amount > 0xFFFF) {
-                return "denominationAmount必须为1..65535分";
-            }
-            if (quantity <= 0 || quantity > 0xFFFF) {
-                return "marbleQuantity必须为1..65535";
-            }
-            if (tierNo.trim().isEmpty()) {
-                return "cashSaleTierNo不能为空";
-            }
-            if (!unique.add(medium + "|" + amount)) {
-                return "同介质同面额现金档位重复";
-            }
-        }
-        return null;
-    }
-
-    private List<CashTier> toCashTiers(CashConfigurationCommandData config) {
-        List<CashTier> result = new ArrayList<>();
-        List<CashConfigurationCommandData.CashSaleItem> items =
-                config.getCashSaleItems();
-        if (items == null) {
-            return result;
-        }
-        for (CashConfigurationCommandData.CashSaleItem item : items) {
-            result.add(new CashTier(
-                    item.getCashMediumType(),
-                    item.getDenominationAmount(),
-                    item.getMarbleQuantity(),
-                    item.getCashSaleTierNo()
-            ));
-        }
-        return result;
-    }
-
-    private void finishPhysicalOperation(
-            SdkCommandDecoder.DecodedCommand decoded,
-            HardwareExecutionResult hardwareResult,
-            boolean collect,
-            int terminalEventCode
+    private boolean persistTerminalEvidence(
+            String messageId,
+            SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence
     ) {
-        String messageId = decoded.sdkCommand.getMessageId();
-        JSONObject envelope = store.loadCommand(messageId);
-        JSONObject data = envelope == null
-                ? null
-                : envelope.optJSONObject("data");
-        int actual = hardwareResult == null
-                ? 0
-                : Math.max(0, hardwareResult.getActualQuantity());
-        boolean success = hardwareResult != null && hardwareResult.isSuccessful();
-        String resultCode = hardwareResult == null
-                ? "HARDWARE_RESULT_MISSING"
-                : safe(hardwareResult.getResultCode());
-        String resultMessage = hardwareResult == null
-                ? "硬件适配器未返回结果"
-                : safe(hardwareResult.getResultMessage());
-        int token = SerialMarbleHardwareAdapter.tokenForMessageId(messageId);
-
-        if (data == null) {
-            reportPhysicalUnknown(messageId, actual, "物理终态无法关联持久化命令");
-            return;
+        DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
+        if (active == null || active.orderSequence != evidence.orderSequence) {
+            return false;
         }
+        String sourceMessageId = blank(messageId) ? active.messageId : messageId;
+        SdkCommandDecoder.DecodedCommand decoded = liveCommands.get(sourceMessageId);
+        JSONObject envelope = store.loadCommand(sourceMessageId);
+        if (decoded == null && envelope != null) {
+            decoded = decodeStoredCommand(envelope);
+        }
+        if (decoded == null || envelope == null) {
+            reportStorageFault("active physical command context is missing: " + sourceMessageId);
+            return false;
+        }
+
+        int finalActual = Math.max(
+                Math.max(active.lastProgressActual, evidence.lastProgressActual),
+                evidence.terminalActual
+        );
+        boolean success = evidence.controllerResultCode == 0
+                && evidence.terminalActual > 0
+                && evidence.terminalActual == active.requestedQuantity;
+        String resultCode = terminalResultCode(active, evidence, success);
+        String resultMessage = terminalResultMessage(active, evidence, success);
+        String eventNo = blank(active.terminalEventNo)
+                ? sourceMessageId + "-result"
+                : active.terminalEventNo;
 
         try {
-            data.put("deviceActualQuantity", actual);
-            data.put("deviceTerminal", true);
-            data.put("deviceTerminalAt", System.currentTimeMillis());
-            data.put("deviceResultCode", resultCode);
-            data.put("deviceResultMessage", resultMessage);
-            if (!store.saveCommand(envelope)) {
-                throw new IllegalStateException("物理终态保存失败");
-            }
-        } catch (Throwable error) {
-            reportStorageFault(messageOf(error));
-            return;
-        }
-
-        if (!publishSdkPhysicalTerminal(
-                decoded,
-                success,
-                actual,
-                resultCode,
-                resultMessage
-        )) {
-            return;
-        }
-
-        marbleAdapter.confirmBoardEventStored(terminalEventCode, token);
-        if (collect) {
-            store.clearActiveCollect();
-            pendingCollectRequests.remove(messageId);
-            broadcastCollection(
-                    success
-                            ? DeviceCommandManager.COLLECTION_FINISHED
-                            : DeviceCommandManager.COLLECTION_FAILED,
-                    (success ? "存珠完成" : "存珠失败或部分完成")
-                            + "，真实数量：" + actual
+            SdkCommandDecoder.EncodedResult terminal = decoded.physicalTerminal(
+                    eventNo,
+                    success,
+                    finalActual,
+                    resultCode,
+                    resultMessage,
+                    System.currentTimeMillis()
             );
-        } else {
-            store.clearActiveDispense();
+            DeviceCommandStore.TerminalStoreResult storeResult =
+                    store.savePhysicalTerminalAndOutbox(
+                            envelope,
+                            evidence,
+                            success,
+                            finalActual,
+                            resultCode,
+                            resultMessage,
+                            terminal.eventNo,
+                            terminal.resultStatus,
+                            terminal.payload
+                    );
+            if (!storeResult.success) {
+                reportStorageFault("physical terminal could not be saved: "
+                        + safe(storeResult.resultCode));
+                return false;
+            }
+            if (storeResult.conflict) {
+                MqttManager.get(context).reportFault(
+                        "PHYSICAL_TERMINAL_CONFLICT",
+                        "controller returned conflicting physical terminal evidence",
+                        3,
+                        "messageId=" + sourceMessageId
+                                + ", seq=" + evidence.orderSequence
+                                + ", frameId=" + evidence.frameId
+                );
+                broadcastDispenseOrder(
+                        "blocked",
+                        evidence.orderSequence,
+                        active.requestedQuantity,
+                        finalActual,
+                        evidence.controllerResultCode,
+                        "terminal conflict"
+                );
+                return true;
+            }
+            MqttManager.get(context).reportCommandResult(terminal.payload);
+            broadcastDispenseOrder(
+                    success ? "finished" : "blocked",
+                    evidence.orderSequence,
+                    active.requestedQuantity,
+                    finalActual,
+                    evidence.controllerResultCode,
+                    resultMessage
+            );
+            return true;
+        } catch (Throwable error) {
+            reportStorageFault("physical terminal encode failed: " + messageOf(error));
+            return false;
         }
-        liveCommands.remove(messageId);
     }
 
-    private synchronized void handleBoardEvent(
+    private void handleTerminalAckEcho(
+            String messageId,
+            SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence,
+            boolean echoed
+    ) {
+        DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
+        if (active == null || active.orderSequence != evidence.orderSequence) {
+            return;
+        }
+        boolean success = evidence.controllerResultCode == 0
+                && evidence.terminalActual > 0
+                && evidence.terminalActual == active.requestedQuantity;
+        if (echoed) {
+            store.markTerminalAckEchoed(
+                    evidence.orderSequence,
+                    evidence.frameId,
+                    success
+            );
+            liveCommands.remove(active.messageId);
+            if (success && canEnableCash()) {
+                reapplyCashConfiguration();
+            }
+            return;
+        }
+
+        store.markTerminalAckSentWithoutEcho(evidence.orderSequence, evidence.frameId);
+        cashAdapter.disableCashAcceptance();
+    }
+
+    private void handleBoardEvent(
+            int frameId,
             int code2,
             long packed,
             int expandCode
@@ -810,32 +693,157 @@ final class PlatformCommandRuntime {
             case EVT_CASH_DEVICE_STATUS:
                 if (packed != lastCashDeviceStatus) {
                     lastCashDeviceStatus = packed;
-                    Log.i(TAG, "现金设备诊断=0x" + Long.toHexString(packed));
+                    Log.i(TAG, "cash device status=0x" + Long.toHexString(packed));
                 }
                 break;
             case EVT_BEAD_STOCK:
-                broadcastHardwareStatus("库存：" + packed + " 珠");
+                broadcastHardwareStatus("stock: " + packed);
                 break;
             case EVT_BEAD_LOW:
-                broadcastHardwareStatus("库存偏低：" + packed + " 珠");
+                broadcastHardwareStatus("stock low: " + packed);
                 break;
             case EVT_BEAD_EMPTY:
-                broadcastHardwareStatus("无珠；现金仍按硬件事实上报，等待平台处理");
+                cashAdapter.disableCashAcceptance();
+                store.setCashBlocked(true);
+                broadcastHardwareStatus("empty; cash disabled");
                 break;
             case EVT_BEAD_REFILLED:
-                broadcastHardwareStatus("已补珠，库存：" + packed + " 珠");
+                store.setCashBlocked(false);
+                broadcastHardwareStatus("refilled: " + packed);
+                if (canEnableCash()) {
+                    reapplyCashConfiguration();
+                }
                 break;
-            case EVT_DISPENSE_STARTED:
-            case EVT_DISPENSE_COMPLETED:
-            case EVT_DISPENSE_FAILED:
-            case EVT_COLLECT_STARTED:
-            case EVT_COLLECT_COMPLETED:
-            case EVT_COLLECT_FAILED:
-                persistOrphanBoardEvent(code2, packed, expandCode);
+            case EVT_DISPENSE_TERMINAL:
+                persistRecoveringTerminal(frameId, packed, expandCode);
                 break;
             default:
                 break;
         }
+    }
+
+    private void persistRecoveringTerminal(int frameId, long packed, int expandCode) {
+        DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
+        if (active == null || liveCommands.containsKey(active.messageId)) {
+            return;
+        }
+        int sequence = (int) ((packed >>> 16) & 0xFFFF);
+        int actual = (int) (packed & 0xFFFF);
+        if (sequence != active.orderSequence || frameId < 0 || frameId > 0xFF) {
+            return;
+        }
+        SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence =
+                new SerialMarbleHardwareAdapter.ControllerTerminalEvidence(
+                        frameId,
+                        sequence,
+                        actual,
+                        expandCode & 0xFF,
+                        active.lastProgressActual,
+                        System.currentTimeMillis()
+                );
+        if (!persistTerminalEvidence(active.messageId, evidence)) {
+            return;
+        }
+        hardwareExecutor.execute(() -> {
+            boolean echoed = sendTerminalAck(evidence.orderSequence, evidence.frameId);
+            handleTerminalAckEcho(active.messageId, evidence, echoed);
+        });
+    }
+
+    private boolean sendTerminalAck(int orderSequence, int frameId) {
+        try {
+            long data = ((long) (orderSequence & 0xFFFF) << 16)
+                    | ((long) (frameId & 0xFF) << 8);
+            return SerialManager.get(context).sendCommandAndWaitEcho(
+                    CMD_DISPENSE_TERMINAL_ACK,
+                    data,
+                    TERMINAL_ACK_ECHO_TIMEOUT_MS
+            );
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private void recoverActivePhysicalOrder() {
+        DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
+        if (active == null) {
+            return;
+        }
+        cashAdapter.disableCashAcceptance();
+        broadcastDispenseOrder(
+                "recovering",
+                active.orderSequence,
+                active.requestedQuantity,
+                Math.max(0, active.lastProgressActual),
+                Math.max(0, active.terminalResultCode),
+                "recovering previous physical order"
+        );
+        MqttManager.get(context).reportFault(
+                "PHYSICAL_ORDER_RECOVERING",
+                "app restarted with an active physical order",
+                3,
+                "messageId=" + active.messageId
+                        + ", seq=" + active.orderSequence
+                        + ", state=" + safe(active.state)
+        );
+        if ("FINISHING".equals(active.state)
+                && active.terminalFrameId >= 0
+                && !active.terminalAckEchoed) {
+            hardwareExecutor.execute(() -> {
+                boolean echoed = sendTerminalAck(
+                        active.orderSequence,
+                        active.terminalFrameId
+                );
+                SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence =
+                        new SerialMarbleHardwareAdapter.ControllerTerminalEvidence(
+                                active.terminalFrameId,
+                                active.orderSequence,
+                                Math.max(0, active.controllerTerminalActual),
+                                Math.max(0, active.terminalResultCode),
+                                Math.max(0, active.lastProgressActual),
+                                System.currentTimeMillis()
+                        );
+                handleTerminalAckEcho(active.messageId, evidence, echoed);
+            });
+        }
+    }
+
+    private String terminalResultCode(
+            DeviceCommandStore.ActivePhysicalOrder active,
+            SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence,
+            boolean success
+    ) {
+        if (success) {
+            return "OK";
+        }
+        if (evidence.terminalActual < active.lastProgressActual
+                || evidence.terminalActual < evidence.lastProgressActual) {
+            return "CONTROLLER_ACTUAL_REGRESSION";
+        }
+        if (evidence.controllerResultCode == 0) {
+            return "ACTUAL_QUANTITY_MISMATCH";
+        }
+        return SerialMarbleHardwareAdapter.boardResultName(evidence.controllerResultCode);
+    }
+
+    private String terminalResultMessage(
+            DeviceCommandStore.ActivePhysicalOrder active,
+            SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence,
+            boolean success
+    ) {
+        if (success) {
+            return "dispense completed";
+        }
+        if (evidence.terminalActual < active.lastProgressActual
+                || evidence.terminalActual < evidence.lastProgressActual) {
+            return "terminal actual regressed from progress actual";
+        }
+        if (evidence.controllerResultCode == 0) {
+            return "terminal actual does not equal requested quantity";
+        }
+        return "controller result: "
+                + SerialMarbleHardwareAdapter.boardResultName(evidence.controllerResultCode);
     }
 
     private void persistCashFact(long packed, int sequenceLow) {
@@ -874,24 +882,23 @@ final class PlatformCommandRuntime {
             payload.put("timestamp", System.currentTimeMillis());
 
             if (!store.saveCashEvent(eventNo, sequence, payload.toString())) {
-                reportStorageFault("现金事实写入SQLite/outbox失败");
+                reportStorageFault("cash fact could not be saved");
                 return;
             }
 
-            /* 先持久化，再确认控制板；确认后控制板可立即发送队列中的下一笔现金。 */
             confirmCashStored(sequence);
             MqttManager.get(context).reportCashEvent(payload.toString());
 
             if (tier == null) {
                 MqttManager.get(context).reportFault(
                         "CASH_TIER_NOT_FOUND",
-                        "现金档位不匹配",
+                        "cash tier not found",
                         3,
-                        medium + "，面额=" + amountFen + "分"
+                        medium + ", amountFen=" + amountFen
                 );
             }
         } catch (Throwable error) {
-            reportStorageFault("现金事件组装失败：" + messageOf(error));
+            reportStorageFault("cash fact encode failed: " + messageOf(error));
         }
     }
 
@@ -922,12 +929,11 @@ final class PlatformCommandRuntime {
         if (response.isManualReview() || response.isRejected()) {
             MqttManager.get(context).reportFault(
                     "CASH_EVENT_" + safe(response.getStatus()).toUpperCase(Locale.ROOT),
-                    "现金事件需要处理",
+                    "cash event needs handling",
                     2,
                     safe(response.getMessage())
             );
         }
-        /* 不读取 requestedQuantity；继续接收后续现金，等待平台统一下发出珠。 */
     }
 
     private void handleCommandResultAcknowledgement(
@@ -936,12 +942,9 @@ final class PlatformCommandRuntime {
         CommandResultAcknowledgement acknowledgement =
                 decoded.sdkCommand.requireData(CommandResultAcknowledgement.class);
         if (!acknowledgement.isRecorded()) {
-            for (DeviceCommandStore.OutboxItem item
-                    : store.listCommandResults()) {
-                if (safe(acknowledgement.getSourceMessageId()).equals(
-                        item.sourceMessageId)
-                        && safe(acknowledgement.getEventNo()).equals(
-                                item.eventNo)
+            for (DeviceCommandStore.OutboxItem item : store.listCommandResults()) {
+                if (safe(acknowledgement.getSourceMessageId()).equals(item.sourceMessageId)
+                        && safe(acknowledgement.getEventNo()).equals(item.eventNo)
                         && safe(acknowledgement.getResultStatus()).equals(
                                 item.resultStatus)) {
                     MqttManager.get(context).reportCommandResult(item.payload);
@@ -962,11 +965,11 @@ final class PlatformCommandRuntime {
                 : data.optString("status", "unknown");
         String message;
         if ("accepted".equals(status)) {
-            message = "核销已受理，等待平台下发出珠指令";
+            message = "redemption accepted; waiting for platform dispense command";
         } else if ("rejected".equals(status)) {
-            message = data.optString("message", "核销失败");
+            message = data.optString("message", "redemption failed");
         } else {
-            message = "核销结果未知，请联系工作人员";
+            message = "redemption result unknown; please contact staff";
         }
         Intent intent = new Intent(PaymentManager.ACTION_PAYMENT_EVENT);
         intent.setPackage(context.getPackageName());
@@ -983,30 +986,7 @@ final class PlatformCommandRuntime {
                     System.currentTimeMillis()
             ));
         } catch (Throwable error) {
-            Log.e(TAG, "SDK ACK生成失败", error);
-            return false;
-        }
-    }
-
-    private boolean publishSdkPhysicalTerminal(
-            SdkCommandDecoder.DecodedCommand decoded,
-            boolean success,
-            int actual,
-            String resultCode,
-            String resultMessage
-    ) {
-        try {
-            String messageId = decoded.sdkCommand.getMessageId();
-            return saveAndPublish(decoded.physicalTerminal(
-                    messageId + "-result",
-                    success,
-                    Math.max(0, actual),
-                    resultCode,
-                    resultMessage,
-                    System.currentTimeMillis()
-            ));
-        } catch (Throwable error) {
-            Log.e(TAG, "SDK物理终态生成失败", error);
+            Log.e(TAG, "SDK ACK encode failed", error);
             return false;
         }
     }
@@ -1035,16 +1015,15 @@ final class PlatformCommandRuntime {
                     terminal.payload,
                     clearPending
             )) {
-                reportStorageFault(
-                        "现金配置failed终态无法写入SQLite/outbox");
+                reportStorageFault("cash configuration failed terminal could not be saved");
                 return false;
             }
             MqttManager.get(context).reportCommandResult(terminal.payload);
             return true;
         } catch (Throwable error) {
-            Log.e(TAG, "SDK现金配置失败终态生成失败", error);
+            Log.e(TAG, "cash configuration failed terminal encode failed", error);
             reportStorageFault(
-                    "现金配置失败终态生成失败：" + messageOf(error));
+                    "cash configuration failed terminal encode failed: " + messageOf(error));
             return false;
         }
     }
@@ -1065,7 +1044,7 @@ final class PlatformCommandRuntime {
                     System.currentTimeMillis()
             ));
         } catch (Throwable error) {
-            Log.e(TAG, "SDK通用终态生成失败", error);
+            Log.e(TAG, "SDK generic terminal encode failed", error);
             return false;
         }
     }
@@ -1100,105 +1079,27 @@ final class PlatformCommandRuntime {
         DeviceCommandStore.OutboxItem terminal =
                 store.failInterruptedCashConfiguration();
         if (terminal == null) {
-            reportStorageFault(
-                    "中断现金配置无法标记failed并保存终态；messageId="
-                            + messageId
-            );
+            reportStorageFault("interrupted cash configuration could not be failed: "
+                    + messageId);
             return;
         }
         MqttManager.get(context).reportCommandResult(terminal.payload);
         MqttManager.get(context).reportFault(
                 "CASH_CONFIGURATION_INTERRUPTED",
-                "检测到进程重启前未完成的现金配置",
+                "cash configuration interrupted by app restart",
                 3,
-                "已保留最近成功版本、关闭现金设备并保存failed终态；messageId="
-                        + messageId
+                "messageId=" + messageId
         );
-    }
-
-    private void recoverWithoutRepeatingPhysicalAction() {
-        if (!hasActiveOperation()) {
-            return;
-        }
-        MqttManager.get(context).reportFault(
-                "PHYSICAL_RESULT_UNKNOWN",
-                "检测到进程重启前已经请求的物理动作",
-                3,
-                "禁止自动重启电机；等待控制板终态或人工核实"
-        );
-        if (hasPendingCollection()) {
-            broadcastCollection(
-                    DeviceCommandManager.COLLECTION_FAILED,
-                    "检测到中断的存珠动作，已禁止自动重启"
-            );
-        }
-    }
-
-    private void persistOrphanBoardEvent(
-            int code2,
-            long packed,
-            int expandCode
-    ) {
-        int token = (int) ((packed >>> 24) & 0xFF);
-        int actual = (int) (packed & 0x00FFFFFFL);
-        boolean collect = code2 >= EVT_COLLECT_STARTED
-                && code2 <= EVT_COLLECT_FAILED;
-        String messageId = collect
-                ? store.getActiveCollect()
-                : store.getActiveDispense();
-        if (blank(messageId) || liveCommands.containsKey(messageId)) {
-            return;
-        }
-
-        JSONObject envelope = store.loadCommand(messageId);
-        JSONObject data = envelope == null
-                ? null
-                : envelope.optJSONObject("data");
-        if (data == null || token != data.optInt("boardToken", -1)) {
-            return;
-        }
-
-        try {
-            data.put("deviceActualQuantity", actual);
-            data.put("orphanBoardEventCode", code2);
-            data.put("orphanBoardResultCode", expandCode);
-            data.put("requiresManualReview", true);
-            boolean terminal = code2 == EVT_DISPENSE_COMPLETED
-                    || code2 == EVT_DISPENSE_FAILED
-                    || code2 == EVT_COLLECT_COMPLETED
-                    || code2 == EVT_COLLECT_FAILED;
-            data.put("deviceTerminal", terminal);
-            data.put("deviceStarted", !terminal);
-            if (!store.saveCommand(envelope)) {
-                throw new IllegalStateException("恢复控制板事件保存失败");
-            }
-            marbleAdapter.confirmBoardEventStored(code2, token);
-
-            if (terminal) {
-                if (collect) {
-                    store.clearActiveCollect();
-                } else {
-                    store.clearActiveDispense();
-                }
-                reportPhysicalUnknown(
-                        messageId,
-                        actual,
-                        "进程恢复后收到控制板物理终态，需人工核对"
-                );
-            }
-        } catch (Throwable error) {
-            reportStorageFault("恢复控制板事件失败：" + messageOf(error));
-        }
     }
 
     private void reapplyCashConfiguration() {
-        if (store.isCashBlocked()) {
-            cashAdapter.disableCashAcceptance();
-            return;
-        }
         DeviceCommandStore.CashConfigurationRecord record =
                 store.loadCashConfiguration();
         if (record == null || record.changeEnabled) {
+            return;
+        }
+        if (record.enabled && !canEnableCash()) {
+            cashAdapter.disableCashAcceptance();
             return;
         }
 
@@ -1235,7 +1136,7 @@ final class PlatformCommandRuntime {
             if (!result.isApplied()) {
                 MqttManager.get(context).reportFault(
                         "CASH_CONFIGURATION_REAPPLY_FAILED",
-                        "现金配置恢复失败",
+                        "cash configuration reapply failed",
                         2,
                         safe(result.getMessage())
                 );
@@ -1245,9 +1146,115 @@ final class PlatformCommandRuntime {
         });
     }
 
-    private boolean hasActiveOperation() {
-        return !blank(store.getActiveDispense())
-                || !blank(store.getActiveCollect());
+    private boolean canEnableCash() {
+        return !store.hasActivePhysicalOrder()
+                && !store.isPhysicalBlocked()
+                && !store.isCashBlocked();
+    }
+
+    private SdkCommandDecoder.DecodedCommand decodeStoredCommand(JSONObject envelope) {
+        try {
+            return decoder.decode(
+                    "",
+                    envelope.toString().getBytes(StandardCharsets.UTF_8),
+                    DeviceUtil.requireDeviceNo(context),
+                    System.currentTimeMillis()
+            );
+        } catch (Throwable error) {
+            MqttManager.get(context).reportFault(
+                    "PHYSICAL_ORDER_RECOVERY_CONTEXT_MISSING",
+                    "stored physical command could not be decoded",
+                    3,
+                    messageOf(error)
+            );
+            return null;
+        }
+    }
+
+    private String validateCashConfiguration(CashConfigurationCommandData config) {
+        if (config == null || config.getConfigVersion() == null
+                || config.getConfigVersion() <= 0L
+                || config.getConfigVersion() > 0x00FFFFFFL) {
+            return "configVersion must be 1..16777215";
+        }
+        if (config.isChangeEnabled()) {
+            return "changeEnabled must be false";
+        }
+        if (!config.isCashAcceptanceEnabled()) {
+            return null;
+        }
+
+        List<CashConfigurationCommandData.CashSaleItem> items =
+                config.getCashSaleItems();
+        if (items == null || items.isEmpty()) {
+            return "cashSaleItems cannot be empty when cash is enabled";
+        }
+
+        Set<String> unique = new HashSet<>();
+        for (CashConfigurationCommandData.CashSaleItem item : items) {
+            if (item == null
+                    || item.getDenominationAmount() == null
+                    || item.getMarbleQuantity() == null) {
+                return "cash sale item fields are incomplete";
+            }
+            String medium = safe(item.getCashMediumType());
+            int amount = item.getDenominationAmount();
+            int quantity = item.getMarbleQuantity();
+            String tierNo = safe(item.getCashSaleTierNo());
+            if (!"banknote".equals(medium) && !"coin".equals(medium)) {
+                return "cashMediumType must be banknote or coin";
+            }
+            if (amount <= 0 || amount > 0xFFFF) {
+                return "denominationAmount must be 1..65535";
+            }
+            if (quantity <= 0 || quantity > 0xFFFF) {
+                return "marbleQuantity must be 1..65535";
+            }
+            if (tierNo.trim().isEmpty()) {
+                return "cashSaleTierNo cannot be empty";
+            }
+            if (!unique.add(medium + "|" + amount)) {
+                return "duplicate cash tier medium and amount";
+            }
+        }
+        return null;
+    }
+
+    private List<CashTier> toCashTiers(CashConfigurationCommandData config) {
+        List<CashTier> result = new ArrayList<>();
+        List<CashConfigurationCommandData.CashSaleItem> items =
+                config.getCashSaleItems();
+        if (items == null) {
+            return result;
+        }
+        for (CashConfigurationCommandData.CashSaleItem item : items) {
+            result.add(new CashTier(
+                    item.getCashMediumType(),
+                    item.getDenominationAmount(),
+                    item.getMarbleQuantity(),
+                    item.getCashSaleTierNo()
+            ));
+        }
+        return result;
+    }
+
+    private void broadcastDispenseOrder(
+            String eventType,
+            int orderSequence,
+            int requestedQuantity,
+            int actualQuantity,
+            int resultCode,
+            String message
+    ) {
+        Intent intent = new Intent(AppConfig.ACTION_DISPENSE_ORDER_EVENT);
+        intent.setPackage(context.getPackageName());
+        intent.putExtra("eventType", safe(eventType));
+        intent.putExtra("orderSequence", orderSequence);
+        intent.putExtra("requestedQuantity", requestedQuantity);
+        intent.putExtra("actualQuantity", actualQuantity);
+        intent.putExtra("resultCode", resultCode);
+        intent.putExtra("message", safe(message));
+        context.sendBroadcast(intent);
     }
 
     private void broadcastCollection(String event, String message) {
@@ -1269,7 +1276,7 @@ final class PlatformCommandRuntime {
     private void reportStorageFault(String message) {
         MqttManager.get(context).reportFault(
                 "LOCAL_STORAGE_ERROR",
-                "本地业务数据库异常",
+                "local business database error",
                 3,
                 message
         );
@@ -1282,9 +1289,9 @@ final class PlatformCommandRuntime {
     ) {
         MqttManager.get(context).reportFault(
                 "PHYSICAL_RESULT_REQUIRES_MANUAL_REVIEW",
-                "物理结果需要人工核对",
+                "physical result requires manual review",
                 3,
-                description + "；messageId=" + messageId + "；actual=" + actual
+                description + ", messageId=" + messageId + ", actual=" + actual
         );
     }
 
@@ -1315,9 +1322,13 @@ final class PlatformCommandRuntime {
         return value == null ? "" : value;
     }
 
+    private static String safe(String value, String fallback) {
+        return blank(value) ? fallback : value;
+    }
+
     private static String messageOf(Throwable error) {
         if (error == null) {
-            return "未知错误";
+            return "unknown";
         }
         String message = error.getMessage();
         return message == null || message.trim().isEmpty()
