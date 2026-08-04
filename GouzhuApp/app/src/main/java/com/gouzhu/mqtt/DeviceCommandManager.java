@@ -30,6 +30,7 @@ public final class DeviceCommandManager {
     private final PlatformCommandRuntime runtime;
     private final OperationResolutionManager resolutionManager;
     private final CollectionSessionManager collectionManager;
+    private final CollectionControllerStateGuard collectionControllerGuard;
     private final TransactionOccupancyManager occupancy;
     private final TransactionIdleCashRestorer idleCashRestorer;
     private final DeviceCommandStore store;
@@ -39,6 +40,7 @@ public final class DeviceCommandManager {
         runtime = new PlatformCommandRuntime(this.context);
         resolutionManager = new OperationResolutionManager(this.context);
         collectionManager = new CollectionSessionManager(this.context);
+        collectionControllerGuard = new CollectionControllerStateGuard(this.context);
         occupancy = TransactionOccupancyManager.get(this.context);
         idleCashRestorer = new TransactionIdleCashRestorer(this.context);
         store = new DeviceCommandStore(this.context);
@@ -60,6 +62,7 @@ public final class DeviceCommandManager {
         idleCashRestorer.start();
         resolutionManager.start();
         collectionManager.start();
+        collectionControllerGuard.start();
         runtime.start();
         // Recovery must not depend on MainActivity being visible. The persisted requestNo
         // remains authoritative and the same QR purchase is queried/recreated idempotently.
@@ -68,6 +71,7 @@ public final class DeviceCommandManager {
 
     public void stop() {
         runtime.stop();
+        collectionControllerGuard.stop();
         collectionManager.stop();
         resolutionManager.stop();
         idleCashRestorer.stop();
