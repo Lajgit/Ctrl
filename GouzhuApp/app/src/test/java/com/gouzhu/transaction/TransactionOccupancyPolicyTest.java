@@ -17,20 +17,17 @@ public class TransactionOccupancyPolicyTest {
     }
 
     @Test
-    public void unpaidQrMemberDepositAndBlockedSessionsRejectDispenseReservation() {
+    public void signedDispenseMayTakeOverPurchaseButNotDepositOrFault() {
         assertFalse(TransactionOccupancyPolicy.canReserveDispense("MEMBER_DEPOSIT", "READY"));
         assertFalse(TransactionOccupancyPolicy.canReserveDispense("QR_PURCHASE", "BLOCKED"));
-        assertFalse(TransactionOccupancyPolicy.canReserveDispense(
+        assertFalse(TransactionOccupancyPolicy.canReserveDispense("CASH_PURCHASE", "REFUNDING"));
+        assertTrue(TransactionOccupancyPolicy.canReserveDispense(
                 "QR_PURCHASE",
                 "WAITING_PAYMENT"
         ));
-        assertFalse(TransactionOccupancyPolicy.canReserveDispense(
-                "QR_PURCHASE",
-                "CONFIRMING_CLOSE"
-        ));
         assertTrue(TransactionOccupancyPolicy.canReserveDispense(
                 "QR_PURCHASE",
-                "WAITING_DISPENSE"
+                "CANCELLING"
         ));
         assertTrue(TransactionOccupancyPolicy.canReserveDispense(
                 "CASH_PURCHASE",
