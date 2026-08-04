@@ -127,6 +127,14 @@
                 android:scaleType="fitCenter"
                 android:visibility="gone" />
 
+            <Button
+                android:id="@+id/button_cancel_payment"
+                style="@style/Widget.Gouzhu.ActionButton"
+                android:layout_width="240dp"
+                android:layout_marginTop="12dp"
+                android:text="@string/payment_cancel_button"
+                android:visibility="gone" />
+
             <TextView
                 android:id="@+id/text_payment_status"
                 android:layout_width="match_parent"
