@@ -1136,13 +1136,19 @@ final class PlatformCommandRuntime {
             return;
         }
 
+        String medium = mediumCode == 0 ? "coin" : "banknote";
+        int currentConfigVersion = store.getCashConfigVersion();
         DeviceCommandStore.CashEventRecord existing =
                 store.findCashEventBySequence(sequence);
         if (existing != null) {
-            boolean stillPending = "pending".equals(existing.status)
-                    || "unknown".equals(existing.status)
-                    || hasPendingCashOutbox(existing.eventNo);
-            if (stillPending) {
+            JSONObject existingPayload = parseObject(existing.payload);
+            boolean sameCashFact = existingPayload != null
+                    && medium.equals(existingPayload.optString("cashMediumType", ""))
+                    && amountFen == existingPayload.optInt("denominationAmount", -1)
+                    && currentConfigVersion == existingPayload.optInt("configVersion", -1);
+            boolean stillPending = hasPendingCashOutbox(existing.eventNo);
+
+            if (stillPending && sameCashFact) {
                 confirmCashStored(sequence);
                 MqttManager.get(context).reportCashEvent(existing.payload);
                 return;
@@ -1150,19 +1156,20 @@ final class PlatformCommandRuntime {
 
             Log.w(
                     TAG,
-                    "现金序号复用，删除已完成历史事件：sequence="
+                    "现金序号复用，删除旧现金记录：sequence="
                             + sequence
-                            + ", oldEventNo="
-                            + existing.eventNo
+                            + ", oldEventNo=" + existing.eventNo
+                            + ", oldStatus=" + safe(existing.status)
+                            + ", sameCashFact=" + sameCashFact
+                            + ", hasOutbox=" + stillPending
             );
             if (!removeCashEventRecord(existing.eventNo)) {
-                reportStorageFault("completed cash event could not be removed: "
+                reportStorageFault("old cash event could not be removed: "
                         + existing.eventNo);
                 return;
             }
         }
 
-        String medium = mediumCode == 0 ? "coin" : "banknote";
         DeviceCommandStore.CashTier tier = store.findCashTier(medium, amountFen);
         String eventNo = newCashEventNo(sequence);
         try {
@@ -1176,7 +1183,7 @@ final class PlatformCommandRuntime {
             payload.put("cashSaleTierNo", tier == null ? "" : tier.cashSaleTierNo);
             payload.put(
                     "configVersion",
-                    tier == null ? store.getCashConfigVersion() : tier.configVersion
+                    tier == null ? currentConfigVersion : tier.configVersion
             );
             payload.put("timestamp", System.currentTimeMillis());
 
@@ -1301,6 +1308,12 @@ final class PlatformCommandRuntime {
             reportStorageFault("final cash event could not be removed: " + eventNo);
             return;
         }
+        Log.i(
+                TAG,
+                "现金事实已获平台终态并删除本地记录：eventNo="
+                        + eventNo
+                        + ", status=" + safe(response.getStatus())
+        );
         if (response.isManualReview() || response.isRejected()) {
             MqttManager.get(context).reportFault(
                     "CASH_EVENT_" + safe(response.getStatus()).toUpperCase(Locale.ROOT),
