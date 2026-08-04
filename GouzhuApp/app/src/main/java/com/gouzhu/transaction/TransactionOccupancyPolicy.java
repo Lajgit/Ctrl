@@ -20,39 +20,21 @@ public final class TransactionOccupancyPolicy {
     }
 
     /**
-     * A QR session may reserve physical dispense only after the authoritative purchase state
-     * has become DISPENSING/WAITING_DISPENSE. This prevents an unrelated or stale
-     * dispense_marbles command from consuming an unpaid QR session. Cash is allowed from the
-     * accepted/reporting window because platform cash confirmation and the dispense command can
-     * cross in transit. Existing physical phases remain allowed for idempotent retransmission.
+     * dispense_marbles is the platform's signed physical authorization and may arrive before
+     * the device's two-second HTTP payment poll observes DISPENSING. Therefore an active QR or
+     * cash purchase may be taken over by that command, including the payment/cancel boundary.
+     * A member-deposit or fault-blocked session can never be taken over. MessageId, operation
+     * token, expiry validation and the one-active-physical-order store remain the stale-command
+     * defenses; local HTTP polling must not cause a valid physical command to be rejected.
      */
     public static boolean canReserveDispense(String owner, String phase) {
         if (isBlockingPhase(phase)) {
             return false;
         }
-        if (isIdleOwner(owner)) {
-            return true;
-        }
-        if ("QR_PURCHASE".equals(owner)) {
-            return "WAITING_DISPENSE".equals(phase)
-                    || "DISPENSE_RESERVED".equals(phase)
-                    || "DISPENSING".equals(phase)
-                    || "FINISHING".equals(phase);
-        }
-        if ("CASH_PURCHASE".equals(owner)) {
-            return "ACCEPTED".equals(phase)
-                    || "REPORTING".equals(phase)
-                    || "WAITING_DISPENSE".equals(phase)
-                    || "DISPENSE_RESERVED".equals(phase)
-                    || "DISPENSING".equals(phase)
-                    || "FINISHING".equals(phase);
-        }
-        if ("GENERIC_DISPENSE".equals(owner)) {
-            return "DISPENSE_RESERVED".equals(phase)
-                    || "DISPENSING".equals(phase)
-                    || "FINISHING".equals(phase);
-        }
-        return false;
+        return isIdleOwner(owner)
+                || "QR_PURCHASE".equals(owner)
+                || "CASH_PURCHASE".equals(owner)
+                || "GENERIC_DISPENSE".equals(owner);
     }
 
     public static boolean isBlockingPhase(String phase) {
