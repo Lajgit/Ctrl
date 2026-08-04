@@ -19,10 +19,7 @@ public final class AppConfig {
     /** 反扫模块串口。 */
     public static final String REVERSE_SCANNER_DEVICE = "/dev/ttyS6";
 
-    /**
-     * 反扫模块默认串口参数：9600 8N1、无硬件流控。
-     * 实际模组若配置为其他波特率，只修改本常量，不改解析逻辑。
-     */
+    /** 反扫模块默认串口参数：9600 8N1、无硬件流控。 */
     public static final int REVERSE_SCANNER_BAUD_RATE = 9600;
 
     /** 生产 HTTP 网关。 */
@@ -56,6 +53,11 @@ public final class AppConfig {
     public static final String ACTION_COLLECTION_EVENT =
             "com.gouzhu.action.COLLECTION_EVENT";
 
+    /** 出珠物理会话状态广播。 */
     public static final String ACTION_DISPENSE_ORDER_EVENT =
             "com.gouzhu.action.DISPENSE_ORDER_EVENT";
+
+    /** 现金、扫码购珠和会员存珠共用的设备交易占用状态广播。 */
+    public static final String ACTION_TRANSACTION_OCCUPANCY_CHANGED =
+            "com.gouzhu.action.TRANSACTION_OCCUPANCY_CHANGED";
 }
