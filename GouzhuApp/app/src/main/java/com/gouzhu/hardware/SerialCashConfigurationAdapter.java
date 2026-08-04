@@ -9,6 +9,7 @@ import android.util.Log;
 
 import com.gouzhu.AppConfig;
 import com.gouzhu.serial.SerialManager;
+import com.gouzhu.transaction.TransactionOccupancyManager;
 import com.pinball.xiaoda.device.sdk.hardware.CashConfigurationAdapter;
 import com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult;
 import com.pinball.xiaoda.device.sdk.hardware.CashTier;
@@ -215,6 +216,10 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
         if (mask != 0 && !protocolV22Ready) {
             disableCashAcceptance();
             return CashConfigurationResult.rejected("控制板协议未确认，禁止启用现金");
+        }
+        if (mask != 0 && !TransactionOccupancyManager.get(context).isIdle()) {
+            disableCashAcceptance();
+            return CashConfigurationResult.rejected("设备存在交易占用，禁止启用现金");
         }
         synchronized (applyLock) {
             ApplyWaiter active = new ApplyWaiter();
