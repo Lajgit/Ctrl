@@ -46,6 +46,7 @@ final class CollectionControllerStateGuard {
         thread.setDaemon(true);
         return thread;
     });
+    private volatile long startedAt;
     private boolean registered;
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
@@ -98,6 +99,7 @@ final class CollectionControllerStateGuard {
         if (registered) {
             return;
         }
+        startedAt = System.currentTimeMillis();
         IntentFilter filter = new IntentFilter();
         filter.addAction(AppConfig.ACTION_BOARD_EVENT);
         filter.addAction(TransactionOccupancyManager.ACTION_CHANGED);
@@ -147,7 +149,8 @@ final class CollectionControllerStateGuard {
                             "baseline_stock",
                             "actual_quantity",
                             "occupancy_session_id",
-                            "state"
+                            "state",
+                            "updated_at"
                     },
                     "id=1 AND state='COLLECTING'",
                     null,
@@ -156,6 +159,12 @@ final class CollectionControllerStateGuard {
                     null
             )) {
                 if (!cursor.moveToFirst()) {
+                    return null;
+                }
+                // A COLLECTING row older than this guard belongs to process/service recovery.
+                // CollectionSessionManager owns that recovery and emits the deterministic
+                // COLLECT_INTERRUPTED_BY_RESTART result, avoiding two conflicting terminals.
+                if (cursor.getLong(9) < startedAt) {
                     return null;
                 }
                 SessionSnapshot result = new SessionSnapshot();
