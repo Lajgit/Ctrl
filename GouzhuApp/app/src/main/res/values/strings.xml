@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">购珠机</string>
     <string name="header_title">点击屏幕套餐\n扫码购珠</string>
+    <string name="header_badge_text">珠</string>
     <string name="header_subtitle">扫码与现金均由平台确认订单并统一下发出珠指令</string>
     <string name="package_section_title">购珠套餐</string>
     <string name="package_section_hint">套餐和价格正在从服务端同步</string>
@@ -22,6 +23,12 @@
     <string name="payment_qr_description">付款二维码</string>
     <string name="machine_temporarily_unavailable">设备暂不可用，请联系工作人员</string>
     <string name="machine_ready">设备已恢复，可以继续购买</string>
+    <string name="dispense_order_started">正在出珠</string>
+    <string name="dispense_order_waiting">请稍候，正在等待控制板计数</string>
+    <string name="dispense_order_count_format">已出 %1$d / %2$d 颗</string>
+    <string name="dispense_order_finished">出珠完成</string>
+    <string name="dispense_order_blocked">出珠异常，请联系工作人员</string>
+    <string name="dispense_order_recovering">正在恢复上一笔订单</string>
     <string name="backend_debug_entry">后台设置（调试入口）</string>
 
     <string name="activation_title">设备激活</string>

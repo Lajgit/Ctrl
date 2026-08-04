@@ -15,6 +15,7 @@ import android.view.WindowInsetsController;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -63,6 +64,10 @@ public class MainActivity extends AppCompatActivity {
     private TextView collectionStatusText;
     private Button collectionStartButton;
     private Button collectionFinishButton;
+    private LinearLayout dispenseOverlay;
+    private ProgressBar dispenseProgress;
+    private TextView dispenseOverlayTitle;
+    private TextView dispenseOverlayStatus;
 
     private PackageOption selectedOption;
     private boolean receiverRegistered;
@@ -86,6 +91,10 @@ public class MainActivity extends AppCompatActivity {
             }
             if (AppConfig.ACTION_COLLECTION_EVENT.equals(intent.getAction())) {
                 handleCollectionEvent(intent);
+                return;
+            }
+            if (AppConfig.ACTION_DISPENSE_ORDER_EVENT.equals(intent.getAction())) {
+                handleDispenseOrderEvent(intent);
                 return;
             }
             if (AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())
@@ -175,6 +184,10 @@ public class MainActivity extends AppCompatActivity {
         collectionStatusText = findViewById(R.id.text_collection_status);
         collectionStartButton = findViewById(R.id.button_collection_start);
         collectionFinishButton = findViewById(R.id.button_collection_finish);
+        dispenseOverlay = findViewById(R.id.layout_dispense_overlay);
+        dispenseProgress = findViewById(R.id.progress_dispense_order);
+        dispenseOverlayTitle = findViewById(R.id.text_dispense_overlay_title);
+        dispenseOverlayStatus = findViewById(R.id.text_dispense_overlay_status);
     }
 
     private void bindActions() {
@@ -428,6 +441,70 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void handleDispenseOrderEvent(Intent intent) {
+        String eventType = intent.getStringExtra("eventType");
+        int requested = intent.getIntExtra("requestedQuantity", 0);
+        int actual = intent.getIntExtra("actualQuantity", 0);
+        int resultCode = intent.getIntExtra("resultCode", 0);
+        String message = intent.getStringExtra("message");
+
+        if ("started".equals(eventType)) {
+            showDispenseOverlay(true);
+            dispenseProgress.setVisibility(View.VISIBLE);
+            dispenseOverlayTitle.setText(R.string.dispense_order_started);
+            dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
+            paymentButton.setEnabled(false);
+            return;
+        }
+        if ("progress".equals(eventType)) {
+            showDispenseOverlay(true);
+            dispenseProgress.setVisibility(View.VISIBLE);
+            dispenseOverlayTitle.setText(R.string.dispense_order_started);
+            dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
+            return;
+        }
+        if ("finished".equals(eventType)) {
+            dispenseOverlayTitle.setText(R.string.dispense_order_finished);
+            dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
+            showDispenseOverlay(false);
+            paymentStatusText.setText(R.string.dispense_order_finished);
+            return;
+        }
+        if ("blocked".equals(eventType)) {
+            showDispenseOverlay(true);
+            dispenseProgress.setVisibility(View.GONE);
+            dispenseOverlayTitle.setText(R.string.dispense_order_blocked);
+            dispenseOverlayStatus.setText(notBlank(message)
+                    ? message
+                    : getString(R.string.dispense_order_count_format, actual, requested));
+            paymentButton.setEnabled(false);
+            paymentStatusText.setText(R.string.machine_temporarily_unavailable);
+            return;
+        }
+        if ("recovering".equals(eventType)) {
+            showDispenseOverlay(true);
+            dispenseProgress.setVisibility(View.GONE);
+            dispenseOverlayTitle.setText(R.string.dispense_order_recovering);
+            dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
+            paymentButton.setEnabled(false);
+        }
+    }
+
+    private void showDispenseOverlay(boolean visible) {
+        dispenseOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    private String formatDispenseCount(int actual, int requested) {
+        if (requested > 0) {
+            return getString(
+                    R.string.dispense_order_count_format,
+                    Math.max(0, actual),
+                    requested
+            );
+        }
+        return getString(R.string.dispense_order_waiting);
+    }
+
     private void handleBoardEvent(int code2) {
         switch (code2) {
             case CODE_BACKEND_SETTINGS_REQUEST:
@@ -474,6 +551,7 @@ public class MainActivity extends AppCompatActivity {
         filter.addAction(AppConfig.ACTION_SERVICE_STATUS);
         filter.addAction(PaymentManager.ACTION_PAYMENT_EVENT);
         filter.addAction(AppConfig.ACTION_COLLECTION_EVENT);
+        filter.addAction(AppConfig.ACTION_DISPENSE_ORDER_EVENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(appReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {

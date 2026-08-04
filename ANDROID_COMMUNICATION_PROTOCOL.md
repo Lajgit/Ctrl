@@ -1,336 +1,120 @@
-# 购珠机控制板与 Android 通信协议 V2.1
+# 购珠机控制板与 Android 通信协议 V2.2
 
-当前控制板固件版本：**2.1.0.0**。Android App 版本：**2.1.3**。
+当前控制板物理出珠协议采用单订单状态机：同一时间只允许一笔 `DispenseOrder`，不再兼容 V2.1 的 8 位 token、Started、Completed/Failed 多事件和 `BoardEventStored` 物理确认。
 
-V2.1 不兼容 1.x。本地价格、现金余额、欠吐队列、现金自动出珠和旧退币兼容逻辑均已删除。
+## 串口帧
 
-> 当前 V2.1 控制板和 Android 均使用 `Code1=0x00、Code2=0x10` 上报 `CashAccepted`。旧 V1.3 表格中的 `0x28 CashAcceptedAmount` 不适用于当前代码。
+固定 14 字节：
 
-核心原则：
-
-```text
-每张纸币/每次有效投币脉冲
-→ 控制板上报本笔金额
-→ Android持久化并上报平台
-→ 平台按设备现金会话累计金额
-→ 平台下发dispense_marbles.quantity
-→ Android转发平台授权数量
-→ 控制板按真实光眼计数出珠
-```
-
-控制板和 Android 都不能根据现金金额自行计算珠数。
-
-## 1. 串口参数
-
-| 参数 | 数值 |
-|---|---|
-| MCU 接口 | USART1，PA9=TX、PA10=RX |
-| Android 节点 | `/dev/ttyS5` |
-| 波特率 | 115200 |
-| 数据格式 | 8N1 |
-| 硬件流控 | 无 |
-
-## 2. 固定14字节帧
-
-| 字节 | 字段 | 说明 |
+| Byte | 字段 | 说明 |
 |---:|---|---|
-| 0 | Head | 固定 `0xAA` |
-| 1 | ResendID | 首发0，重发递增 |
-| 2 | ID | 消息ID |
-| 3 | Code1 | 方向码 |
+| 0 | Head | `0xAA` |
+| 1 | ResendID | 首发 0，重发递增 |
+| 2 | ID | frameId，线路 echo 和 TerminalAck 使用 |
+| 3 | Code1 | `0x00` 控制板到 Android，`0x01` Android 到控制板 |
 | 4 | Code2 | 功能码 |
-| 5 | Data1 | 数据最高字节 |
-| 6 | Data2 | 数据次高字节 |
-| 7 | Data3 | 数据次低字节 |
-| 8 | Data4 | 数据最低字节 |
-| 9 | ACKbyte | 0不要求线路ACK；1要求原样ACK |
-| 10 | ExpandCode | 结果码或扩展字节 |
-| 11 | CRC16_H | CRC高字节 |
-| 12 | CRC16_L | CRC低字节 |
-| 13 | Tail | 固定 `0x55` |
+| 5..8 | Data1..Data4 | 大端业务数据 |
+| 9 | ACKbyte | `1` 表示接收方原帧 echo |
+| 10 | ExpandCode | 结果码 |
+| 11..12 | CRC16 | 覆盖 Byte0..10 |
+| 13 | Tail | `0x55` |
 
-CRC覆盖字节0～10，初值 `0xFFFF`，反向多项式 `0xA001`。
+## Android -> Board
 
-方向码：
+| Code2 | 名称 | Data | ACK | 说明 |
+|---:|---|---|---:|---|
+| `0x00` | VersionRequest | 0 | 0 | 查询固件版本 |
+| `0x10` | Unlock | 0 | 1 | 开锁 |
+| `0x19` | BillReset | 0 | 1 | 复位纸钞机 |
+| `0x1A` | CashEventStored | Data3:4=现金 sequence16 | 1 | Android 已持久化现金事实 |
+| `0x20` | HardwareStatusRequest | 0 | 0 | 查询状态 |
+| `0x30` | DispenseStartOrder | Data1:2=orderSequence16，Data3:4=requestedQuantity16 | 1 | 启动唯一出珠订单 |
+| `0x31` | DispenseTerminalAck | Data1:2=orderSequence16，Data3=terminalFrameId，Data4=0 | 1 | Android 已持久化并处理 Terminal |
+| `0x33` | CashAcceptanceApplyV22 | Data1=现金启用 mask，Data2:4=configVersion24 | 1 | 唯一允许启用现金的命令 |
+| `0xF0` | BoardRestart | `0x424F5441` 进入 Bootloader | 1 | 重启 |
+| `0xFF` | EmergencyStop | 0 | 1 | 停止电机并关闭现金 |
 
-| Code1 | 方向 |
-|---|---|
-| `0x00` | 控制板 → Android |
-| `0x01` | Android → 控制板 |
+旧 `0x18 CashAcceptanceApply` 只能关闭现金，不能启用现金。旧 V2.1 物理命令不再作为平台出珠订单协议使用。
 
-同一个 `Code2` 可以在不同方向复用。例如：
+## Board -> Android
+
+| Code2 | 名称 | Data | ACK | 说明 |
+|---:|---|---|---:|---|
+| `0x00` | VersionReport | `0x02020000` | 0 | 固件 2.2.0.0 |
+| `0x10` | CashAccepted | 见现金事实编码 | 1 | 单笔现金事实 |
+| `0x11` | CashAcceptanceStatus | Data1=实际 mask，Data2:4=configVersion24 | 0 | 现金配置状态 |
+| `0x12` | CashDeviceStatus | 诊断 bitfield | 0 | 现金设备诊断 |
+| `0x20` | BeadStockStatus | 当前库存 | 0 | 库存状态 |
+| `0x21` | BeadLowStock | 当前库存 | 0 | 低库存 |
+| `0x22` | BeadEmpty | 当前库存 | 0 | 无珠，现金保持关闭 |
+| `0x23` | BeadRefilled | 当前库存 | 0 | 已补珠 |
+| `0x27` | BackendSettingsRequest | 1 | 0 | K2 请求进入后台 |
+| `0x40` | DispenseProgress | Data1:2=orderSequence16，Data3:4=actualQuantity16 | 0 | 非可靠进度，仅用于显示 |
+| `0x41` | DispenseTerminal | Data1:2=orderSequence16，Data3:4=actualQuantity16，ExpandCode=resultCode | 1 | 唯一 durable 物理终态 |
+
+## 出珠订单规则
+
+控制板状态：`IDLE -> RUNNING -> WAIT_TERMINAL_ACK -> IDLE/BLOCKED`。
+
+- 只有 `IDLE` 接受 `DispenseStartOrder`。
+- `RUNNING`、`WAIT_TERMINAL_ACK`、`BLOCKED` 均拒绝新订单且不启动电机。
+- 达到 requested 后发送 `DispenseTerminal(resultCode=0, actual=requested)`。
+- 超时、无珠、故障发送 `DispenseTerminal(resultCode!=0, actual=真实 PD4 累计)`。
+- `DispenseTerminal` 持续重发，直到收到匹配 `orderSequence + terminalFrameId` 的 `DispenseTerminalAck`。
+- 成功终态确认后回 `IDLE`，不自动启用现金，等待 Android 重新应用 `0x33`。
+- 零出珠、部分出珠、无珠或故障确认后进入 `BLOCKED`，现金保持关闭，等待补珠或人工复位。
+
+Android 状态：`IDLE -> DISPENSING -> FINISHING -> IDLE/BLOCKED`。
+
+- SQLite 只允许一条 `active_physical_order`。
+- 分配 `orderSequence`、保存 command、创建 active order 必须在同一事务。
+- App 重启后如果存在 active order，不自动重发 `DispenseStartOrder`。
+- 收到 `0x40 Progress` 只更新动画和诊断，不参与成功判定。
+- 收到 `0x41 Terminal` 后先保存原始证据和 command-result outbox，提交成功后才发送 `0x31 TerminalAck`。
+- 只有 `TerminalAck` 获得线路 echo 后，成功订单才能清除 active order 并允许下一单。
+
+成功判定唯一条件：
 
 ```text
-Code1=0x01、Code2=0x10：Unlock
-Code1=0x00、Code2=0x10：CashAccepted
+controllerResultCode == 0
+&& terminalActual > 0
+&& terminalActual == requestedQuantity
 ```
 
-## 3. 两级确认
+其他情况全部失败。若 `terminalActual < lastProgressActual`，对外 `actualQuantity=max(lastProgressActual, terminalActual)`，本地诊断码为 `CONTROLLER_ACTUAL_REGRESSION`，结果仍为 failed。
 
-1. **线路ACK**：原样回传收到的14字节业务字段，只证明串口收到。
-2. **持久化确认**：Android写入SQLite成功后发送 `CashEventStored` 或 `BoardEventStored`。
+## 结果码
 
-现金事实、硬件启动和硬件终态在收到持久化确认前持续重发。
-
-## 4. Android → 控制板
-
-| Code2 | 名称 | 数据 | 说明 |
-|---|---|---|---|
-| `0x00` | VersionRequest | 0 | 查询版本 |
-| `0x01` | DispenseStart | Data1=token；Data2:4=数量 | 仅平台 `dispense_marbles.quantity` 可调用 |
-| `0x02` | CollectStart | Data1=token；Data2:4=最大数量 | 启动存珠 |
-| `0x03` | CollectStop | Data1=token | 停止存珠 |
-| `0x10` | Unlock | 0 | 开锁 |
-| `0x18` | CashAcceptanceApply | Data1=状态掩码；Data2:4=configVersion | 应用现金配置 |
-| `0x19` | BillReset | 0 | 复位纸钞机 |
-| `0x1A` | CashEventStored | Data3:4=现金序号 | Android已持久化该笔现金 |
-| `0x1B` | BoardEventStored | Data1=原事件Code2；Data2=token | Android已持久化关键硬件事件 |
-| `0x20` | HardwareStatusRequest | 0 | 查询硬件状态和未确认现金 |
-| `0xF0` | BoardRestart | `0x424F5441`进入Bootloader | 重启 |
-| `0xFF` | EmergencyStop | 0 | 停止电机；关闭纸钞机和PB13硬币器电源 |
-
-### 4.1 现金状态掩码
-
-```text
-bit0 = 纸钞机实际接收状态
-bit1 = 硬币器12V电源状态
-```
-
-硬币器接口仍为12V、GND和投币脉冲，但12V供电由PB13控制低边MOS：
-
-- PB13高电平：MOS导通，硬币器上电，bit1=1；
-- PB13低电平：MOS截止，硬币器断电，bit1=0；
-- PB13控制极性与PC15电子锁一致；
-- 上电默认关闭纸钞机和硬币器；
-- 新configVersion只有在纸钞机返回`0x3E/0x5E`且实际掩码匹配后才提交；
-- 未启用硬币器时忽略PE15脉冲，不生成现金事实。
-
-## 5. 控制板 → Android
-
-| Code2 | 名称 | 数据 | 说明 |
-|---|---|---|---|
-| `0x00` | VersionReport | `0x02010000` | 固件2.1.0.0 |
-| `0x01` | DispenseStarted | token+目标数量 | 出珠启动 |
-| `0x02` | DispenseProgress | token+真实数量 | PD4累计 |
-| `0x03` | DispenseCompleted | token+真实数量 | 出珠完成 |
-| `0x04` | DispenseFailed | token+真实数量；Expand=结果码 | 失败或部分完成 |
-| `0x05` | CollectStarted | token+上限 | 存珠启动 |
-| `0x06` | CollectProgress | token+真实数量 | PD3累计 |
-| `0x07` | CollectCompleted | token+真实数量 | 存珠完成 |
-| `0x08` | CollectFailed | token+真实数量；Expand=结果码 | 存珠失败 |
-| `0x0D` | AlreadyUnlock | 0 | 已开锁 |
-| `0x10` | CashAccepted | 见第6节 | 一笔现金不可逆进入设备 |
-| `0x11` | CashAcceptanceStatus | Data1=实际掩码；Data2:4=configVersion | 现金配置状态 |
-| `0x12` | CashDeviceStatus | 队列/纸钞状态/启用位 | 诊断状态 |
-| `0x20` | BeadStockStatus | 当前库存 | 库存状态 |
-| `0x21` | BeadLowStock | 当前库存 | 低库存 |
-| `0x22` | BeadEmpty | 当前库存 | 无珠 |
-| `0x23` | BeadRefilled | 当前库存 | 已补珠 |
-| `0x27` | BackendSettingsRequest | 1 | K2（PD13）进入后台 |
-
-光眼映射固定为：PD4 / EXTI4 → 出珠光眼 → HoolleOutput_Pin → Hardware_OnDispensePulse；PD3 / EXTI3 → 存珠光眼 → CardFeedback_Pin → Hardware_OnCollectPulse。
-
-硬件结果码：
-
-| 值 | 含义 |
+| 值 | 名称 |
 |---:|---|
-| `0x00` | 完成 |
-| `0x01` | 忙 |
-| `0x02` | 无珠 |
-| `0x03` | 数量无效 |
-| `0x04` | 光眼超时 |
-| `0x05` | 紧急停止 |
-| `0x06` | 操作不存在/token不匹配 |
+| `0x00` | OK |
+| `0x01` | BUSY |
+| `0x02` | NO_MARBLES |
+| `0x03` | INVALID_QUANTITY |
+| `0x04` | SENSOR_TIMEOUT |
+| `0x05` | ABORTED |
+| `0x06` | NOT_ACTIVE |
+| `0x07` | BLOCKED |
+| `0x08` | ORDER_SEQUENCE_MISMATCH |
 
-## 6. 现金事实编码
+Android 本地诊断可使用：`CONTROLLER_ACTUAL_REGRESSION`、`PHYSICAL_TERMINAL_CONFLICT`、`ACTUAL_QUANTITY_MISMATCH`、`PREVIOUS_PHYSICAL_ORDER_ACTIVE`。
 
-每笔现金单独发送：
+## 现金
 
-```text
-Code1       = 0x00
-Code2       = 0x10
-Data1       = 0硬币，1纸币
-Data2:Data3 = 本笔金额，单位分
-Data4       = 16位现金序号高8位
-ExpandCode  = 16位现金序号低8位
-```
+现金事实仍使用 `CashAccepted` + `CashEventStored(sequence16)`。Android 必须先写入 SQLite/cash outbox，再确认控制板。
 
-100元纸币示例：
+现金启用统一走 `0x33 CashAcceptanceApplyV22`。满足以下条件才允许启用：
 
-```text
-Code1/Code2 = 00 10
-Data1       = 01
-Data2:Data3 = 27 10    // 10000分
-Data4/Expand= 12 34    // 序号0x1234
-```
+- `active_physical_order` 不存在；
+- 本地没有 physical blocked；
+- 库存和控制板状态允许；
+- 当前现金配置有效。
 
-投入两张100元时，控制板发送两笔独立事实：
+订单创建后立即关闭现金。`DISPENSING`、`FINISHING`、`BLOCKED`、TerminalAck 未 echo 时均保持现金关闭。
 
-```text
-序号0x1234：banknote，10000分
-序号0x1235：banknote，10000分
-```
+## 光眼映射
 
-Android上报两次 `cash-event`。平台累计为20000分，再决定下发多少珠。
+- PD4 / EXTI4 -> 出珠光眼 -> `HoolleOutput_Pin` -> `Hardware_OnDispensePulse`
+- PD3 / EXTI3 -> 存珠光眼 -> `CardFeedback_Pin` -> `Hardware_OnCollectPulse`
 
-### 6.1 Android `report/cash-event` JSON
-
-Android收到 `CashAccepted` 后，按控制板现金序号去重，匹配当前现金配置档位，并构造以下JSON：
-
-```json
-{
-  "eventNo": "CE-A-20260803160400123-1234-a1b2c3",
-  "eventType": "accepted",
-  "cashMediumType": "banknote",
-  "denominationAmount": 10000,
-  "cashCount": 1,
-  "boardSequence": 4660,
-  "cashSaleTierNo": "服务端下发的现金档位编号",
-  "configVersion": 29,
-  "timestamp": 1785744240123
-}
-```
-
-字段定义：
-
-| 字段 | 说明 |
-|---|---|
-| `eventNo` | Android生成的现金事件号，格式为时间+板端序号+随机串 |
-| `eventType` | 固定为 `accepted` |
-| `cashMediumType` | `coin` 或 `banknote` |
-| `denominationAmount` | 本笔金额，单位分 |
-| `cashCount` | 固定为1，每笔物理现金单独上报 |
-| `boardSequence` | 控制板生成的16位现金序号，十进制写入JSON |
-| `cashSaleTierNo` | 当前配置中匹配到的现金档位编号；未匹配时为空字符串 |
-| `configVersion` | 匹配档位对应的现金配置版本；未匹配时使用本地当前配置版本 |
-| `timestamp` | Android生成该现金事实时的Unix毫秒时间戳 |
-
-实际MQTT Topic由SDK凭证中的 `reportTopics["cash-event"]` 决定，通常对应：
-
-```text
-pxd/v1/device/{deviceNo}/report/cash-event
-```
-
-Android处理顺序：
-
-```text
-构造JSON
-→ 写入cash_events和cash outbox
-→ 发送CashEventStored(sequence)确认控制板
-→ 尝试发布report/cash-event
-→ 失败时保留原始JSON，后续从outbox重发
-```
-
-App日志使用Tag `GouzhuMqtt`，每次准备发布或从outbox重发时打印：
-
-```text
-现金事实上报JSON={...}
-```
-
-## 7. 多笔现金队列
-
-控制板Flash保存最多16笔尚未被Android确认的现金事实：
-
-```text
-CashSequenceCounter
-CashQueueHead
-CashQueueCount
-CashQueueSequence[16]
-CashQueuePacked[16]
-```
-
-流程：
-
-1. 现金进入后先加入队列并请求Flash保存；
-2. 主循环完成Flash写入后发送队列头；
-3. Android写入SQLite和cash outbox；
-4. Android发送 `CashEventStored(sequence)`；
-5. 控制板删除队列头并发送下一笔；
-6. Android断线或重启时，控制板继续重发同一序号和金额。
-
-队列满时：
-
-- 纸钞机在escrow阶段退回纸币；
-- 三线硬币器无法物理拒收，控制板置队列溢出告警；
-- 正常生产必须保证Android持续在线并监控队列数量。
-
-`CashDeviceStatus`：
-
-```text
-bit31       = 现金队列溢出
-bit24..30   = 队列数量
-bit16..23   = 最近纸币类型
-bit8..15    = 最近纸钞机状态
-bit1        = 纸钞机实际启用状态
-bit0        = 硬币器PB13电源实际启用状态
-```
-
-常见低两位：
-
-```text
-0x0 = 纸钞机关闭，硬币器关闭
-0x1 = 纸钞机关闭，硬币器开启
-0x2 = 纸钞机开启，硬币器关闭
-0x3 = 纸钞机开启，硬币器开启
-```
-
-注意：`CashDeviceStatus` 的低两位顺序与 `CashAcceptanceApply/CashAcceptanceStatus` 的状态掩码定义不同：
-
-```text
-现金配置掩码：bit0纸钞机，bit1硬币器
-诊断状态低位：bit1纸钞机，bit0硬币器
-```
-
-## 8. 平台累计现金时序
-
-```text
-投入第一张100元
-→ 控制板Flash保存并上报10000分/seq1
-→ Android SQLite保存并确认seq1
-→ Android上报cash-event1
-
-投入第二张100元
-→ 控制板Flash保存并上报10000分/seq2
-→ Android SQLite保存并确认seq2
-→ Android上报cash-event2
-
-平台将同一设备现金会话累计为20000分
-→ 平台计算珠数
-→ 平台下发dispense_marbles(quantity=N)
-→ Android持久化命令和ACK
-→ Android发送DispenseStart(token,N)
-→ 控制板按PD4真实计数执行
-→ Android上报actualQuantity
-```
-
-`cash_event_response.requestedQuantity` 不能直接启动电机。唯一出珠授权仍是 `dispense_marbles`。
-
-平台必须定义现金会话结束规则，例如：
-
-- 距最后一笔现金2～5秒无新现金；
-- 达到某个金额档位后结算；
-- 平台订单明确关闭；
-- 单笔现金分别生成多个出珠命令。
-
-若平台收到每笔现金后立即下发出珠，则两张100元会形成两次出珠；若需要合并成一次出珠，必须由平台延迟结算并累计。
-
-## 9. 幂等与掉电恢复
-
-- 相同MQTT `messageId` 不得重复启动电机；
-- Android发送电机命令前先保存“可能已启动”状态；
-- Android进程重启后禁止自动重启电机；
-- 控制板关键启动/终态在收到 `BoardEventStored` 前持续重发；
-- MQTT PUBACK不能删除业务outbox；
-- 平台 `command_result_ack.recorded` 才能删除命令结果outbox；
-- 现金 `unknown` 响应必须重发原eventNo和原payload；
-- 每笔现金以板端sequence和App端eventNo双重幂等。
-
-## 10. 版本约束
-
-```text
-Android：2.1.3
-控制板：2.1.0.0
-协议：V2.1
-```
-
-必须成套升级，禁止与2.0的单笔现金阻塞固件或1.x本地现金出珠固件混用。
+存珠保留为本地维护功能，不再作为平台 active physical order。
