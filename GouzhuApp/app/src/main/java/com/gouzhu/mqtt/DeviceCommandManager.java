@@ -24,6 +24,8 @@ public final class DeviceCommandManager {
     public static final String COLLECTION_FINISHED = "finished";
     public static final String COLLECTION_FAILED = "failed";
 
+    private static final long MIN_COLLECTION_STATE_VERSION = 0x02020002L;
+
     private static volatile DeviceCommandManager instance;
 
     private final Context context;
@@ -88,7 +90,16 @@ public final class DeviceCommandManager {
             return;
         }
         if (collectionManager.handlesCollect(payload)) {
-            collectionManager.handleCollect(topic, payload);
+            if (store.getBoardVersion() < MIN_COLLECTION_STATE_VERSION) {
+                rejectCommand(
+                        topic,
+                        payload,
+                        "CONTROLLER_PROTOCOL_UNSUPPORTED",
+                        "member deposit requires controller protocol 2.2.0.2"
+                );
+            } else {
+                collectionManager.handleCollect(topic, payload);
+            }
             return;
         }
 
