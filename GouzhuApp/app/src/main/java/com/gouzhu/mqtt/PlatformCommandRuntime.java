@@ -683,14 +683,22 @@ final class PlatformCommandRuntime {
             return false;
         }
 
+        Log.i(
+                TAG,
+                "收到出珠终态："
+                        + "state=" + active.state
+                        + ", sequence=" + evidence.orderSequence
+                        + ", requested=" + active.requestedQuantity
+                        + ", terminalActual=" + evidence.terminalActual
+                        + ", progressActual=" + evidence.lastProgressActual
+                        + ", controllerResult=" + evidence.controllerResultCode
+        );
+
         int finalActual = Math.max(
                 Math.max(active.lastProgressActual, evidence.lastProgressActual),
                 evidence.terminalActual
         );
-        boolean success = "FINISHING".equals(active.state)
-                && evidence.controllerResultCode == 0
-                && evidence.terminalActual > 0
-                && evidence.terminalActual == active.requestedQuantity;
+        boolean success = isSuccessfulTerminal(active, evidence);
         String resultCode = terminalResultCode(active, evidence, success);
         String resultMessage = terminalResultMessage(active, evidence, success);
         String eventNo = blank(active.terminalEventNo)
@@ -763,12 +771,12 @@ final class PlatformCommandRuntime {
             }
             MqttManager.get(context).reportCommandResult(terminal.payload);
             broadcastDispenseOrder(
-                    success ? "finished" : "blocked",
+                    success ? "finishing" : "blocked",
                     evidence.orderSequence,
                     active.requestedQuantity,
                     finalActual,
                     evidence.controllerResultCode,
-                    resultMessage
+                    success ? "finishing dispense order" : resultMessage
             );
             return true;
         } catch (Throwable error) {
@@ -786,18 +794,44 @@ final class PlatformCommandRuntime {
         if (active == null || active.orderSequence != evidence.orderSequence) {
             return;
         }
-        boolean success = evidence.controllerResultCode == 0
-                && evidence.terminalActual > 0
-                && evidence.terminalActual == active.requestedQuantity;
+        boolean success = isSuccessfulTerminal(active, evidence);
         if (echoed) {
-            store.markTerminalAckEchoed(
+            boolean updated = store.markTerminalAckEchoed(
                     evidence.orderSequence,
                     evidence.frameId,
                     success
             );
+            if (!updated) {
+                reportStorageFault(
+                        "terminal ack echo state could not be saved: seq="
+                                + evidence.orderSequence
+                                + ", frameId=" + evidence.frameId
+                );
+                return;
+            }
+
             liveCommands.remove(active.messageId);
-            if (success && canEnableCash()) {
-                reapplyCashConfiguration();
+            if (success) {
+                broadcastDispenseOrder(
+                        "finished",
+                        evidence.orderSequence,
+                        active.requestedQuantity,
+                        evidence.terminalActual,
+                        evidence.controllerResultCode,
+                        "dispense completed"
+                );
+                if (canEnableCash()) {
+                    reapplyCashConfiguration();
+                }
+            } else {
+                broadcastDispenseOrder(
+                        "blocked",
+                        evidence.orderSequence,
+                        active.requestedQuantity,
+                        Math.max(active.lastProgressActual, evidence.terminalActual),
+                        evidence.controllerResultCode,
+                        terminalResultMessage(active, evidence, false)
+                );
             }
             return;
         }
@@ -1032,6 +1066,21 @@ final class PlatformCommandRuntime {
                 handleTerminalAckEcho(active.messageId, evidence, echoed);
             });
         }
+    }
+
+    private static boolean isSuccessfulTerminal(
+            DeviceCommandStore.ActivePhysicalOrder active,
+            SerialMarbleHardwareAdapter.ControllerTerminalEvidence evidence
+    ) {
+        if (active == null || evidence == null) {
+            return false;
+        }
+        boolean validOrderState = "DISPENSING".equals(active.state)
+                || "FINISHING".equals(active.state);
+        return validOrderState
+                && evidence.controllerResultCode == 0
+                && evidence.terminalActual > 0
+                && evidence.terminalActual == active.requestedQuantity;
     }
 
     private String terminalResultCode(
