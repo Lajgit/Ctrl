@@ -6,6 +6,13 @@
 #include "tim.h"
 #include "string.h"
 
+typedef struct
+{
+    bool active;
+    uint16_t requestedQuantity;
+    uint16_t actualQuantity;
+} CollectMaintenance_t;
+
 BeadMotor_t BeadMotor1;
 BeadMotor_t BeadMotor2;
 Lock_t Lock;
@@ -13,83 +20,88 @@ Lock_t Lock;
 extern Event_Handle_t Mesg_event;
 extern Setting_TypeDef Setting;
 
-static HardwareOperation_t DispenseOperation;
-static HardwareOperation_t CollectOperation;
-static HardwareEventSnapshot_t DispenseStartedSnapshot;
-static HardwareEventSnapshot_t DispenseTerminalSnapshot;
-static HardwareEventSnapshot_t CollectStartedSnapshot;
-static HardwareEventSnapshot_t CollectTerminalSnapshot;
+static DispenseOrder_t DispenseOrder;
+static LastDispenseResult_t LastDispenseResult;
+static CollectMaintenance_t CollectMaintenance;
 static bool LowStockNotified = false;
 
-static void Hardware_ResetOperation(HardwareOperation_t *operation)
+static void Hardware_ResetDispenseOrder(void)
 {
-    memset(operation, 0, sizeof(*operation));
-    operation->result = HW_RESULT_OK;
+    memset(&DispenseOrder, 0, sizeof(DispenseOrder));
+    DispenseOrder.state = DISPENSE_STATE_IDLE;
+    DispenseOrder.resultCode = HW_RESULT_OK;
 }
 
-static void Hardware_SetImmediateResult(HardwareOperation_t *operation,
-                                        uint8_t token,
-                                        uint32_t requested,
-                                        uint8_t result)
+static bool Hardware_IsDispenseSuccess(const DispenseOrder_t *order)
 {
-    Hardware_ResetOperation(operation);
-    operation->token = token;
-    operation->requested = requested;
-    operation->actual = 0U;
-    operation->active = false;
-    operation->result = result;
+    return (order != NULL) &&
+           (order->resultCode == HW_RESULT_OK) &&
+           (order->actualQuantity == order->requestedQuantity) &&
+           (order->actualQuantity > 0U);
 }
 
-static bool Hardware_WriteSnapshot(HardwareEventSnapshot_t *snapshot,
-                                   const HardwareOperation_t *operation)
+static void Hardware_SaveLastDispenseResult(void)
 {
-    if ((snapshot == NULL) || (operation == NULL) || snapshot->pending)
+    LastDispenseResult.valid = true;
+    LastDispenseResult.orderSequence = DispenseOrder.orderSequence;
+    LastDispenseResult.requestedQuantity = DispenseOrder.requestedQuantity;
+    LastDispenseResult.actualQuantity = DispenseOrder.actualQuantity;
+    LastDispenseResult.resultCode = DispenseOrder.resultCode;
+    LastDispenseResult.terminalFrameId = DispenseOrder.terminalFrameId;
+}
+
+static bool Hardware_LastMatches(uint16_t order_sequence,
+                                 uint16_t requested_quantity)
+{
+    return LastDispenseResult.valid &&
+           (LastDispenseResult.orderSequence == order_sequence) &&
+           (LastDispenseResult.requestedQuantity == requested_quantity);
+}
+
+static void Hardware_SendDispenseReject(uint16_t order_sequence,
+                                        uint16_t actual_quantity,
+                                        uint8_t result_code)
+{
+    (void)Comm_SendDispenseTerminalOnce(order_sequence,
+                                        actual_quantity,
+                                        result_code);
+}
+
+static void Hardware_StopDispenseMotor(void)
+{
+    BeadMotor1.motor.Stop(&BeadMotor1.motor);
+    BeadMotor1.motor.state = DEVICE_STATE_IDLE;
+    BeadMotor1.remain_num = 0U;
+    BeadMotor1.retry_count = 0U;
+}
+
+static void Hardware_StopCollectMotor(void)
+{
+    BeadMotor2.motor.Stop(&BeadMotor2.motor);
+    BeadMotor2.motor.state = DEVICE_STATE_IDLE;
+    BeadMotor2.remain_num = 0U;
+    BeadMotor2.retry_count = 0U;
+}
+
+static bool Hardware_HasNoBead(void)
+{
+    return (Setting.BeadStock == 0U) ||
+           ((Setting.HardwareFlags & HARDWARE_FLAG_NO_BEAD) != 0U);
+}
+
+static void Hardware_SetDispenseTerminal(uint8_t result_code)
+{
+    if (DispenseOrder.state != DISPENSE_STATE_RUNNING)
     {
-        return false;
+        return;
     }
 
-    snapshot->token = operation->token;
-    snapshot->requested = operation->requested;
-    snapshot->actual = operation->actual;
-    snapshot->result = operation->result;
-    snapshot->pending = true;
-    return true;
-}
-
-static bool Hardware_HasPendingDispenseEvent(void)
-{
-    return DispenseStartedSnapshot.pending ||
-           DispenseTerminalSnapshot.pending ||
-           Comm_HasPendingDispenseTerminal();
-}
-
-static bool Hardware_HasPendingCollectEvent(void)
-{
-    return CollectStartedSnapshot.pending ||
-           CollectTerminalSnapshot.pending ||
-           Comm_HasPendingCollectTerminal();
-}
-
-static void Hardware_SetDispenseFailedEvent(uint8_t token,
-                                            uint32_t requested,
-                                            uint8_t result)
-{
-    Hardware_SetImmediateResult(&DispenseOperation, token, requested, result);
-    if (Hardware_WriteSnapshot(&DispenseTerminalSnapshot, &DispenseOperation))
-    {
-        EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
-    }
-}
-
-static void Hardware_SetCollectFailedEvent(uint8_t token,
-                                           uint32_t requested,
-                                           uint8_t result)
-{
-    Hardware_SetImmediateResult(&CollectOperation, token, requested, result);
-    if (Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
-    {
-        EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
-    }
+    Hardware_StopDispenseMotor();
+    DispenseOrder.resultCode = result_code;
+    DispenseOrder.terminalFrameId = 0U;
+    DispenseOrder.terminalPending = true;
+    DispenseOrder.state = DISPENSE_STATE_WAIT_TERMINAL_ACK;
+    EventGroupSetBits(&Mesg_event, MesgEvent_DispenseTerminal);
 }
 
 static void Ctrl_BeadMotor(BeadMotor_t *bead_motor,
@@ -234,158 +246,177 @@ void Device_StopAllImmediately(void)
 
 void Hardware_Init(void)
 {
-    Hardware_ResetOperation(&DispenseOperation);
-    Hardware_ResetOperation(&CollectOperation);
-    memset(&DispenseStartedSnapshot, 0, sizeof(DispenseStartedSnapshot));
-    memset(&DispenseTerminalSnapshot, 0, sizeof(DispenseTerminalSnapshot));
-    memset(&CollectStartedSnapshot, 0, sizeof(CollectStartedSnapshot));
-    memset(&CollectTerminalSnapshot, 0, sizeof(CollectTerminalSnapshot));
+    Hardware_ResetDispenseOrder();
+    memset(&LastDispenseResult, 0, sizeof(LastDispenseResult));
+    memset(&CollectMaintenance, 0, sizeof(CollectMaintenance));
     LowStockNotified = Setting.BeadStock <= HARDWARE_LOW_STOCK_THRESHOLD;
-
-    /* 新协议上电一律关闭现金，等待平台完整现金配置下发并应用。 */
     CashAcceptance_Disable();
 }
 
-bool Hardware_StartDispense(uint8_t token, uint32_t quantity)
+bool Hardware_StartDispenseOrder(uint16_t order_sequence,
+                                 uint16_t requested_quantity)
 {
-    if (Hardware_HasPendingDispenseEvent())
+    if (DispenseOrder.state == DISPENSE_STATE_RUNNING)
     {
-        return false;
-    }
-
-    if ((token == 0U) || (quantity == 0U) ||
-        (quantity > HARDWARE_MAX_OPERATION_QUANTITY))
-    {
-        Hardware_SetDispenseFailedEvent(token, quantity, HW_RESULT_INVALID_QUANTITY);
-        return false;
-    }
-    if (DispenseOperation.active || CollectOperation.active ||
-        (BeadMotor1.motor.state != DEVICE_STATE_IDLE) ||
-        (BeadMotor2.motor.state != DEVICE_STATE_IDLE))
-    {
-        Hardware_SetDispenseFailedEvent(token, quantity, HW_RESULT_BUSY);
-        return false;
-    }
-    if ((Setting.BeadStock == 0U) ||
-        ((Setting.HardwareFlags & HARDWARE_FLAG_NO_BEAD) != 0U))
-    {
-        Hardware_SetDispenseFailedEvent(token, quantity, HW_RESULT_NO_BEAD);
-        EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
-        return false;
-    }
-
-    Hardware_ResetOperation(&DispenseOperation);
-    DispenseOperation.active = true;
-    DispenseOperation.token = token;
-    DispenseOperation.requested = quantity;
-    if (!Hardware_WriteSnapshot(&DispenseStartedSnapshot, &DispenseOperation))
-    {
-        Hardware_ResetOperation(&DispenseOperation);
-        return false;
-    }
-    BeadMotor_Output(&BeadMotor1, (uint16_t)quantity);
-    EventGroupSetBits(&Mesg_event, MesgEvent_DispenseStarted);
-    return true;
-}
-
-bool Hardware_StartCollect(uint8_t token, uint32_t maximum_quantity)
-{
-    if (Hardware_HasPendingCollectEvent())
-    {
-        return false;
-    }
-
-    if ((token == 0U) || (maximum_quantity == 0U) ||
-        (maximum_quantity > HARDWARE_MAX_OPERATION_QUANTITY))
-    {
-        Hardware_SetCollectFailedEvent(token,
-                                       maximum_quantity,
-                                       HW_RESULT_INVALID_QUANTITY);
-        return false;
-    }
-    if (DispenseOperation.active || CollectOperation.active ||
-        (BeadMotor1.motor.state != DEVICE_STATE_IDLE) ||
-        (BeadMotor2.motor.state != DEVICE_STATE_IDLE))
-    {
-        Hardware_SetCollectFailedEvent(token, maximum_quantity, HW_RESULT_BUSY);
-        return false;
-    }
-
-    Hardware_ResetOperation(&CollectOperation);
-    CollectOperation.active = true;
-    CollectOperation.token = token;
-    CollectOperation.requested = maximum_quantity;
-    if (!Hardware_WriteSnapshot(&CollectStartedSnapshot, &CollectOperation))
-    {
-        Hardware_ResetOperation(&CollectOperation);
-        return false;
-    }
-    BeadMotor_Output(&BeadMotor2, (uint16_t)maximum_quantity);
-    EventGroupSetBits(&Mesg_event, MesgEvent_CollectStarted);
-    return true;
-}
-
-void Hardware_StopCollect(uint8_t token)
-{
-    if (!CollectOperation.active || (token != CollectOperation.token))
-    {
-        if (Hardware_HasPendingCollectEvent())
+        if ((DispenseOrder.orderSequence == order_sequence) &&
+            (DispenseOrder.requestedQuantity == requested_quantity))
         {
-            return;
+            return true;
         }
-        Hardware_SetCollectFailedEvent(token, 0U, HW_RESULT_NOT_ACTIVE);
+        Hardware_SendDispenseReject(order_sequence,
+                                    0U,
+                                    DispenseOrder.orderSequence == order_sequence
+                                        ? HW_RESULT_ORDER_SEQUENCE_MISMATCH
+                                        : HW_RESULT_BUSY);
+        return false;
+    }
+
+    if (DispenseOrder.state == DISPENSE_STATE_WAIT_TERMINAL_ACK)
+    {
+        if ((DispenseOrder.orderSequence == order_sequence) &&
+            (DispenseOrder.requestedQuantity == requested_quantity))
+        {
+            EventGroupSetBits(&Mesg_event, MesgEvent_DispenseTerminal);
+            return true;
+        }
+        Hardware_SendDispenseReject(order_sequence,
+                                    0U,
+                                    DispenseOrder.orderSequence == order_sequence
+                                        ? HW_RESULT_ORDER_SEQUENCE_MISMATCH
+                                        : HW_RESULT_BUSY);
+        return false;
+    }
+
+    if (DispenseOrder.state == DISPENSE_STATE_BLOCKED)
+    {
+        if (Hardware_LastMatches(order_sequence, requested_quantity))
+        {
+            Hardware_SendDispenseReject(order_sequence,
+                                        LastDispenseResult.actualQuantity,
+                                        LastDispenseResult.resultCode);
+        }
+        else
+        {
+            Hardware_SendDispenseReject(order_sequence,
+                                        0U,
+                                        LastDispenseResult.valid &&
+                                                (LastDispenseResult.orderSequence == order_sequence)
+                                            ? HW_RESULT_ORDER_SEQUENCE_MISMATCH
+                                            : HW_RESULT_BLOCKED);
+        }
+        return false;
+    }
+
+    if (Hardware_LastMatches(order_sequence, requested_quantity))
+    {
+        Hardware_SendDispenseReject(order_sequence,
+                                    LastDispenseResult.actualQuantity,
+                                    LastDispenseResult.resultCode);
+        return false;
+    }
+    if (LastDispenseResult.valid &&
+        (LastDispenseResult.orderSequence == order_sequence))
+    {
+        Hardware_SendDispenseReject(order_sequence,
+                                    0U,
+                                    HW_RESULT_ORDER_SEQUENCE_MISMATCH);
+        return false;
+    }
+
+    if ((order_sequence == 0U) || (requested_quantity == 0U))
+    {
+        Hardware_SendDispenseReject(order_sequence,
+                                    0U,
+                                    HW_RESULT_INVALID_QUANTITY);
+        return false;
+    }
+    if (CollectMaintenance.active ||
+        (BeadMotor1.motor.state != DEVICE_STATE_IDLE) ||
+        (BeadMotor2.motor.state != DEVICE_STATE_IDLE))
+    {
+        Hardware_SendDispenseReject(order_sequence, 0U, HW_RESULT_BUSY);
+        return false;
+    }
+
+    memset(&DispenseOrder, 0, sizeof(DispenseOrder));
+    DispenseOrder.state = DISPENSE_STATE_RUNNING;
+    DispenseOrder.orderSequence = order_sequence;
+    DispenseOrder.requestedQuantity = requested_quantity;
+    DispenseOrder.resultCode = HW_RESULT_OK;
+
+    CashAcceptance_Disable();
+
+    if (Hardware_HasNoBead())
+    {
+        Setting.BeadStock = 0U;
+        Setting.HardwareFlags |= HARDWARE_FLAG_NO_BEAD;
+        LowStockNotified = true;
+        FlashTask_RequestSave();
+        EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
+        EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
+        Hardware_SetDispenseTerminal(HW_RESULT_NO_BEAD);
+        return false;
+    }
+
+    BeadMotor_Output(&BeadMotor1, requested_quantity);
+    return true;
+}
+
+bool Hardware_StartCollect(uint32_t maximum_quantity)
+{
+    if ((maximum_quantity == 0U) ||
+        (maximum_quantity > HARDWARE_MAX_OPERATION_QUANTITY) ||
+        (DispenseOrder.state != DISPENSE_STATE_IDLE) ||
+        CollectMaintenance.active ||
+        (BeadMotor1.motor.state != DEVICE_STATE_IDLE) ||
+        (BeadMotor2.motor.state != DEVICE_STATE_IDLE))
+    {
+        return false;
+    }
+
+    CollectMaintenance.active = true;
+    CollectMaintenance.requestedQuantity = (uint16_t)maximum_quantity;
+    CollectMaintenance.actualQuantity = 0U;
+    CashAcceptance_Disable();
+    BeadMotor_Output(&BeadMotor2, (uint16_t)maximum_quantity);
+    return true;
+}
+
+void Hardware_StopCollect(void)
+{
+    if (!CollectMaintenance.active)
+    {
         return;
     }
 
-    BeadMotor2.motor.Stop(&BeadMotor2.motor);
-    BeadMotor2.motor.state = DEVICE_STATE_IDLE;
-    BeadMotor2.remain_num = 0U;
-    BeadMotor2.retry_count = 0U;
-    CollectOperation.result = HW_RESULT_OK;
-    if (Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
-    {
-        CollectOperation.active = false;
-        EventGroupSetBits(&Mesg_event, MesgEvent_CollectCompleted);
-    }
+    Hardware_StopCollectMotor();
+    CollectMaintenance.active = false;
+    EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
 }
 
 void Hardware_AbortAll(void)
 {
-    bool dispense_was_active = DispenseOperation.active;
-    bool collect_was_active = CollectOperation.active;
+    bool dispense_running = DispenseOrder.state == DISPENSE_STATE_RUNNING;
 
     Device_StopAllImmediately();
-    if (dispense_was_active)
+    if (dispense_running)
     {
-        DispenseOperation.result = HW_RESULT_ABORTED;
-        if (Hardware_WriteSnapshot(&DispenseTerminalSnapshot, &DispenseOperation))
-        {
-            DispenseOperation.active = false;
-            EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
-        }
+        Hardware_SetDispenseTerminal(HW_RESULT_ABORTED);
     }
-    if (collect_was_active)
-    {
-        CollectOperation.result = HW_RESULT_ABORTED;
-        if (Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
-        {
-            CollectOperation.active = false;
-            EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
-        }
-    }
+    CollectMaintenance.active = false;
 }
 
 void Hardware_OnDispensePulse(void)
 {
-    if (!DispenseOperation.active)
+    if (DispenseOrder.state != DISPENSE_STATE_RUNNING)
     {
         return;
     }
 
     BeadMotor_Feedback(&BeadMotor1);
-    if (DispenseOperation.actual < DispenseOperation.requested)
+    if (DispenseOrder.actualQuantity < DispenseOrder.requestedQuantity)
     {
-        DispenseOperation.actual++;
+        DispenseOrder.actualQuantity++;
     }
     if (Setting.BeadStock > 0U)
     {
@@ -402,80 +433,111 @@ void Hardware_OnDispensePulse(void)
         EventGroupSetBits(&Mesg_event, MesgEvent_BeadLowStock);
     }
 
-    if (DispenseOperation.actual >= DispenseOperation.requested)
+    if (DispenseOrder.actualQuantity >= DispenseOrder.requestedQuantity)
     {
-        DispenseOperation.result = HW_RESULT_OK;
-        if (Hardware_WriteSnapshot(&DispenseTerminalSnapshot, &DispenseOperation))
-        {
-            DispenseOperation.active = false;
-            EventGroupSetBits(&Mesg_event, MesgEvent_DispenseCompleted);
-        }
+        Hardware_SetDispenseTerminal(HW_RESULT_OK);
     }
 }
 
 void Hardware_OnCollectPulse(void)
 {
-    if (!CollectOperation.active)
+    if (!CollectMaintenance.active)
     {
         return;
     }
 
     BeadMotor_Feedback(&BeadMotor2);
-    if (CollectOperation.actual < CollectOperation.requested)
+    if (CollectMaintenance.actualQuantity < CollectMaintenance.requestedQuantity)
     {
-        CollectOperation.actual++;
-    }
-    EventGroupSetBits(&Mesg_event, MesgEvent_CollectProgress);
-    if (CollectOperation.actual >= CollectOperation.requested)
-    {
-        CollectOperation.result = HW_RESULT_OK;
-        if (Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
+        CollectMaintenance.actualQuantity++;
+        if (Setting.BeadStock < 0xFFFFU)
         {
-            CollectOperation.active = false;
-            EventGroupSetBits(&Mesg_event, MesgEvent_CollectCompleted);
+            Setting.BeadStock++;
+            Setting.HardwareFlags &= ~HARDWARE_FLAG_NO_BEAD;
+            LowStockNotified = Setting.BeadStock <= HARDWARE_LOW_STOCK_THRESHOLD;
+            FlashTask_RequestSave();
+            EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
         }
+    }
+    if (CollectMaintenance.actualQuantity >= CollectMaintenance.requestedQuantity)
+    {
+        Hardware_StopCollect();
     }
 }
 
 void Hardware_OnDispenseTimeout(void)
 {
-    if (!DispenseOperation.active)
+    if (DispenseOrder.state != DISPENSE_STATE_RUNNING)
     {
         return;
     }
 
-    DispenseOperation.result = HW_RESULT_SENSOR_TIMEOUT;
-    if (!Hardware_WriteSnapshot(&DispenseTerminalSnapshot, &DispenseOperation))
-    {
-        return;
-    }
-
-    DispenseOperation.active = false;
     Setting.BeadStock = 0U;
     Setting.HardwareFlags |= HARDWARE_FLAG_NO_BEAD;
     LowStockNotified = true;
     CashAcceptance_Disable();
     FlashTask_RequestSave();
 
-    EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
+    Hardware_SetDispenseTerminal(HW_RESULT_SENSOR_TIMEOUT);
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
 }
 
 void Hardware_OnCollectTimeout(void)
 {
-    if (!CollectOperation.active)
-    {
-        return;
-    }
-    CollectOperation.result = HW_RESULT_SENSOR_TIMEOUT;
-    if (!Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
+    if (!CollectMaintenance.active)
     {
         return;
     }
 
-    CollectOperation.active = false;
-    EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
+    Hardware_StopCollect();
+}
+
+void Hardware_ConfirmDispenseTerminal(uint16_t order_sequence,
+                                      uint8_t terminal_frame_id)
+{
+    bool success;
+
+    if (LastDispenseResult.valid &&
+        (LastDispenseResult.orderSequence == order_sequence) &&
+        (LastDispenseResult.terminalFrameId == terminal_frame_id))
+    {
+        return;
+    }
+
+    if ((DispenseOrder.state != DISPENSE_STATE_WAIT_TERMINAL_ACK) ||
+        !DispenseOrder.terminalPending ||
+        (DispenseOrder.orderSequence != order_sequence) ||
+        (DispenseOrder.terminalFrameId == 0U) ||
+        (DispenseOrder.terminalFrameId != terminal_frame_id))
+    {
+        return;
+    }
+
+    success = Hardware_IsDispenseSuccess(&DispenseOrder);
+    Hardware_SaveLastDispenseResult();
+    Comm_RemoveDispenseTerminal(order_sequence, terminal_frame_id);
+    DispenseOrder.terminalPending = false;
+
+    if (success)
+    {
+        Hardware_ResetDispenseOrder();
+    }
+    else
+    {
+        DispenseOrder.state = DISPENSE_STATE_BLOCKED;
+        CashAcceptance_Disable();
+    }
+}
+
+void Hardware_MarkDispenseTerminalQueued(uint8_t terminal_frame_id)
+{
+    if ((DispenseOrder.state == DISPENSE_STATE_WAIT_TERMINAL_ACK) &&
+        DispenseOrder.terminalPending &&
+        (terminal_frame_id != 0U))
+    {
+        DispenseOrder.terminalFrameId = terminal_frame_id;
+    }
 }
 
 void Hardware_Refill(void)
@@ -485,7 +547,11 @@ void Hardware_Refill(void)
     LowStockNotified = false;
     FlashTask_RequestSave();
 
-    /* 补珠只恢复库存事实，不恢复旧任务，也不自动开启现金接收。 */
+    if (DispenseOrder.state == DISPENSE_STATE_BLOCKED)
+    {
+        Hardware_ResetDispenseOrder();
+    }
+
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadRefilled);
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
 }
@@ -494,13 +560,13 @@ void Hardware_RequestStatus(void)
 {
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
     CashAcceptance_RequestStatus();
-    if (DispenseOperation.active)
+    if (DispenseOrder.state == DISPENSE_STATE_RUNNING)
     {
         EventGroupSetBits(&Mesg_event, MesgEvent_DispenseProgress);
     }
-    if (CollectOperation.active)
+    if (DispenseOrder.state == DISPENSE_STATE_WAIT_TERMINAL_ACK)
     {
-        EventGroupSetBits(&Mesg_event, MesgEvent_CollectProgress);
+        EventGroupSetBits(&Mesg_event, MesgEvent_DispenseTerminal);
     }
 }
 
@@ -516,62 +582,26 @@ bool Hardware_IsNoBead(void)
 
 bool Hardware_IsDispenseActive(void)
 {
-    return DispenseOperation.active;
+    return DispenseOrder.state == DISPENSE_STATE_RUNNING;
 }
 
 bool Hardware_IsCollectActive(void)
 {
-    return CollectOperation.active;
+    return CollectMaintenance.active;
 }
 
-const HardwareOperation_t *Hardware_GetDispenseReport(void)
+bool Hardware_CanEnableCashAcceptance(void)
 {
-    return &DispenseOperation;
+    return (DispenseOrder.state == DISPENSE_STATE_IDLE) &&
+           !CollectMaintenance.active &&
+           (BeadMotor1.motor.state == DEVICE_STATE_IDLE) &&
+           (BeadMotor2.motor.state == DEVICE_STATE_IDLE) &&
+           !Hardware_HasNoBead();
 }
 
-const HardwareOperation_t *Hardware_GetCollectReport(void)
+const DispenseOrder_t *Hardware_GetDispenseOrder(void)
 {
-    return &CollectOperation;
-}
-
-const HardwareEventSnapshot_t *Hardware_GetDispenseStartedSnapshot(void)
-{
-    return &DispenseStartedSnapshot;
-}
-
-const HardwareEventSnapshot_t *Hardware_GetDispenseTerminalSnapshot(void)
-{
-    return &DispenseTerminalSnapshot;
-}
-
-const HardwareEventSnapshot_t *Hardware_GetCollectStartedSnapshot(void)
-{
-    return &CollectStartedSnapshot;
-}
-
-const HardwareEventSnapshot_t *Hardware_GetCollectTerminalSnapshot(void)
-{
-    return &CollectTerminalSnapshot;
-}
-
-void Hardware_ClearDispenseStartedSnapshot(void)
-{
-    memset(&DispenseStartedSnapshot, 0, sizeof(DispenseStartedSnapshot));
-}
-
-void Hardware_ClearDispenseTerminalSnapshot(void)
-{
-    memset(&DispenseTerminalSnapshot, 0, sizeof(DispenseTerminalSnapshot));
-}
-
-void Hardware_ClearCollectStartedSnapshot(void)
-{
-    memset(&CollectStartedSnapshot, 0, sizeof(CollectStartedSnapshot));
-}
-
-void Hardware_ClearCollectTerminalSnapshot(void)
-{
-    memset(&CollectTerminalSnapshot, 0, sizeof(CollectTerminalSnapshot));
+    return &DispenseOrder;
 }
 
 void CtrlTask(void)

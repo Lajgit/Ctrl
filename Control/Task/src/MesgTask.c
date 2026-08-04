@@ -7,20 +7,10 @@ Event_Handle_t Mesg_event;
 
 extern Tx_HandleTypeDef Tx1;
 
-static uint32_t MakeOperationData(const HardwareOperation_t *operation,
-                                  uint32_t value)
+static uint32_t MakeOrderData(uint16_t order_sequence, uint16_t value)
 {
-    uint8_t token = operation == NULL ? 0U : operation->token;
-    return ((uint32_t)token << OPERATION_DATA_TOKEN_SHIFT) |
-           (value & OPERATION_DATA_VALUE_MASK);
-}
-
-static uint32_t MakeSnapshotData(const HardwareEventSnapshot_t *snapshot,
-                                 uint32_t value)
-{
-    uint8_t token = snapshot == NULL ? 0U : snapshot->token;
-    return ((uint32_t)token << OPERATION_DATA_TOKEN_SHIFT) |
-           (value & OPERATION_DATA_VALUE_MASK);
+    return ((uint32_t)order_sequence << ORDER_DATA_SEQUENCE_SHIFT) |
+           ((uint32_t)value & ORDER_DATA_VALUE_MASK);
 }
 
 static uint32_t MakeCashAcceptedData(void)
@@ -49,109 +39,44 @@ static bool SendMesgWithResend(uint8_t code_2, uint32_t data, uint8_t expandCode
 
 void Mesg_Task(void)
 {
-    const HardwareOperation_t *operation;
-    const HardwareEventSnapshot_t *snapshot;
+    const DispenseOrder_t *order;
+    uint8_t frame_id;
 
-    /* K2（PD13）短按后请求 Android 进入后台设置。 */
     BackendKey_Task();
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseStarted))
-    {
-        snapshot = Hardware_GetDispenseStartedSnapshot();
-        if (snapshot->pending &&
-            SendMesgWithResend(DispenseStarted,
-                               MakeSnapshotData(snapshot, snapshot->requested),
-                               HW_RESULT_OK))
-        {
-            Hardware_ClearDispenseStartedSnapshot();
-            EventGroupClearBits(&Mesg_event, MesgEvent_DispenseStarted);
-        }
-    }
 
     if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseProgress))
     {
-        operation = Hardware_GetDispenseReport();
-        Comm_SendMesg_FillData(&Tx1,
-                               Board_to_Android,
-                               DispenseProgress,
-                               MakeOperationData(operation, operation->actual),
-                               HW_RESULT_OK);
+        order = Hardware_GetDispenseOrder();
+        if (order->state == DISPENSE_STATE_RUNNING)
+        {
+            Comm_SendMesg_FillData(&Tx1,
+                                   Board_to_Android,
+                                   DispenseProgress,
+                                   MakeOrderData(order->orderSequence,
+                                                 order->actualQuantity),
+                                   HW_RESULT_OK);
+        }
         EventGroupClearBits(&Mesg_event, MesgEvent_DispenseProgress);
     }
 
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseCompleted))
+    if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseTerminal))
     {
-        snapshot = Hardware_GetDispenseTerminalSnapshot();
-        if (snapshot->pending &&
-            SendMesgWithResend(DispenseCompleted,
-                               MakeSnapshotData(snapshot, snapshot->actual),
-                               snapshot->result))
+        order = Hardware_GetDispenseOrder();
+        if ((order->state == DISPENSE_STATE_WAIT_TERMINAL_ACK) &&
+            order->terminalPending)
         {
-            Hardware_ClearDispenseTerminalSnapshot();
-            EventGroupClearBits(&Mesg_event, MesgEvent_DispenseCompleted);
+            frame_id = Comm_SendDispenseTerminal(order->orderSequence,
+                                                 order->actualQuantity,
+                                                 order->resultCode);
+            if (frame_id != 0U)
+            {
+                Hardware_MarkDispenseTerminalQueued(frame_id);
+                EventGroupClearBits(&Mesg_event, MesgEvent_DispenseTerminal);
+            }
         }
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_DispenseFailed))
-    {
-        snapshot = Hardware_GetDispenseTerminalSnapshot();
-        if (snapshot->pending &&
-            SendMesgWithResend(DispenseFailed,
-                               MakeSnapshotData(snapshot, snapshot->actual),
-                               snapshot->result))
+        else
         {
-            Hardware_ClearDispenseTerminalSnapshot();
-            EventGroupClearBits(&Mesg_event, MesgEvent_DispenseFailed);
-        }
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectStarted))
-    {
-        snapshot = Hardware_GetCollectStartedSnapshot();
-        if (snapshot->pending &&
-            SendMesgWithResend(CollectStarted,
-                               MakeSnapshotData(snapshot, snapshot->requested),
-                               HW_RESULT_OK))
-        {
-            Hardware_ClearCollectStartedSnapshot();
-            EventGroupClearBits(&Mesg_event, MesgEvent_CollectStarted);
-        }
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectProgress))
-    {
-        operation = Hardware_GetCollectReport();
-        Comm_SendMesg_FillData(&Tx1,
-                               Board_to_Android,
-                               CollectProgress,
-                               MakeOperationData(operation, operation->actual),
-                               HW_RESULT_OK);
-        EventGroupClearBits(&Mesg_event, MesgEvent_CollectProgress);
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectCompleted))
-    {
-        snapshot = Hardware_GetCollectTerminalSnapshot();
-        if (snapshot->pending &&
-            SendMesgWithResend(CollectCompleted,
-                               MakeSnapshotData(snapshot, snapshot->actual),
-                               snapshot->result))
-        {
-            Hardware_ClearCollectTerminalSnapshot();
-            EventGroupClearBits(&Mesg_event, MesgEvent_CollectCompleted);
-        }
-    }
-
-    if (EventGroupCheckBits(&Mesg_event, MesgEvent_CollectFailed))
-    {
-        snapshot = Hardware_GetCollectTerminalSnapshot();
-        if (snapshot->pending &&
-            SendMesgWithResend(CollectFailed,
-                               MakeSnapshotData(snapshot, snapshot->actual),
-                               snapshot->result))
-        {
-            Hardware_ClearCollectTerminalSnapshot();
-            EventGroupClearBits(&Mesg_event, MesgEvent_CollectFailed);
+            EventGroupClearBits(&Mesg_event, MesgEvent_DispenseTerminal);
         }
     }
 

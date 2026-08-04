@@ -226,7 +226,9 @@ static bool CashEvent_RecordAccepted(uint8_t medium, uint16_t amount_fen)
     return true;
 }
 
-bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
+static bool CashAcceptance_ApplyInternal(uint8_t enable_mask,
+                                         uint32_t config_version,
+                                         bool allow_enable)
 {
     uint8_t valid_mask = CASH_ACCEPT_BANKNOTE_MASK | CASH_ACCEPT_COIN_MASK;
     bool coin_enable;
@@ -235,6 +237,15 @@ bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
         ((enable_mask & (uint8_t)(~valid_mask)) != 0U))
     {
         CashAcceptance_Disable();
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
+        return false;
+    }
+
+    if ((enable_mask != 0U) &&
+        (!allow_enable || !Hardware_CanEnableCashAcceptance()))
+    {
+        CashAcceptance_Disable();
+        EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
         return false;
     }
 
@@ -251,6 +262,16 @@ bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
     BillAcceptor_SetEnableInternal(
         (enable_mask & CASH_ACCEPT_BANKNOTE_MASK) != 0U);
     return true;
+}
+
+bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
+{
+    return CashAcceptance_ApplyInternal(enable_mask, config_version, false);
+}
+
+bool CashAcceptance_ApplyV22(uint8_t enable_mask, uint32_t config_version)
+{
+    return CashAcceptance_ApplyInternal(enable_mask, config_version, true);
 }
 
 void CashAcceptance_Disable(void)
@@ -386,7 +407,7 @@ static void PulseInput_Scan(PulseInput_t *input)
     GPIO_PinState pin_state = HAL_GPIO_ReadPin(input->gpio, input->pin);
     uint32_t current_tick = HAL_GetTick();
 
-    if (!CoinEnableState)
+    if (!CoinEnableState || !Hardware_CanEnableCashAcceptance())
     {
         input->state = PULSE_IDLE;
         input->tick = current_tick;
@@ -497,7 +518,9 @@ static void BillAcceptor_CompletePayment(uint8_t bill_type, uint8_t complete_sta
     BillLastType = bill_type;
     BillAcceptor_ReportStatus(complete_status);
 
-    if ((amount_fen > 0U) && BillEnableState)
+    if ((amount_fen > 0U) &&
+        BillEnableState &&
+        Hardware_CanEnableCashAcceptance())
     {
         (void)CashEvent_RecordAccepted(CASH_MEDIUM_BANKNOTE, amount_fen);
     }
@@ -536,7 +559,9 @@ static void BillAcceptor_HandleByte(uint8_t data)
         if (BillAcceptor_IsDenomination(data))
         {
             BillEscrowType = data;
-            if (BillEnableState && CashEvent_HasCapacity())
+            if (BillEnableState &&
+                CashEvent_HasCapacity() &&
+                Hardware_CanEnableCashAcceptance())
             {
                 BillAcceptor_SendCommand(ICT_CMD_ACCEPT);
             }

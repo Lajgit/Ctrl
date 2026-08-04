@@ -11,7 +11,6 @@ static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg);
 static bool Board_WriteBootRequest(uint32_t request_magic);
 static void Board_SystemRestart(bool enter_bootloader);
 static void USART_RemoveCashResend(uint16_t sequence);
-static void USART_RemoveBoardEventResend(uint8_t event_code, uint8_t token);
 static bool USART_IsDurableBoardEvent(uint8_t code2);
 
 #define PENDING_TX_ENTRY_COUNT 100U
@@ -44,6 +43,8 @@ typedef struct
     uint8_t frameId;
     uint32_t retiredTick;
 } RetiredFrameId_t;
+
+static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, PendingTxEntry_t *entry);
 
 ListHandle_t DealList;
 static ListNode_t DealList_buffer[100];
@@ -144,12 +145,7 @@ static uint16_t USART_GetCashSequence(const Mesg_TypeDef *mesg)
 
 static bool USART_IsDurableBoardEvent(uint8_t code2)
 {
-    return (code2 == DispenseStarted) ||
-           (code2 == DispenseCompleted) ||
-           (code2 == DispenseFailed) ||
-           (code2 == CollectStarted) ||
-           (code2 == CollectCompleted) ||
-           (code2 == CollectFailed);
+    return code2 == DispenseTerminal;
 }
 
 static bool PendingTx_IsDurableCode(uint8_t code2)
@@ -170,22 +166,6 @@ static PendingTxKind_t PendingTx_GetKind(uint8_t code2)
     return PENDING_TX_KIND_LINE_ACK;
 }
 
-static bool PendingTx_IsDispenseTerminalCode(uint8_t code2)
-{
-    return (code2 == DispenseCompleted) || (code2 == DispenseFailed);
-}
-
-static bool PendingTx_IsCollectTerminalCode(uint8_t code2)
-{
-    return (code2 == CollectCompleted) || (code2 == CollectFailed);
-}
-
-static bool PendingTx_IsPhysicalTerminalCode(uint8_t code2)
-{
-    return PendingTx_IsDispenseTerminalCode(code2) ||
-           PendingTx_IsCollectTerminalCode(code2);
-}
-
 static PendingTxEntry_t *PendingTx_FindCashAccepted(uint16_t sequence)
 {
     uint16_t i;
@@ -195,6 +175,36 @@ static PendingTxEntry_t *PendingTx_FindCashAccepted(uint16_t sequence)
             (PendingTxTable[i].kind == PENDING_TX_KIND_CASH_EVENT) &&
             (PendingTxTable[i].frame.Code2 == CashAccepted) &&
             (USART_GetCashSequence(&PendingTxTable[i].frame) == sequence))
+        {
+            return &PendingTxTable[i];
+        }
+    }
+    return NULL;
+}
+
+static uint16_t USART_GetOrderSequence(const Mesg_TypeDef *mesg)
+{
+    return ((uint16_t)mesg->Data1 << 8U) | (uint16_t)mesg->Data2;
+}
+
+static uint16_t USART_GetOrderValue(const Mesg_TypeDef *mesg)
+{
+    return ((uint16_t)mesg->Data3 << 8U) | (uint16_t)mesg->Data4;
+}
+
+static PendingTxEntry_t *PendingTx_FindDispenseTerminal(uint16_t order_sequence,
+                                                        uint16_t actual_quantity,
+                                                        uint8_t result_code)
+{
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    {
+        if (PendingTxTable[i].used &&
+            (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
+            (PendingTxTable[i].frame.Code2 == DispenseTerminal) &&
+            (USART_GetOrderSequence(&PendingTxTable[i].frame) == order_sequence) &&
+            (USART_GetOrderValue(&PendingTxTable[i].frame) == actual_quantity) &&
+            (PendingTxTable[i].frame.ExpandCode == result_code))
         {
             return &PendingTxTable[i];
         }
@@ -378,74 +388,29 @@ static void USART_RemoveCashResend(uint16_t sequence)
     }
 }
 
-static void USART_RemoveBoardEventResend(uint8_t event_code, uint8_t token)
+void Comm_RemoveDispenseTerminal(uint16_t order_sequence, uint8_t terminal_frame_id)
 {
     uint16_t i;
     for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
     {
         if (PendingTxTable[i].used &&
             (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
-            (PendingTxTable[i].frame.Code2 == event_code) &&
-            (PendingTxTable[i].frame.Data1 == token) &&
-            USART_IsDurableBoardEvent(event_code))
+            (PendingTxTable[i].frame.Code2 == DispenseTerminal) &&
+            (PendingTxTable[i].frameId == terminal_frame_id) &&
+            (USART_GetOrderSequence(&PendingTxTable[i].frame) == order_sequence))
         {
-            /* V2.1 confirms only eventCode + token. V2.2 will use frameId + eventCode + operationSequence. */
             PendingTx_RemoveEntry(&PendingTxTable[i], true);
             return;
         }
     }
 }
 
-bool Comm_HasPendingPhysicalTerminal(void)
-{
-    uint16_t i;
-    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
-    {
-        if (PendingTxTable[i].used &&
-            (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
-            PendingTx_IsPhysicalTerminalCode(PendingTxTable[i].frame.Code2))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool Comm_HasPendingDispenseTerminal(void)
-{
-    uint16_t i;
-    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
-    {
-        if (PendingTxTable[i].used &&
-            (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
-            PendingTx_IsDispenseTerminalCode(PendingTxTable[i].frame.Code2))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool Comm_HasPendingCollectTerminal(void)
-{
-    uint16_t i;
-    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
-    {
-        if (PendingTxTable[i].used &&
-            (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
-            PendingTx_IsCollectTerminalCode(PendingTxTable[i].frame.Code2))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void USART1_Deal(void *rx_mesg)
 {
     uint32_t data;
     uint32_t value;
-    uint8_t token;
+    uint16_t order_sequence;
+    uint16_t order_value;
     Mesg_TypeDef *mesg = (Mesg_TypeDef *)rx_mesg;
 
     if (mesg->Code1 == Android_to_Board)
@@ -453,21 +418,22 @@ static void USART1_Deal(void *rx_mesg)
         USART_RequestMesg(&Tx1, mesg);
         if (List_IsExistID(&DealList, mesg->ID) == false)
         {
-            token = mesg->Data1;
+            order_sequence = USART_GetOrderSequence(mesg);
+            order_value = USART_GetOrderValue(mesg);
             value = USART_GetValue24(mesg);
             switch (mesg->Code2)
             {
             case VersionRequest:
                 EventGroupSetBits(&Mesg_event, MesgEvent_VersionRequest);
                 break;
-            case DispenseStart:
-                (void)Hardware_StartDispense(token, value);
+            case DispenseStartOrder:
+                (void)Hardware_StartDispenseOrder(order_sequence, order_value);
                 break;
             case CollectStart:
-                (void)Hardware_StartCollect(token, value);
+                (void)Hardware_StartCollect(value);
                 break;
             case CollectStop:
-                Hardware_StopCollect(token);
+                Hardware_StopCollect();
                 break;
             case Unlock:
                 Lock.sw.state = DEVICE_STATE_START;
@@ -475,6 +441,9 @@ static void USART1_Deal(void *rx_mesg)
                 break;
             case CashAcceptanceApply:
                 (void)CashAcceptance_Apply(mesg->Data1, value);
+                break;
+            case CashAcceptanceApplyV22:
+                (void)CashAcceptance_ApplyV22(mesg->Data1, value);
                 break;
             case BillReset:
                 BillAcceptor_Reset();
@@ -486,8 +455,8 @@ static void USART1_Deal(void *rx_mesg)
                 USART_RemoveCashResend(sequence);
                 break;
             }
-            case BoardEventStored:
-                USART_RemoveBoardEventResend(mesg->Data1, mesg->Data2);
+            case DispenseTerminalAck:
+                Hardware_ConfirmDispenseTerminal(order_sequence, mesg->Data3);
                 break;
             case HardwareStatusRequest:
                 Hardware_RequestStatus();
@@ -635,6 +604,44 @@ uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *tx,
     }
 
     return USART_SendMesg(tx, &mesg);
+}
+
+uint8_t Comm_SendDispenseTerminal(uint16_t order_sequence,
+                                  uint16_t actual_quantity,
+                                  uint8_t result_code)
+{
+    PendingTxEntry_t *entry = PendingTx_FindDispenseTerminal(order_sequence,
+                                                             actual_quantity,
+                                                             result_code);
+    uint32_t data = ((uint32_t)order_sequence << ORDER_DATA_SEQUENCE_SHIFT) |
+                    (uint32_t)actual_quantity;
+
+    if (entry != NULL)
+    {
+        (void)USART_ReSendMesg(&Tx1, entry);
+        entry->lastSendTick = HAL_GetTick();
+        return entry->frameId;
+    }
+
+    return Comm_SendMesg_FillData_withResend(&Tx1,
+                                             Board_to_Android,
+                                             DispenseTerminal,
+                                             data,
+                                             result_code);
+}
+
+uint8_t Comm_SendDispenseTerminalOnce(uint16_t order_sequence,
+                                      uint16_t actual_quantity,
+                                      uint8_t result_code)
+{
+    uint32_t data = ((uint32_t)order_sequence << ORDER_DATA_SEQUENCE_SHIFT) |
+                    (uint32_t)actual_quantity;
+
+    return Comm_SendMesg_FillData(&Tx1,
+                                  Board_to_Android,
+                                  DispenseTerminal,
+                                  data,
+                                  result_code);
 }
 
 static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, PendingTxEntry_t *entry)

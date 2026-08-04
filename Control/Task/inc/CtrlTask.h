@@ -17,7 +17,6 @@
 #define HARDWARE_LOW_STOCK_THRESHOLD 3000U
 #define HARDWARE_MAX_OPERATION_QUANTITY 0xFFFFU
 
-/* 控制板执行结果码，放入终态帧 ExpandCode。 */
 #define HW_RESULT_OK 0x00U
 #define HW_RESULT_BUSY 0x01U
 #define HW_RESULT_NO_BEAD 0x02U
@@ -25,6 +24,8 @@
 #define HW_RESULT_SENSOR_TIMEOUT 0x04U
 #define HW_RESULT_ABORTED 0x05U
 #define HW_RESULT_NOT_ACTIVE 0x06U
+#define HW_RESULT_BLOCKED 0x07U
+#define HW_RESULT_ORDER_SEQUENCE_MISMATCH 0x08U
 
 typedef struct
 {
@@ -38,34 +39,46 @@ typedef struct
     switch_t sw;
 } Lock_t;
 
-typedef struct
+typedef enum
 {
-    bool active;
-    uint8_t token;
-    uint32_t requested;
-    uint32_t actual;
-    uint8_t result;
-} HardwareOperation_t;
+    DISPENSE_STATE_IDLE = 0,
+    DISPENSE_STATE_RUNNING,
+    DISPENSE_STATE_WAIT_TERMINAL_ACK,
+    DISPENSE_STATE_BLOCKED
+} DispenseState_t;
 
 typedef struct
 {
-    bool pending;
-    uint8_t token;
-    uint32_t requested;
-    uint32_t actual;
-    uint8_t result;
-} HardwareEventSnapshot_t;
+    DispenseState_t state;
+    uint16_t orderSequence;
+    uint16_t requestedQuantity;
+    uint16_t actualQuantity;
+    uint8_t resultCode;
+    uint8_t terminalFrameId;
+    bool terminalPending;
+} DispenseOrder_t;
+
+typedef struct
+{
+    bool valid;
+    uint16_t orderSequence;
+    uint16_t requestedQuantity;
+    uint16_t actualQuantity;
+    uint8_t resultCode;
+    uint8_t terminalFrameId;
+} LastDispenseResult_t;
 
 void Device_Init(void);
 void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num);
 void BeadMotor_Feedback(BeadMotor_t *bead_motor);
 void Device_StopAllImmediately(void);
 
-/* 平台授权的硬件动作。控制板不再按现金金额计算珠数。 */
 void Hardware_Init(void);
-bool Hardware_StartDispense(uint8_t token, uint32_t quantity);
-bool Hardware_StartCollect(uint8_t token, uint32_t maximum_quantity);
-void Hardware_StopCollect(uint8_t token);
+bool Hardware_StartDispenseOrder(uint16_t order_sequence, uint16_t requested_quantity);
+void Hardware_ConfirmDispenseTerminal(uint16_t order_sequence, uint8_t terminal_frame_id);
+void Hardware_MarkDispenseTerminalQueued(uint8_t terminal_frame_id);
+bool Hardware_StartCollect(uint32_t maximum_quantity);
+void Hardware_StopCollect(void);
 void Hardware_AbortAll(void);
 void Hardware_OnDispensePulse(void);
 void Hardware_OnCollectPulse(void);
@@ -78,16 +91,8 @@ uint32_t Hardware_GetBeadStock(void);
 bool Hardware_IsNoBead(void);
 bool Hardware_IsDispenseActive(void);
 bool Hardware_IsCollectActive(void);
-const HardwareOperation_t *Hardware_GetDispenseReport(void);
-const HardwareOperation_t *Hardware_GetCollectReport(void);
-const HardwareEventSnapshot_t *Hardware_GetDispenseStartedSnapshot(void);
-const HardwareEventSnapshot_t *Hardware_GetDispenseTerminalSnapshot(void);
-const HardwareEventSnapshot_t *Hardware_GetCollectStartedSnapshot(void);
-const HardwareEventSnapshot_t *Hardware_GetCollectTerminalSnapshot(void);
-void Hardware_ClearDispenseStartedSnapshot(void);
-void Hardware_ClearDispenseTerminalSnapshot(void);
-void Hardware_ClearCollectStartedSnapshot(void);
-void Hardware_ClearCollectTerminalSnapshot(void);
+bool Hardware_CanEnableCashAcceptance(void);
+const DispenseOrder_t *Hardware_GetDispenseOrder(void);
 
 void CtrlTask(void);
 
