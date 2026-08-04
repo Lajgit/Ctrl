@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="payment_cancel_button">关闭当前付款二维码</string>
+    <string name="payment_cancel_title">关闭付款二维码</string>
+    <string name="payment_cancel_confirmation">关闭后当前支付二维码将失效。设备会先向服务端确认支付结果并关单，确认完成前不能开始其他交易。</string>
+    <string name="payment_cancel_keep">继续支付</string>
+    <string name="payment_cancel_confirm">确认关闭</string>
+    <string name="payment_cancel_unavailable">当前付款状态暂时不能关闭</string>
+    <string name="transaction_device_busy">设备正在处理其他交易，请稍后再试</string>
+    <string name="transaction_member_deposit_active">会员存珠会话进行中，购珠入口暂不可用</string>
+</resources>
