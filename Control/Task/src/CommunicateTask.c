@@ -170,6 +170,38 @@ static PendingTxKind_t PendingTx_GetKind(uint8_t code2)
     return PENDING_TX_KIND_LINE_ACK;
 }
 
+static bool PendingTx_IsDispenseTerminalCode(uint8_t code2)
+{
+    return (code2 == DispenseCompleted) || (code2 == DispenseFailed);
+}
+
+static bool PendingTx_IsCollectTerminalCode(uint8_t code2)
+{
+    return (code2 == CollectCompleted) || (code2 == CollectFailed);
+}
+
+static bool PendingTx_IsPhysicalTerminalCode(uint8_t code2)
+{
+    return PendingTx_IsDispenseTerminalCode(code2) ||
+           PendingTx_IsCollectTerminalCode(code2);
+}
+
+static PendingTxEntry_t *PendingTx_FindCashAccepted(uint16_t sequence)
+{
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    {
+        if (PendingTxTable[i].used &&
+            (PendingTxTable[i].kind == PENDING_TX_KIND_CASH_EVENT) &&
+            (PendingTxTable[i].frame.Code2 == CashAccepted) &&
+            (USART_GetCashSequence(&PendingTxTable[i].frame) == sequence))
+        {
+            return &PendingTxTable[i];
+        }
+    }
+    return NULL;
+}
+
 static bool PendingTx_IsFrameIdUsed(uint8_t frame_id)
 {
     uint16_t i;
@@ -339,16 +371,10 @@ static void USART_ConfirmBoardEvent(Mesg_TypeDef *mesg)
 
 static void USART_RemoveCashResend(uint16_t sequence)
 {
-    uint16_t i;
-    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    PendingTxEntry_t *entry = PendingTx_FindCashAccepted(sequence);
+    if (entry != NULL)
     {
-        if (PendingTxTable[i].used &&
-            (PendingTxTable[i].kind == PENDING_TX_KIND_CASH_EVENT) &&
-            (PendingTxTable[i].frame.Code2 == CashAccepted) &&
-            (USART_GetCashSequence(&PendingTxTable[i].frame) == sequence))
-        {
-            PendingTx_RemoveEntry(&PendingTxTable[i], true);
-        }
+        PendingTx_RemoveEntry(entry, true);
     }
 }
 
@@ -363,9 +389,56 @@ static void USART_RemoveBoardEventResend(uint8_t event_code, uint8_t token)
             (PendingTxTable[i].frame.Data1 == token) &&
             USART_IsDurableBoardEvent(event_code))
         {
+            /* V2.1 confirms only eventCode + token. V2.2 will use frameId + eventCode + operationSequence. */
             PendingTx_RemoveEntry(&PendingTxTable[i], true);
+            return;
         }
     }
+}
+
+bool Comm_HasPendingPhysicalTerminal(void)
+{
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    {
+        if (PendingTxTable[i].used &&
+            (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
+            PendingTx_IsPhysicalTerminalCode(PendingTxTable[i].frame.Code2))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Comm_HasPendingDispenseTerminal(void)
+{
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    {
+        if (PendingTxTable[i].used &&
+            (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
+            PendingTx_IsDispenseTerminalCode(PendingTxTable[i].frame.Code2))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Comm_HasPendingCollectTerminal(void)
+{
+    uint16_t i;
+    for (i = 0U; i < PENDING_TX_ENTRY_COUNT; i++)
+    {
+        if (PendingTxTable[i].used &&
+            (PendingTxTable[i].kind == PENDING_TX_KIND_PHYSICAL_EVENT) &&
+            PendingTx_IsCollectTerminalCode(PendingTxTable[i].frame.Code2))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void USART1_Deal(void *rx_mesg)
@@ -537,6 +610,8 @@ uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *tx,
                                           uint32_t data,
                                           uint8_t expandCode)
 {
+    uint16_t cash_sequence;
+    PendingTxEntry_t *cash_entry;
     Mesg_TypeDef mesg = {0};
     mesg.Head = Mesg_Head;
     mesg.Code1 = code_1;
@@ -548,6 +623,17 @@ uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *tx,
     mesg.ACKbyte = 0x01U;
     mesg.ExpandCode = expandCode;
     mesg.Tail = Mesg_Tail;
+
+    if (code_2 == CashAccepted)
+    {
+        cash_sequence = ((uint16_t)mesg.Data4 << 8U) | (uint16_t)mesg.ExpandCode;
+        cash_entry = PendingTx_FindCashAccepted(cash_sequence);
+        if (cash_entry != NULL)
+        {
+            return cash_entry->frameId;
+        }
+    }
+
     return USART_SendMesg(tx, &mesg);
 }
 

@@ -1,5 +1,6 @@
 #include "CtrlTask.h"
 #include "MesgTask.h"
+#include "CommunicateTask.h"
 #include "KeyTask.h"
 #include "FlashTask.h"
 #include "tim.h"
@@ -14,6 +15,10 @@ extern Setting_TypeDef Setting;
 
 static HardwareOperation_t DispenseOperation;
 static HardwareOperation_t CollectOperation;
+static HardwareEventSnapshot_t DispenseStartedSnapshot;
+static HardwareEventSnapshot_t DispenseTerminalSnapshot;
+static HardwareEventSnapshot_t CollectStartedSnapshot;
+static HardwareEventSnapshot_t CollectTerminalSnapshot;
 static bool LowStockNotified = false;
 
 static void Hardware_ResetOperation(HardwareOperation_t *operation)
@@ -33,6 +38,58 @@ static void Hardware_SetImmediateResult(HardwareOperation_t *operation,
     operation->actual = 0U;
     operation->active = false;
     operation->result = result;
+}
+
+static bool Hardware_WriteSnapshot(HardwareEventSnapshot_t *snapshot,
+                                   const HardwareOperation_t *operation)
+{
+    if ((snapshot == NULL) || (operation == NULL) || snapshot->pending)
+    {
+        return false;
+    }
+
+    snapshot->token = operation->token;
+    snapshot->requested = operation->requested;
+    snapshot->actual = operation->actual;
+    snapshot->result = operation->result;
+    snapshot->pending = true;
+    return true;
+}
+
+static bool Hardware_HasPendingDispenseEvent(void)
+{
+    return DispenseStartedSnapshot.pending ||
+           DispenseTerminalSnapshot.pending ||
+           Comm_HasPendingDispenseTerminal();
+}
+
+static bool Hardware_HasPendingCollectEvent(void)
+{
+    return CollectStartedSnapshot.pending ||
+           CollectTerminalSnapshot.pending ||
+           Comm_HasPendingCollectTerminal();
+}
+
+static void Hardware_SetDispenseFailedEvent(uint8_t token,
+                                            uint32_t requested,
+                                            uint8_t result)
+{
+    Hardware_SetImmediateResult(&DispenseOperation, token, requested, result);
+    if (Hardware_WriteSnapshot(&DispenseTerminalSnapshot, &DispenseOperation))
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
+    }
+}
+
+static void Hardware_SetCollectFailedEvent(uint8_t token,
+                                           uint32_t requested,
+                                           uint8_t result)
+{
+    Hardware_SetImmediateResult(&CollectOperation, token, requested, result);
+    if (Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
+    {
+        EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
+    }
 }
 
 static void Ctrl_BeadMotor(BeadMotor_t *bead_motor,
@@ -179,6 +236,10 @@ void Hardware_Init(void)
 {
     Hardware_ResetOperation(&DispenseOperation);
     Hardware_ResetOperation(&CollectOperation);
+    memset(&DispenseStartedSnapshot, 0, sizeof(DispenseStartedSnapshot));
+    memset(&DispenseTerminalSnapshot, 0, sizeof(DispenseTerminalSnapshot));
+    memset(&CollectStartedSnapshot, 0, sizeof(CollectStartedSnapshot));
+    memset(&CollectTerminalSnapshot, 0, sizeof(CollectTerminalSnapshot));
     LowStockNotified = Setting.BeadStock <= HARDWARE_LOW_STOCK_THRESHOLD;
 
     /* 新协议上电一律关闭现金，等待平台完整现金配置下发并应用。 */
@@ -187,29 +248,28 @@ void Hardware_Init(void)
 
 bool Hardware_StartDispense(uint8_t token, uint32_t quantity)
 {
+    if (Hardware_HasPendingDispenseEvent())
+    {
+        return false;
+    }
+
     if ((token == 0U) || (quantity == 0U) ||
         (quantity > HARDWARE_MAX_OPERATION_QUANTITY))
     {
-        Hardware_SetImmediateResult(&DispenseOperation,
-                                    token,
-                                    quantity,
-                                    HW_RESULT_INVALID_QUANTITY);
-        EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
+        Hardware_SetDispenseFailedEvent(token, quantity, HW_RESULT_INVALID_QUANTITY);
         return false;
     }
     if (DispenseOperation.active || CollectOperation.active ||
         (BeadMotor1.motor.state != DEVICE_STATE_IDLE) ||
         (BeadMotor2.motor.state != DEVICE_STATE_IDLE))
     {
-        Hardware_SetImmediateResult(&DispenseOperation, token, quantity, HW_RESULT_BUSY);
-        EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
+        Hardware_SetDispenseFailedEvent(token, quantity, HW_RESULT_BUSY);
         return false;
     }
     if ((Setting.BeadStock == 0U) ||
         ((Setting.HardwareFlags & HARDWARE_FLAG_NO_BEAD) != 0U))
     {
-        Hardware_SetImmediateResult(&DispenseOperation, token, quantity, HW_RESULT_NO_BEAD);
-        EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
+        Hardware_SetDispenseFailedEvent(token, quantity, HW_RESULT_NO_BEAD);
         EventGroupSetBits(&Mesg_event, MesgEvent_BeadEmpty);
         return false;
     }
@@ -218,6 +278,11 @@ bool Hardware_StartDispense(uint8_t token, uint32_t quantity)
     DispenseOperation.active = true;
     DispenseOperation.token = token;
     DispenseOperation.requested = quantity;
+    if (!Hardware_WriteSnapshot(&DispenseStartedSnapshot, &DispenseOperation))
+    {
+        Hardware_ResetOperation(&DispenseOperation);
+        return false;
+    }
     BeadMotor_Output(&BeadMotor1, (uint16_t)quantity);
     EventGroupSetBits(&Mesg_event, MesgEvent_DispenseStarted);
     return true;
@@ -225,25 +290,24 @@ bool Hardware_StartDispense(uint8_t token, uint32_t quantity)
 
 bool Hardware_StartCollect(uint8_t token, uint32_t maximum_quantity)
 {
+    if (Hardware_HasPendingCollectEvent())
+    {
+        return false;
+    }
+
     if ((token == 0U) || (maximum_quantity == 0U) ||
         (maximum_quantity > HARDWARE_MAX_OPERATION_QUANTITY))
     {
-        Hardware_SetImmediateResult(&CollectOperation,
-                                    token,
-                                    maximum_quantity,
-                                    HW_RESULT_INVALID_QUANTITY);
-        EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
+        Hardware_SetCollectFailedEvent(token,
+                                       maximum_quantity,
+                                       HW_RESULT_INVALID_QUANTITY);
         return false;
     }
     if (DispenseOperation.active || CollectOperation.active ||
         (BeadMotor1.motor.state != DEVICE_STATE_IDLE) ||
         (BeadMotor2.motor.state != DEVICE_STATE_IDLE))
     {
-        Hardware_SetImmediateResult(&CollectOperation,
-                                    token,
-                                    maximum_quantity,
-                                    HW_RESULT_BUSY);
-        EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
+        Hardware_SetCollectFailedEvent(token, maximum_quantity, HW_RESULT_BUSY);
         return false;
     }
 
@@ -251,6 +315,11 @@ bool Hardware_StartCollect(uint8_t token, uint32_t maximum_quantity)
     CollectOperation.active = true;
     CollectOperation.token = token;
     CollectOperation.requested = maximum_quantity;
+    if (!Hardware_WriteSnapshot(&CollectStartedSnapshot, &CollectOperation))
+    {
+        Hardware_ResetOperation(&CollectOperation);
+        return false;
+    }
     BeadMotor_Output(&BeadMotor2, (uint16_t)maximum_quantity);
     EventGroupSetBits(&Mesg_event, MesgEvent_CollectStarted);
     return true;
@@ -260,8 +329,11 @@ void Hardware_StopCollect(uint8_t token)
 {
     if (!CollectOperation.active || (token != CollectOperation.token))
     {
-        Hardware_SetImmediateResult(&CollectOperation, token, 0U, HW_RESULT_NOT_ACTIVE);
-        EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
+        if (Hardware_HasPendingCollectEvent())
+        {
+            return;
+        }
+        Hardware_SetCollectFailedEvent(token, 0U, HW_RESULT_NOT_ACTIVE);
         return;
     }
 
@@ -269,9 +341,12 @@ void Hardware_StopCollect(uint8_t token)
     BeadMotor2.motor.state = DEVICE_STATE_IDLE;
     BeadMotor2.remain_num = 0U;
     BeadMotor2.retry_count = 0U;
-    CollectOperation.active = false;
     CollectOperation.result = HW_RESULT_OK;
-    EventGroupSetBits(&Mesg_event, MesgEvent_CollectCompleted);
+    if (Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
+    {
+        CollectOperation.active = false;
+        EventGroupSetBits(&Mesg_event, MesgEvent_CollectCompleted);
+    }
 }
 
 void Hardware_AbortAll(void)
@@ -282,15 +357,21 @@ void Hardware_AbortAll(void)
     Device_StopAllImmediately();
     if (dispense_was_active)
     {
-        DispenseOperation.active = false;
         DispenseOperation.result = HW_RESULT_ABORTED;
-        EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
+        if (Hardware_WriteSnapshot(&DispenseTerminalSnapshot, &DispenseOperation))
+        {
+            DispenseOperation.active = false;
+            EventGroupSetBits(&Mesg_event, MesgEvent_DispenseFailed);
+        }
     }
     if (collect_was_active)
     {
-        CollectOperation.active = false;
         CollectOperation.result = HW_RESULT_ABORTED;
-        EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
+        if (Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
+        {
+            CollectOperation.active = false;
+            EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
+        }
     }
 }
 
@@ -323,9 +404,12 @@ void Hardware_OnDispensePulse(void)
 
     if (DispenseOperation.actual >= DispenseOperation.requested)
     {
-        DispenseOperation.active = false;
         DispenseOperation.result = HW_RESULT_OK;
-        EventGroupSetBits(&Mesg_event, MesgEvent_DispenseCompleted);
+        if (Hardware_WriteSnapshot(&DispenseTerminalSnapshot, &DispenseOperation))
+        {
+            DispenseOperation.active = false;
+            EventGroupSetBits(&Mesg_event, MesgEvent_DispenseCompleted);
+        }
     }
 }
 
@@ -344,9 +428,12 @@ void Hardware_OnCollectPulse(void)
     EventGroupSetBits(&Mesg_event, MesgEvent_CollectProgress);
     if (CollectOperation.actual >= CollectOperation.requested)
     {
-        CollectOperation.active = false;
         CollectOperation.result = HW_RESULT_OK;
-        EventGroupSetBits(&Mesg_event, MesgEvent_CollectCompleted);
+        if (Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
+        {
+            CollectOperation.active = false;
+            EventGroupSetBits(&Mesg_event, MesgEvent_CollectCompleted);
+        }
     }
 }
 
@@ -357,8 +444,13 @@ void Hardware_OnDispenseTimeout(void)
         return;
     }
 
-    DispenseOperation.active = false;
     DispenseOperation.result = HW_RESULT_SENSOR_TIMEOUT;
+    if (!Hardware_WriteSnapshot(&DispenseTerminalSnapshot, &DispenseOperation))
+    {
+        return;
+    }
+
+    DispenseOperation.active = false;
     Setting.BeadStock = 0U;
     Setting.HardwareFlags |= HARDWARE_FLAG_NO_BEAD;
     LowStockNotified = true;
@@ -376,8 +468,13 @@ void Hardware_OnCollectTimeout(void)
     {
         return;
     }
-    CollectOperation.active = false;
     CollectOperation.result = HW_RESULT_SENSOR_TIMEOUT;
+    if (!Hardware_WriteSnapshot(&CollectTerminalSnapshot, &CollectOperation))
+    {
+        return;
+    }
+
+    CollectOperation.active = false;
     EventGroupSetBits(&Mesg_event, MesgEvent_CollectFailed);
 }
 
@@ -435,6 +532,46 @@ const HardwareOperation_t *Hardware_GetDispenseReport(void)
 const HardwareOperation_t *Hardware_GetCollectReport(void)
 {
     return &CollectOperation;
+}
+
+const HardwareEventSnapshot_t *Hardware_GetDispenseStartedSnapshot(void)
+{
+    return &DispenseStartedSnapshot;
+}
+
+const HardwareEventSnapshot_t *Hardware_GetDispenseTerminalSnapshot(void)
+{
+    return &DispenseTerminalSnapshot;
+}
+
+const HardwareEventSnapshot_t *Hardware_GetCollectStartedSnapshot(void)
+{
+    return &CollectStartedSnapshot;
+}
+
+const HardwareEventSnapshot_t *Hardware_GetCollectTerminalSnapshot(void)
+{
+    return &CollectTerminalSnapshot;
+}
+
+void Hardware_ClearDispenseStartedSnapshot(void)
+{
+    memset(&DispenseStartedSnapshot, 0, sizeof(DispenseStartedSnapshot));
+}
+
+void Hardware_ClearDispenseTerminalSnapshot(void)
+{
+    memset(&DispenseTerminalSnapshot, 0, sizeof(DispenseTerminalSnapshot));
+}
+
+void Hardware_ClearCollectStartedSnapshot(void)
+{
+    memset(&CollectStartedSnapshot, 0, sizeof(CollectStartedSnapshot));
+}
+
+void Hardware_ClearCollectTerminalSnapshot(void)
+{
+    memset(&CollectTerminalSnapshot, 0, sizeof(CollectTerminalSnapshot));
 }
 
 void CtrlTask(void)

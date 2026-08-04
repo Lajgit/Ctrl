@@ -32,6 +32,9 @@ uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *Tx, uint8_t code_1, 
 
 void Resend_Task(void);
 void MesgDeal_Task(void);
+bool Comm_HasPendingPhysicalTerminal(void);
+bool Comm_HasPendingDispenseTerminal(void);
+bool Comm_HasPendingCollectTerminal(void);
 ///
 void Communicate_Init(void);
 void Communicate_Task(void);

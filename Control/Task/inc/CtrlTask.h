@@ -47,6 +47,15 @@ typedef struct
     uint8_t result;
 } HardwareOperation_t;
 
+typedef struct
+{
+    bool pending;
+    uint8_t token;
+    uint32_t requested;
+    uint32_t actual;
+    uint8_t result;
+} HardwareEventSnapshot_t;
+
 void Device_Init(void);
 void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num);
 void BeadMotor_Feedback(BeadMotor_t *bead_motor);
@@ -71,6 +80,14 @@ bool Hardware_IsDispenseActive(void);
 bool Hardware_IsCollectActive(void);
 const HardwareOperation_t *Hardware_GetDispenseReport(void);
 const HardwareOperation_t *Hardware_GetCollectReport(void);
+const HardwareEventSnapshot_t *Hardware_GetDispenseStartedSnapshot(void);
+const HardwareEventSnapshot_t *Hardware_GetDispenseTerminalSnapshot(void);
+const HardwareEventSnapshot_t *Hardware_GetCollectStartedSnapshot(void);
+const HardwareEventSnapshot_t *Hardware_GetCollectTerminalSnapshot(void);
+void Hardware_ClearDispenseStartedSnapshot(void);
+void Hardware_ClearDispenseTerminalSnapshot(void);
+void Hardware_ClearCollectStartedSnapshot(void);
+void Hardware_ClearCollectTerminalSnapshot(void);
 
 void CtrlTask(void);
 
