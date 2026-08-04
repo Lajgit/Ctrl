@@ -1,0 +1,52 @@
+package com.gouzhu.transaction;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+import org.junit.Test;
+
+public class TransactionOccupancyPolicyTest {
+
+    @Test
+    public void onlyIdleOrSameOwnerCanAcquire() {
+        assertTrue(TransactionOccupancyPolicy.canAcquire("", "QR_PURCHASE"));
+        assertTrue(TransactionOccupancyPolicy.canAcquire("QR_PURCHASE", "QR_PURCHASE"));
+        assertFalse(TransactionOccupancyPolicy.canAcquire("CASH_PURCHASE", "QR_PURCHASE"));
+        assertFalse(TransactionOccupancyPolicy.canAcquire("", "NONE"));
+    }
+
+    @Test
+    public void memberDepositAndBlockedSessionsRejectDispenseReservation() {
+        assertFalse(TransactionOccupancyPolicy.canReserveDispense("MEMBER_DEPOSIT", "READY"));
+        assertFalse(TransactionOccupancyPolicy.canReserveDispense("QR_PURCHASE", "BLOCKED"));
+        assertTrue(TransactionOccupancyPolicy.canReserveDispense("QR_PURCHASE", "WAITING_PAYMENT"));
+        assertTrue(TransactionOccupancyPolicy.canReserveDispense("CASH_PURCHASE", "ACCEPTED"));
+        assertTrue(TransactionOccupancyPolicy.canReserveDispense("", ""));
+    }
+
+    @Test
+    public void paymentReleaseOnlyUsesAuthoritativeTerminalStates() {
+        assertFalse(TransactionOccupancyPolicy.shouldReleasePayment("WAITING_PAYMENT"));
+        assertFalse(TransactionOccupancyPolicy.shouldReleasePayment("EXPIRED"));
+        assertFalse(TransactionOccupancyPolicy.shouldReleasePayment("DISPENSING"));
+        assertTrue(TransactionOccupancyPolicy.shouldReleasePayment("CANCELED"));
+        assertTrue(TransactionOccupancyPolicy.shouldReleasePayment("CLOSED"));
+        assertTrue(TransactionOccupancyPolicy.shouldReleasePayment("COMPLETED"));
+        assertTrue(TransactionOccupancyPolicy.shouldReleasePayment("REFUNDED"));
+    }
+
+    @Test
+    public void paymentStatusMapsToExpectedPhase() {
+        assertEquals("WAITING_PAYMENT",
+                TransactionOccupancyPolicy.paymentPhase("WAITING_PAYMENT"));
+        assertEquals("CONFIRMING_CLOSE",
+                TransactionOccupancyPolicy.paymentPhase("EXPIRED"));
+        assertEquals("WAITING_DISPENSE",
+                TransactionOccupancyPolicy.paymentPhase("DISPENSING"));
+        assertEquals("REFUNDING",
+                TransactionOccupancyPolicy.paymentPhase("REFUNDING"));
+        assertEquals("TERMINAL",
+                TransactionOccupancyPolicy.paymentPhase("CLOSED"));
+    }
+}
