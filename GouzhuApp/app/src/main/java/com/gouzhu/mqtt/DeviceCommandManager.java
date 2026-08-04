@@ -6,8 +6,9 @@ import android.content.Context;
  * 平台统一现金与硬件命令门面。
  *
  * <p>具体状态机、SDK协议校验、SQLite outbox 和 ttyS5 硬件适配由
- * {@link PlatformCommandRuntime} 实现。保留本类名称作为 App 内部稳定入口，
- * 不包含任何 1.x 本地现金购买兼容逻辑。</p>
+ * {@link PlatformCommandRuntime} 实现。人工结案指令由
+ * {@link OperationResolutionManager} 按operationNo精确收尾；该指令不会
+ * 继续出珠，补充库存和控制板复位必须由工作人员按下K1补珠键完成。</p>
  */
 public final class DeviceCommandManager {
 
@@ -23,9 +24,12 @@ public final class DeviceCommandManager {
     private static volatile DeviceCommandManager instance;
 
     private final PlatformCommandRuntime runtime;
+    private final OperationResolutionManager resolutionManager;
 
     private DeviceCommandManager(Context context) {
-        runtime = new PlatformCommandRuntime(context.getApplicationContext());
+        Context applicationContext = context.getApplicationContext();
+        runtime = new PlatformCommandRuntime(applicationContext);
+        resolutionManager = new OperationResolutionManager(applicationContext);
     }
 
     public static DeviceCommandManager get(Context context) {
@@ -40,14 +44,21 @@ public final class DeviceCommandManager {
     }
 
     public void start() {
+        // 先注册人工结案硬件状态监听，再启动主运行时，避免漏掉恢复事件。
+        resolutionManager.start();
         runtime.start();
     }
 
     public void stop() {
         runtime.stop();
+        resolutionManager.stop();
     }
 
     public void handleCommand(String topic, byte[] payload) {
+        if (resolutionManager.handles(payload)) {
+            resolutionManager.handleCommand(topic, payload);
+            return;
+        }
         runtime.handleCommand(topic, payload);
     }
 
@@ -64,7 +75,7 @@ public final class DeviceCommandManager {
     }
 
     public int getRunningStatus() {
-        return runtime.getRunningStatus();
+        return resolutionManager.getRunningStatus();
     }
 
     public void requestActivePhysicalOrderState() {
