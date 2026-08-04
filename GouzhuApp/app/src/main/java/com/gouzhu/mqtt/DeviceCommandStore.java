@@ -24,7 +24,7 @@ import java.util.List;
 public final class DeviceCommandStore extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "gouzhu_platform_control_v2.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
 
     private static final String META_BOARD_VERSION = "board_version";
     private static final String META_NEXT_ORDER_SEQUENCE = "next_order_sequence";
@@ -86,6 +86,14 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         if (oldVersion < 2) {
             createActivePhysicalOrderTable(db);
         }
+        if (oldVersion < 3) {
+            addColumnIfMissing(
+                    db,
+                    "active_physical_order",
+                    "source_topic",
+                    "TEXT NOT NULL DEFAULT ''"
+            );
+        }
     }
 
     public synchronized boolean saveCommand(JSONObject envelope) {
@@ -127,10 +135,12 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
 
     public synchronized CreatePhysicalOrderResult createActivePhysicalOrder(
             JSONObject envelope,
+            String sourceTopic,
             int requestedQuantity
     ) {
         CreatePhysicalOrderResult result = new CreatePhysicalOrderResult();
-        if (envelope == null || requestedQuantity <= 0 || requestedQuantity > 0xFFFF) {
+        if (envelope == null || blank(sourceTopic)
+                || requestedQuantity <= 0 || requestedQuantity > 0xFFFF) {
             result.resultCode = "PARAM_INVALID";
             return result;
         }
@@ -169,6 +179,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             ContentValues values = new ContentValues();
             values.put("id", 1);
             values.put("message_id", messageId);
+            values.put("source_topic", sourceTopic);
             values.put("order_sequence", sequence);
             values.put("requested_quantity", requestedQuantity);
             values.put("state", "DISPENSING");
@@ -204,6 +215,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
                 "active_physical_order",
                 new String[]{
                         "message_id",
+                        "source_topic",
                         "order_sequence",
                         "requested_quantity",
                         "state",
@@ -230,21 +242,22 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             }
             ActivePhysicalOrder result = new ActivePhysicalOrder();
             result.messageId = cursor.getString(0);
-            result.orderSequence = cursor.getInt(1);
-            result.requestedQuantity = cursor.getInt(2);
-            result.state = cursor.getString(3);
-            result.lastProgressActual = cursor.getInt(4);
-            result.terminalFrameId = cursor.isNull(5) ? -1 : cursor.getInt(5);
-            result.terminalActual = cursor.isNull(6) ? -1 : cursor.getInt(6);
-            result.controllerTerminalActual = cursor.isNull(7) ? -1 : cursor.getInt(7);
-            result.terminalResultCode = cursor.isNull(8) ? -1 : cursor.getInt(8);
-            result.terminalReceivedAt = cursor.isNull(9) ? 0L : cursor.getLong(9);
-            result.terminalEventNo = cursor.getString(10);
-            result.terminalPayload = cursor.getString(11);
-            result.terminalResultStatus = cursor.getString(12);
-            result.terminalAckSent = cursor.getInt(13) != 0;
-            result.terminalAckEchoed = cursor.getInt(14) != 0;
-            result.blockedReason = cursor.getString(15);
+            result.sourceTopic = cursor.getString(1);
+            result.orderSequence = cursor.getInt(2);
+            result.requestedQuantity = cursor.getInt(3);
+            result.state = cursor.getString(4);
+            result.lastProgressActual = cursor.getInt(5);
+            result.terminalFrameId = cursor.isNull(6) ? -1 : cursor.getInt(6);
+            result.terminalActual = cursor.isNull(7) ? -1 : cursor.getInt(7);
+            result.controllerTerminalActual = cursor.isNull(8) ? -1 : cursor.getInt(8);
+            result.terminalResultCode = cursor.isNull(9) ? -1 : cursor.getInt(9);
+            result.terminalReceivedAt = cursor.isNull(10) ? 0L : cursor.getLong(10);
+            result.terminalEventNo = cursor.getString(11);
+            result.terminalPayload = cursor.getString(12);
+            result.terminalResultStatus = cursor.getString(13);
+            result.terminalAckSent = cursor.getInt(14) != 0;
+            result.terminalAckEchoed = cursor.getInt(15) != 0;
+            result.blockedReason = cursor.getString(16);
             return result;
         }
     }
@@ -378,6 +391,47 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
                 return result;
             }
 
+            if (!blank(active.terminalEventNo)) {
+                data.put("lateControllerTerminalFrameId", evidence.frameId);
+                data.put("lateControllerTerminalActual", evidence.terminalActual);
+                data.put("lateControllerTerminalResultCode", evidence.controllerResultCode);
+                data.put("lateControllerTerminalReceivedAt", evidence.receivedAt);
+                if (!saveCommandEnvelope(db, envelope, "blocked")) {
+                    result.resultCode = "LOCAL_STORAGE_ERROR";
+                    return result;
+                }
+                ContentValues lateValues = new ContentValues();
+                lateValues.put("state", "BLOCKED");
+                lateValues.put("terminal_frame_id", evidence.frameId);
+                lateValues.put("controller_terminal_actual", evidence.terminalActual);
+                lateValues.put("terminal_result_code", evidence.controllerResultCode);
+                lateValues.put("terminal_received_at", evidence.receivedAt);
+                lateValues.put("terminal_ack_sent", 0);
+                lateValues.put("terminal_ack_echoed", 0);
+                lateValues.put("blocked_reason", blank(active.blockedReason)
+                        ? "CONTROLLER_TERMINAL_MISSING"
+                        : active.blockedReason);
+                lateValues.put("updated_at", System.currentTimeMillis());
+                if (db.update(
+                        "active_physical_order",
+                        lateValues,
+                        "id=1 AND order_sequence=?",
+                        new String[]{String.valueOf(evidence.orderSequence)}
+                ) != 1) {
+                    result.resultCode = "LOCAL_STORAGE_ERROR";
+                    return result;
+                }
+                putMeta(db, META_PHYSICAL_BLOCKED, "1");
+                db.setTransactionSuccessful();
+                result.success = true;
+                result.lateAfterUnknown = true;
+                result.eventNo = active.terminalEventNo;
+                result.resultStatus = active.terminalResultStatus;
+                result.payload = active.terminalPayload;
+                result.resultCode = "LATE_TERMINAL_AFTER_UNKNOWN";
+                return result;
+            }
+
             long now = System.currentTimeMillis();
             data.put("deviceActualQuantity", finalActual);
             data.put("deviceTerminal", true);
@@ -435,6 +489,114 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
                 return result;
             }
             putMeta(db, META_PHYSICAL_BLOCKED, success ? "0" : "1");
+            db.setTransactionSuccessful();
+            result.success = true;
+            result.eventNo = eventNo;
+            result.resultStatus = resultStatus;
+            result.payload = payload;
+            result.resultCode = "OK";
+            return result;
+        } catch (Throwable error) {
+            result.resultCode = "LOCAL_STORAGE_ERROR";
+            result.resultMessage = messageOf(error);
+            return result;
+        } finally {
+            db.endTransaction();
+        }
+    }
+
+    public synchronized TerminalStoreResult savePhysicalUnknownResult(
+            JSONObject envelope,
+            int orderSequence,
+            int observedActual,
+            String resultCode,
+            String resultMessage,
+            String eventNo,
+            String resultStatus,
+            String payload
+    ) {
+        TerminalStoreResult result = new TerminalStoreResult();
+        if (envelope == null || orderSequence <= 0 || blank(eventNo)
+                || blank(resultStatus) || blank(payload)) {
+            result.resultCode = "PARAM_INVALID";
+            return result;
+        }
+        String messageId = envelope.optString("messageId", "").trim();
+        JSONObject data = envelope.optJSONObject("data");
+        if (messageId.isEmpty() || data == null) {
+            result.resultCode = "COMMAND_INVALID";
+            return result;
+        }
+
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            ActivePhysicalOrder active = loadActivePhysicalOrder(db);
+            if (active == null
+                    || !messageId.equals(active.messageId)
+                    || active.orderSequence != orderSequence) {
+                result.resultCode = "PHYSICAL_ORDER_NOT_ACTIVE";
+                return result;
+            }
+            if (!blank(active.terminalEventNo)) {
+                db.setTransactionSuccessful();
+                result.success = true;
+                result.duplicate = true;
+                result.eventNo = active.terminalEventNo;
+                result.resultStatus = active.terminalResultStatus;
+                result.payload = active.terminalPayload;
+                result.resultCode = "OK";
+                return result;
+            }
+
+            long now = System.currentTimeMillis();
+            int safeActual = Math.max(0, Math.min(0xFFFF, observedActual));
+            data.put("deviceActualQuantity", safeActual);
+            data.put("deviceTerminal", true);
+            data.put("deviceTerminalAt", now);
+            data.put("deviceResultCode", safe(resultCode));
+            data.put("deviceResultMessage", safe(resultMessage));
+            data.put("deviceResultUnknown", true);
+            data.put("lastProgressActual", Math.max(active.lastProgressActual, safeActual));
+            data.put("terminalEventNo", eventNo);
+
+            if (!saveCommandEnvelope(db, envelope, "blocked")) {
+                result.resultCode = "LOCAL_STORAGE_ERROR";
+                return result;
+            }
+            ContentValues values = new ContentValues();
+            values.put("state", "BLOCKED");
+            values.put("last_progress_actual", Math.max(active.lastProgressActual, safeActual));
+            values.put("terminal_actual", safeActual);
+            values.put("terminal_event_no", eventNo);
+            values.put("terminal_payload", payload);
+            values.put("terminal_result_status", resultStatus);
+            values.put("terminal_ack_sent", 0);
+            values.put("terminal_ack_echoed", 0);
+            values.put("blocked_reason", "CONTROLLER_TERMINAL_MISSING");
+            values.put("updated_at", now);
+            if (db.update(
+                    "active_physical_order",
+                    values,
+                    "id=1 AND order_sequence=?",
+                    new String[]{String.valueOf(orderSequence)}
+            ) != 1) {
+                result.resultCode = "LOCAL_STORAGE_ERROR";
+                return result;
+            }
+            if (!saveOutbox(
+                    db,
+                    messageId + "|" + eventNo + "|" + resultStatus,
+                    "command_result",
+                    messageId,
+                    eventNo,
+                    resultStatus,
+                    payload
+            )) {
+                result.resultCode = "LOCAL_STORAGE_ERROR";
+                return result;
+            }
+            putMeta(db, META_PHYSICAL_BLOCKED, "1");
             db.setTransactionSuccessful();
             result.success = true;
             result.eventNo = eventNo;
@@ -1069,6 +1231,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE IF NOT EXISTS active_physical_order ("
                 + "id INTEGER PRIMARY KEY CHECK(id = 1),"
                 + "message_id TEXT NOT NULL UNIQUE,"
+                + "source_topic TEXT NOT NULL DEFAULT '',"
                 + "order_sequence INTEGER NOT NULL,"
                 + "requested_quantity INTEGER NOT NULL,"
                 + "state TEXT NOT NULL,"
@@ -1086,6 +1249,22 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
                 + "blocked_reason TEXT,"
                 + "created_at INTEGER NOT NULL,"
                 + "updated_at INTEGER NOT NULL)");
+    }
+
+    private static void addColumnIfMissing(
+            SQLiteDatabase db,
+            String table,
+            String column,
+            String definition
+    ) {
+        try (Cursor cursor = db.rawQuery("PRAGMA table_info(" + table + ")", null)) {
+            while (cursor.moveToNext()) {
+                if (column.equals(cursor.getString(1))) {
+                    return;
+                }
+            }
+        }
+        db.execSQL("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
     }
 
     private static boolean hasActivePhysicalOrder(SQLiteDatabase db) {
@@ -1106,6 +1285,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
                 "active_physical_order",
                 new String[]{
                         "message_id",
+                        "source_topic",
                         "order_sequence",
                         "requested_quantity",
                         "state",
@@ -1132,21 +1312,22 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
             }
             ActivePhysicalOrder result = new ActivePhysicalOrder();
             result.messageId = cursor.getString(0);
-            result.orderSequence = cursor.getInt(1);
-            result.requestedQuantity = cursor.getInt(2);
-            result.state = cursor.getString(3);
-            result.lastProgressActual = cursor.getInt(4);
-            result.terminalFrameId = cursor.isNull(5) ? -1 : cursor.getInt(5);
-            result.terminalActual = cursor.isNull(6) ? -1 : cursor.getInt(6);
-            result.controllerTerminalActual = cursor.isNull(7) ? -1 : cursor.getInt(7);
-            result.terminalResultCode = cursor.isNull(8) ? -1 : cursor.getInt(8);
-            result.terminalReceivedAt = cursor.isNull(9) ? 0L : cursor.getLong(9);
-            result.terminalEventNo = cursor.getString(10);
-            result.terminalPayload = cursor.getString(11);
-            result.terminalResultStatus = cursor.getString(12);
-            result.terminalAckSent = cursor.getInt(13) != 0;
-            result.terminalAckEchoed = cursor.getInt(14) != 0;
-            result.blockedReason = cursor.getString(15);
+            result.sourceTopic = cursor.getString(1);
+            result.orderSequence = cursor.getInt(2);
+            result.requestedQuantity = cursor.getInt(3);
+            result.state = cursor.getString(4);
+            result.lastProgressActual = cursor.getInt(5);
+            result.terminalFrameId = cursor.isNull(6) ? -1 : cursor.getInt(6);
+            result.terminalActual = cursor.isNull(7) ? -1 : cursor.getInt(7);
+            result.controllerTerminalActual = cursor.isNull(8) ? -1 : cursor.getInt(8);
+            result.terminalResultCode = cursor.isNull(9) ? -1 : cursor.getInt(9);
+            result.terminalReceivedAt = cursor.isNull(10) ? 0L : cursor.getLong(10);
+            result.terminalEventNo = cursor.getString(11);
+            result.terminalPayload = cursor.getString(12);
+            result.terminalResultStatus = cursor.getString(13);
+            result.terminalAckSent = cursor.getInt(14) != 0;
+            result.terminalAckEchoed = cursor.getInt(15) != 0;
+            result.blockedReason = cursor.getString(16);
             return result;
         }
     }
@@ -1405,6 +1586,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
 
     public static final class ActivePhysicalOrder {
         public String messageId;
+        public String sourceTopic;
         public int orderSequence;
         public int requestedQuantity;
         public String state;
@@ -1426,6 +1608,7 @@ public final class DeviceCommandStore extends SQLiteOpenHelper {
         public boolean success;
         public boolean duplicate;
         public boolean conflict;
+        public boolean lateAfterUnknown;
         public String eventNo;
         public String resultStatus;
         public String payload;

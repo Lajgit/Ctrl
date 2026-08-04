@@ -67,6 +67,10 @@ public final class DeviceCommandManager {
         return runtime.getRunningStatus();
     }
 
+    public void requestActivePhysicalOrderState() {
+        runtime.broadcastActivePhysicalOrderState();
+    }
+
     public void flushPending() {
         runtime.flushPending();
     }

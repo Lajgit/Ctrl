@@ -27,8 +27,10 @@
     <string name="dispense_order_waiting">请稍候，正在等待控制板计数</string>
     <string name="dispense_order_count_format">已出 %1$d / %2$d 颗</string>
     <string name="dispense_order_finished">出珠完成</string>
+    <string name="dispense_order_finishing">正在完成订单</string>
     <string name="dispense_order_blocked">出珠异常，请联系工作人员</string>
     <string name="dispense_order_recovering">正在恢复上一笔订单</string>
+    <string name="dispense_order_maintenance">进入维护</string>
     <string name="backend_debug_entry">后台设置（调试入口）</string>
 
     <string name="activation_title">设备激活</string>

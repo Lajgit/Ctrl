@@ -257,7 +257,7 @@ final class PlatformCommandRuntime {
 
         switch (commandType) {
             case "dispense_marbles":
-                acceptDispense(decoded);
+                acceptDispense(decoded, topic);
                 break;
             case "collect_marbles":
                 acceptCollect(decoded);
@@ -278,7 +278,7 @@ final class PlatformCommandRuntime {
         }
     }
 
-    private void acceptDispense(SdkCommandDecoder.DecodedCommand decoded) {
+    private void acceptDispense(SdkCommandDecoder.DecodedCommand decoded, String sourceTopic) {
         if (!controllerProtocolReady) {
             store.saveCommand(decoded.envelope);
             publishSdkGenericTerminal(
@@ -318,7 +318,7 @@ final class PlatformCommandRuntime {
         }
 
         DeviceCommandStore.CreatePhysicalOrderResult createResult =
-                store.createActivePhysicalOrder(decoded.envelope, quantity);
+                store.createActivePhysicalOrder(decoded.envelope, sourceTopic, quantity);
         if (!createResult.success) {
             store.saveCommand(decoded.envelope);
             publishSdkGenericTerminal(
@@ -356,7 +356,11 @@ final class PlatformCommandRuntime {
                     createResult.orderSequence
             );
             if (result == null) {
-                store.markActivePhysicalBlocked("HARDWARE_RESULT_MISSING");
+                persistUnknownPhysicalResult(
+                        createResult.messageId,
+                        0,
+                        "hardware result missing"
+                );
                 broadcastDispenseOrder(
                         "blocked",
                         createResult.orderSequence,
@@ -370,7 +374,11 @@ final class PlatformCommandRuntime {
             String resultCode = safe(result.getResultCode());
             if ("CONTROLLER_RESULT_TIMEOUT".equals(resultCode)
                     || "CONTROLLER_TERMINAL_MISSING".equals(resultCode)) {
-                store.markActivePhysicalBlocked(resultCode);
+                persistUnknownPhysicalResult(
+                        createResult.messageId,
+                        Math.max(0, result.getActualQuantity()),
+                        safe(result.getResultMessage())
+                );
                 broadcastDispenseOrder(
                         "blocked",
                         createResult.orderSequence,
@@ -417,6 +425,44 @@ final class PlatformCommandRuntime {
 
     int getRunningStatus() {
         return store.hasActivePhysicalOrder() ? 1 : 0;
+    }
+
+    void broadcastActivePhysicalOrderState() {
+        DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
+        if (active == null) {
+            broadcastDispenseOrder("idle", 0, 0, 0, 0, "");
+            return;
+        }
+        if ("FINISHING".equals(active.state)) {
+            broadcastDispenseOrder(
+                    "finishing",
+                    active.orderSequence,
+                    active.requestedQuantity,
+                    Math.max(active.lastProgressActual, active.terminalActual),
+                    active.terminalResultCode,
+                    "finishing dispense order"
+            );
+            return;
+        }
+        if ("BLOCKED".equals(active.state)) {
+            broadcastDispenseOrder(
+                    "blocked",
+                    active.orderSequence,
+                    active.requestedQuantity,
+                    Math.max(active.lastProgressActual, active.terminalActual),
+                    active.terminalResultCode,
+                    safe(active.blockedReason, "physical order blocked")
+            );
+            return;
+        }
+        broadcastDispenseOrder(
+                "started",
+                active.orderSequence,
+                active.requestedQuantity,
+                active.lastProgressActual,
+                0,
+                "dispense order active"
+        );
     }
 
     void flushPending() {
@@ -613,9 +659,15 @@ final class PlatformCommandRuntime {
         SdkCommandDecoder.DecodedCommand decoded = liveCommands.get(sourceMessageId);
         JSONObject envelope = store.loadCommand(sourceMessageId);
         if (decoded == null && envelope != null) {
-            decoded = decodeStoredCommand(envelope);
+            decoded = decodeStoredCommand(envelope, active.sourceTopic);
         }
         if (decoded == null || envelope == null) {
+            if (blank(active.sourceTopic)) {
+                store.markActivePhysicalBlocked("STORED_COMMAND_TOPIC_MISSING");
+                cashAdapter.disableCashAcceptance();
+                reportStorageFault("stored physical command source topic is missing: "
+                        + sourceMessageId);
+            }
             reportStorageFault("active physical command context is missing: " + sourceMessageId);
             return false;
         }
@@ -624,7 +676,8 @@ final class PlatformCommandRuntime {
                 Math.max(active.lastProgressActual, evidence.lastProgressActual),
                 evidence.terminalActual
         );
-        boolean success = evidence.controllerResultCode == 0
+        boolean success = "FINISHING".equals(active.state)
+                && evidence.controllerResultCode == 0
                 && evidence.terminalActual > 0
                 && evidence.terminalActual == active.requestedQuantity;
         String resultCode = terminalResultCode(active, evidence, success);
@@ -675,6 +728,25 @@ final class PlatformCommandRuntime {
                         finalActual,
                         evidence.controllerResultCode,
                         "terminal conflict"
+                );
+                return true;
+            }
+            if (storeResult.lateAfterUnknown) {
+                MqttManager.get(context).reportFault(
+                        "LATE_CONTROLLER_TERMINAL_AFTER_UNKNOWN",
+                        "controller terminal arrived after unknown result was persisted",
+                        2,
+                        "messageId=" + sourceMessageId
+                                + ", seq=" + evidence.orderSequence
+                                + ", frameId=" + evidence.frameId
+                );
+                broadcastDispenseOrder(
+                        "blocked",
+                        evidence.orderSequence,
+                        active.requestedQuantity,
+                        finalActual,
+                        evidence.controllerResultCode,
+                        "late terminal recorded after unknown result"
                 );
                 return true;
             }
@@ -825,6 +897,70 @@ final class PlatformCommandRuntime {
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             return false;
+        }
+    }
+
+    private void persistUnknownPhysicalResult(
+            String messageId,
+            int observedActual,
+            String description
+    ) {
+        DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
+        if (active == null || !safe(messageId).equals(active.messageId)) {
+            return;
+        }
+        SdkCommandDecoder.DecodedCommand decoded = liveCommands.get(active.messageId);
+        JSONObject envelope = store.loadCommand(active.messageId);
+        if (decoded == null && envelope != null) {
+            decoded = decodeStoredCommand(envelope, active.sourceTopic);
+        }
+        if (decoded == null || envelope == null) {
+            store.markActivePhysicalBlocked("STORED_COMMAND_TOPIC_MISSING");
+            cashAdapter.disableCashAcceptance();
+            reportStorageFault("unknown physical result context is missing: "
+                    + active.messageId);
+            return;
+        }
+
+        int safeActual = Math.max(0, Math.min(0xFFFF, observedActual));
+        String eventNo = blank(active.terminalEventNo)
+                ? active.messageId + "-result"
+                : active.terminalEventNo;
+        String resultMessage = blank(description)
+                ? "controller did not return final dispense result; manual review required"
+                : description;
+        try {
+            SdkCommandDecoder.EncodedResult terminal = decoded.physicalTerminal(
+                    eventNo,
+                    false,
+                    safeActual,
+                    "CONTROLLER_TERMINAL_MISSING",
+                    resultMessage,
+                    System.currentTimeMillis()
+            );
+            DeviceCommandStore.TerminalStoreResult storeResult =
+                    store.savePhysicalUnknownResult(
+                            envelope,
+                            active.orderSequence,
+                            safeActual,
+                            "CONTROLLER_TERMINAL_MISSING",
+                            resultMessage,
+                            terminal.eventNo,
+                            terminal.resultStatus,
+                            terminal.payload
+                    );
+            if (!storeResult.success) {
+                reportStorageFault("unknown physical result could not be saved: "
+                        + safe(storeResult.resultCode));
+                return;
+            }
+            MqttManager.get(context).reportCommandResult(
+                    blank(storeResult.payload) ? terminal.payload : storeResult.payload
+            );
+            cashAdapter.disableCashAcceptance();
+        } catch (Throwable error) {
+            reportStorageFault("unknown physical result encode failed: "
+                    + messageOf(error));
         }
     }
 
@@ -1220,10 +1356,22 @@ final class PlatformCommandRuntime {
         return (value & 0xFFFFFFFFL) >= MIN_CONTROLLER_PROTOCOL_VERSION;
     }
 
-    private SdkCommandDecoder.DecodedCommand decodeStoredCommand(JSONObject envelope) {
+    private SdkCommandDecoder.DecodedCommand decodeStoredCommand(
+            JSONObject envelope,
+            String sourceTopic
+    ) {
+        if (blank(sourceTopic)) {
+            MqttManager.get(context).reportFault(
+                    "STORED_COMMAND_TOPIC_MISSING",
+                    "stored physical command source topic is missing",
+                    3,
+                    "messageId=" + (envelope == null ? "" : envelope.optString("messageId", ""))
+            );
+            return null;
+        }
         try {
             return decoder.decode(
-                    "",
+                    sourceTopic,
                     envelope.toString().getBytes(StandardCharsets.UTF_8),
                     DeviceUtil.requireDeviceNo(context),
                     System.currentTimeMillis()

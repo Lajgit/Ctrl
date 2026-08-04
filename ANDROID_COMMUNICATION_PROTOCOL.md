@@ -118,3 +118,14 @@ Android 本地诊断可使用：`CONTROLLER_ACTUAL_REGRESSION`、`PHYSICAL_TERMI
 - PD3 / EXTI3 -> 存珠光眼 -> `CardFeedback_Pin` -> `Hardware_OnCollectPulse`
 
 存珠保留为本地维护功能，不再作为平台 active physical order。
+
+## V2.2 安全补充
+
+- Android 必须先确认 `VersionReport >= 0x02020000`（2.2.0.0）后，才能启用现金或发送 `DispenseStartOrder`。
+- 版本未知或版本过低时，Android 只能使用旧 `0x18 CashAcceptanceApply(mask=0)` 关闭现金；不得发送现金启用请求，不得创建 `active_physical_order`，不得发送 `0x30`。
+- 版本确认后，现金启用和关闭统一使用 `0x33 CashAcceptanceApplyV22`。
+- `active_physical_order` 必须保存原始 MQTT source topic，用于 App 重启后恢复 SDK command 上下文；历史数据缺少 source topic 时进入 `BLOCKED/MANUAL_REVIEW`，不发送 TerminalAck。
+- 如果控制板永久缺失 `DispenseTerminal`，Android 生成一次 `status=failed`、`errorCode=CONTROLLER_TERMINAL_MISSING` 的 command-result；`actualQuantity` 使用最后观察到的 `lastProgressActual`，不保证最终真实数量。
+- Terminal 缺失后设备保持 `BLOCKED`，现金保持关闭，不允许下一单。
+- 如果之后收到迟到 `DispenseTerminal`，Android 只保存原始证据并发送匹配 `orderSequence + terminalFrameId` 的 `DispenseTerminalAck`，不得覆盖已生成的平台结果，不得发布第二个 command-result。
+- `DispenseTerminalAck` 获得线路 echo 前，成功订单不得清除 active order，也不得允许下一单。

@@ -68,6 +68,7 @@ public class MainActivity extends AppCompatActivity {
     private ProgressBar dispenseProgress;
     private TextView dispenseOverlayTitle;
     private TextView dispenseOverlayStatus;
+    private Button dispenseMaintenanceButton;
 
     private PackageOption selectedOption;
     private boolean receiverRegistered;
@@ -140,6 +141,7 @@ public class MainActivity extends AppCompatActivity {
             collectionStartButton.setEnabled(true);
             collectionFinishButton.setEnabled(false);
         }
+        DeviceCommandManager.get(this).requestActivePhysicalOrderState();
     }
 
     @Override
@@ -188,6 +190,7 @@ public class MainActivity extends AppCompatActivity {
         dispenseProgress = findViewById(R.id.progress_dispense_order);
         dispenseOverlayTitle = findViewById(R.id.text_dispense_overlay_title);
         dispenseOverlayStatus = findViewById(R.id.text_dispense_overlay_status);
+        dispenseMaintenanceButton = findViewById(R.id.button_dispense_maintenance);
     }
 
     private void bindActions() {
@@ -200,6 +203,7 @@ public class MainActivity extends AppCompatActivity {
         findViewById(R.id.button_backend_settings).setOnClickListener(
                 view -> openBackendSettings()
         );
+        dispenseMaintenanceButton.setOnClickListener(view -> openBackendSettings());
         collectionStartButton.setOnClickListener(view -> {
             if (DeviceCommandManager.get(this).startPendingCollection()) {
                 collectionStartButton.setEnabled(false);
@@ -451,6 +455,7 @@ public class MainActivity extends AppCompatActivity {
         if ("started".equals(eventType)) {
             showDispenseOverlay(true);
             dispenseProgress.setVisibility(View.VISIBLE);
+            dispenseMaintenanceButton.setVisibility(View.GONE);
             dispenseOverlayTitle.setText(R.string.dispense_order_started);
             dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
             paymentButton.setEnabled(false);
@@ -459,6 +464,7 @@ public class MainActivity extends AppCompatActivity {
         if ("progress".equals(eventType)) {
             showDispenseOverlay(true);
             dispenseProgress.setVisibility(View.VISIBLE);
+            dispenseMaintenanceButton.setVisibility(View.GONE);
             dispenseOverlayTitle.setText(R.string.dispense_order_started);
             dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
             return;
@@ -466,13 +472,24 @@ public class MainActivity extends AppCompatActivity {
         if ("finished".equals(eventType)) {
             dispenseOverlayTitle.setText(R.string.dispense_order_finished);
             dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
+            dispenseMaintenanceButton.setVisibility(View.GONE);
             showDispenseOverlay(false);
             paymentStatusText.setText(R.string.dispense_order_finished);
+            return;
+        }
+        if ("finishing".equals(eventType)) {
+            showDispenseOverlay(true);
+            dispenseProgress.setVisibility(View.GONE);
+            dispenseMaintenanceButton.setVisibility(View.GONE);
+            dispenseOverlayTitle.setText(R.string.dispense_order_finishing);
+            dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
+            paymentButton.setEnabled(false);
             return;
         }
         if ("blocked".equals(eventType)) {
             showDispenseOverlay(true);
             dispenseProgress.setVisibility(View.GONE);
+            dispenseMaintenanceButton.setVisibility(View.VISIBLE);
             dispenseOverlayTitle.setText(R.string.dispense_order_blocked);
             dispenseOverlayStatus.setText(notBlank(message)
                     ? message
@@ -484,9 +501,15 @@ public class MainActivity extends AppCompatActivity {
         if ("recovering".equals(eventType)) {
             showDispenseOverlay(true);
             dispenseProgress.setVisibility(View.GONE);
+            dispenseMaintenanceButton.setVisibility(View.GONE);
             dispenseOverlayTitle.setText(R.string.dispense_order_recovering);
             dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
             paymentButton.setEnabled(false);
+            return;
+        }
+        if ("idle".equals(eventType)) {
+            dispenseMaintenanceButton.setVisibility(View.GONE);
+            showDispenseOverlay(false);
         }
     }
 
