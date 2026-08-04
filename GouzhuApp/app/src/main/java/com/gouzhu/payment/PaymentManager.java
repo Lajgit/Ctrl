@@ -443,7 +443,15 @@ public final class PaymentManager {
     /** User-confirmed close action for the current QR payment session. */
     public synchronized boolean cancelCurrentPayment() {
         String requestNo = getCurrentOrderId();
-        if (requestNo.isEmpty() || !occupancy.markQrCancelling(requestNo)) {
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+        if (requestNo.isEmpty()
+                || snapshot == null
+                || !TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
+                || !requestNo.equals(snapshot.clientRequestNo)
+                || !(TransactionOccupancyManager.PHASE_PREPARING.equals(snapshot.phase)
+                || TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(snapshot.phase)
+                || TransactionOccupancyManager.PHASE_CONFIRMING_CLOSE.equals(snapshot.phase))
+                || !occupancy.markQrCancelling(requestNo)) {
             return false;
         }
         cancelPurchaseQuery();
