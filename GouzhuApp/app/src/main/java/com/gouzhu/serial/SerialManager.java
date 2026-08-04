@@ -30,9 +30,6 @@ public final class SerialManager {
     private static volatile SerialManager instance;
 
     private static final int NORMAL_FRAME_LENGTH = 14;
-    private static final int CMD_CASH_APPLY_V21 = 0x18;
-    private static final int CMD_CASH_APPLY_V22 = 0x33;
-
     private static final int BOOT_SOF_1 = 0xAA;
     private static final int BOOT_SOF_2 = 0x5A;
     private static final int BOOT_PROTOCOL_VERSION = 0x01;
@@ -152,7 +149,7 @@ public final class SerialManager {
             return false;
         }
 
-        byte[] frame = buildNormalFrame(normalizeCommandCode(code2), data, requireEcho);
+        byte[] frame = buildNormalFrame(code2, data, requireEcho);
         return writeRaw(frame);
     }
 
@@ -164,7 +161,7 @@ public final class SerialManager {
         if (!isOpen() || bootMode) {
             return false;
         }
-        byte[] frame = buildNormalFrame(normalizeCommandCode(code2), data, true);
+        byte[] frame = buildNormalFrame(code2, data, true);
         CountDownLatch latch = new CountDownLatch(1);
         pendingEcho = frame;
         pendingEchoLatch = latch;
@@ -444,10 +441,6 @@ public final class SerialManager {
         intent.putExtra("expandCode", frame[10] & 0xFF);
         intent.putExtra("raw", frame);
         context.sendBroadcast(intent);
-    }
-
-    private static int normalizeCommandCode(int code2) {
-        return code2 == CMD_CASH_APPLY_V21 ? CMD_CASH_APPLY_V22 : code2;
     }
 
     private BootReply sendBootRequest(

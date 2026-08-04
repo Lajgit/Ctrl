@@ -34,9 +34,11 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Platform command runtime backed by one active physical dispense order.
@@ -60,6 +62,8 @@ final class PlatformCommandRuntime {
     private static final int EVT_DISPENSE_TERMINAL = 0x41;
 
     private static final long TERMINAL_ACK_ECHO_TIMEOUT_MS = 2500L;
+    private static final long CONTROLLER_VERSION_TIMEOUT_MS = 5000L;
+    private static final long MIN_CONTROLLER_PROTOCOL_VERSION = 0x02020000L;
     private static final int OUTBOX_FLUSH_BATCH_SIZE = 4;
 
     private final Context context;
@@ -79,6 +83,9 @@ final class PlatformCommandRuntime {
 
     private boolean receiverRegistered;
     private long lastCashDeviceStatus = Long.MIN_VALUE;
+    private volatile boolean controllerVersionKnown;
+    private volatile boolean controllerProtocolReady;
+    private volatile CountDownLatch controllerVersionLatch;
 
     private final SerialMarbleHardwareAdapter.Observer hardwareObserver =
             new SerialMarbleHardwareAdapter.Observer() {
@@ -157,7 +164,31 @@ final class PlatformCommandRuntime {
         marbleAdapter.start(hardwareObserver);
         cashAdapter.start();
         cashAdapter.markApplied(store.getCashConfigVersion());
+        controllerVersionKnown = false;
+        controllerProtocolReady = false;
+        cashAdapter.setProtocolV22Ready(false);
+        cashAdapter.disableCashAcceptance();
+        CountDownLatch versionLatch = new CountDownLatch(1);
+        controllerVersionLatch = versionLatch;
         SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
+        try {
+            versionLatch.await(CONTROLLER_VERSION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        } finally {
+            controllerVersionLatch = null;
+        }
+        if (!controllerProtocolReady) {
+            cashAdapter.disableCashAcceptance();
+            MqttManager.get(context).reportFault(
+                    "CONTROLLER_PROTOCOL_UNSUPPORTED",
+                    "controller protocol version is below 2.2.0.0 or unavailable",
+                    3,
+                    "boardVersion=" + Long.toUnsignedString(store.getBoardVersion())
+            );
+            return;
+        }
+
         SerialManager.get(context).sendCommand(CMD_HARDWARE_STATUS, 0L, false);
         recoverActivePhysicalOrder();
         discardInterruptedCashConfiguration();
@@ -248,6 +279,18 @@ final class PlatformCommandRuntime {
     }
 
     private void acceptDispense(SdkCommandDecoder.DecodedCommand decoded) {
+        if (!controllerProtocolReady) {
+            store.saveCommand(decoded.envelope);
+            publishSdkGenericTerminal(
+                    decoded,
+                    false,
+                    "CONTROLLER_PROTOCOL_UNSUPPORTED",
+                    "controller protocol 2.2.0.0 is required"
+            );
+            cashAdapter.disableCashAcceptance();
+            return;
+        }
+
         final DispenseRequest request;
         try {
             request = decoded.toDispenseRequest(System.currentTimeMillis());
@@ -437,8 +480,12 @@ final class PlatformCommandRuntime {
             cashAdapter.disableCashAcceptance();
             persistAndPublishConfigurationFailure(
                     decoded,
-                    "PHYSICAL_ORDER_ACTIVE",
-                    "cash cannot be enabled while a physical order is active or blocked",
+                    controllerProtocolReady
+                            ? "PHYSICAL_ORDER_ACTIVE"
+                            : "CONTROLLER_PROTOCOL_UNSUPPORTED",
+                    controllerProtocolReady
+                            ? "cash cannot be enabled while a physical order is active or blocked"
+                            : "controller protocol 2.2.0.0 is required before enabling cash",
                     false
             );
             return;
@@ -685,6 +732,22 @@ final class PlatformCommandRuntime {
         switch (code2) {
             case EVT_VERSION:
                 store.saveBoardVersion(packed);
+                controllerVersionKnown = true;
+                controllerProtocolReady = isSupportedControllerVersion(packed);
+                cashAdapter.setProtocolV22Ready(controllerProtocolReady);
+                CountDownLatch versionLatch = controllerVersionLatch;
+                if (versionLatch != null) {
+                    versionLatch.countDown();
+                }
+                if (!controllerProtocolReady) {
+                    cashAdapter.disableCashAcceptance();
+                    MqttManager.get(context).reportFault(
+                            "CONTROLLER_PROTOCOL_UNSUPPORTED",
+                            "controller protocol version is below 2.2.0.0",
+                            3,
+                            "boardVersion=" + Long.toUnsignedString(packed)
+                    );
+                }
                 MqttManager.get(context).reportStatus();
                 break;
             case EVT_CASH_ACCEPTED:
@@ -1147,9 +1210,14 @@ final class PlatformCommandRuntime {
     }
 
     private boolean canEnableCash() {
-        return !store.hasActivePhysicalOrder()
+        return controllerProtocolReady
+                && !store.hasActivePhysicalOrder()
                 && !store.isPhysicalBlocked()
                 && !store.isCashBlocked();
+    }
+
+    private static boolean isSupportedControllerVersion(long value) {
+        return (value & 0xFFFFFFFFL) >= MIN_CONTROLLER_PROTOCOL_VERSION;
     }
 
     private SdkCommandDecoder.DecodedCommand decodeStoredCommand(JSONObject envelope) {

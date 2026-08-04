@@ -28,7 +28,8 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
 
     private static final String TAG = "GouzhuCashConfig";
 
-    private static final int CMD_CASH_APPLY = 0x18;
+    private static final int CMD_CASH_APPLY_V21 = 0x18;
+    private static final int CMD_CASH_APPLY_V22 = 0x33;
     private static final int EVT_CASH_ACCEPTANCE_STATUS = 0x11;
     private static final int BANKNOTE_MASK = 1;
     private static final int COIN_MASK = 2;
@@ -39,6 +40,7 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
 
     private volatile ApplyWaiter waiter;
     private volatile long lastAppliedConfigVersion = 1L;
+    private volatile boolean protocolV22Ready;
     private int lastObservedActualMask = -1;
     private long lastObservedActualVersion = -1L;
     private boolean receiverRegistered;
@@ -185,6 +187,10 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
         }
     }
 
+    public void setProtocolV22Ready(boolean ready) {
+        protocolV22Ready = ready;
+    }
+
     @Override
     public void disableCashAcceptance() {
         long version = Math.max(
@@ -193,7 +199,7 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
         );
         long packed = version & 0x00FFFFFFL;
         boolean sent = SerialManager.get(context).sendCommand(
-                CMD_CASH_APPLY,
+                protocolV22Ready ? CMD_CASH_APPLY_V22 : CMD_CASH_APPLY_V21,
                 packed,
                 true
         );
@@ -206,6 +212,10 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
     }
 
     private CashConfigurationResult applyMask(long configVersion, int mask) {
+        if (mask != 0 && !protocolV22Ready) {
+            disableCashAcceptance();
+            return CashConfigurationResult.rejected("控制板协议未确认，禁止启用现金");
+        }
         synchronized (applyLock) {
             ApplyWaiter active = new ApplyWaiter();
             active.expectedMask = mask & 0xFF;
@@ -223,7 +233,7 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
                                 + "，packed=0x" + Long.toHexString(packed)
                 );
                 if (!SerialManager.get(context).sendCommand(
-                        CMD_CASH_APPLY,
+                        protocolV22Ready ? CMD_CASH_APPLY_V22 : CMD_CASH_APPLY_V21,
                         packed,
                         true
                 )) {

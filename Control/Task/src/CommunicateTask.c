@@ -536,7 +536,6 @@ static uint8_t USART_SendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
 
     mesg->ResendID = 0U;
     mesg->ID = frame_id;
-    USART_TransmitMesg(tx, mesg);
 
     if (entry != NULL)
     {
@@ -550,6 +549,7 @@ static uint8_t USART_SendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
         entry->kind = PendingTx_GetKind(mesg->Code2);
     }
 
+    USART_TransmitMesg(tx, mesg);
     return frame_id;
 }
 
