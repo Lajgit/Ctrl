@@ -4,6 +4,8 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
 import android.os.Build;
 import android.util.Log;
 
@@ -187,6 +189,11 @@ final class PlatformCommandRuntime {
                     "boardVersion=" + Long.toUnsignedString(store.getBoardVersion())
             );
             return;
+        }
+
+        int cleanedCashEvents = cleanupCompletedCashEvents();
+        if (cleanedCashEvents > 0) {
+            Log.i(TAG, "已清理完成的历史现金事件：" + cleanedCashEvents);
         }
 
         SerialManager.get(context).sendCommand(CMD_HARDWARE_STATUS, 0L, false);
@@ -1132,9 +1139,27 @@ final class PlatformCommandRuntime {
         DeviceCommandStore.CashEventRecord existing =
                 store.findCashEventBySequence(sequence);
         if (existing != null) {
-            confirmCashStored(sequence);
-            MqttManager.get(context).reportCashEvent(existing.payload);
-            return;
+            boolean stillPending = "pending".equals(existing.status)
+                    || "unknown".equals(existing.status)
+                    || hasPendingCashOutbox(existing.eventNo);
+            if (stillPending) {
+                confirmCashStored(sequence);
+                MqttManager.get(context).reportCashEvent(existing.payload);
+                return;
+            }
+
+            Log.w(
+                    TAG,
+                    "现金序号复用，删除已完成历史事件：sequence="
+                            + sequence
+                            + ", oldEventNo="
+                            + existing.eventNo
+            );
+            if (!removeCashEventRecord(existing.eventNo)) {
+                reportStorageFault("completed cash event could not be removed: "
+                        + existing.eventNo);
+                return;
+            }
         }
 
         String medium = mediumCode == 0 ? "coin" : "banknote";
@@ -1176,6 +1201,80 @@ final class PlatformCommandRuntime {
         }
     }
 
+    private boolean hasPendingCashOutbox(String eventNo) {
+        if (blank(eventNo)) {
+            return false;
+        }
+        synchronized (store) {
+            try (Cursor cursor = store.getReadableDatabase().query(
+                    "outbox",
+                    new String[]{"id"},
+                    "kind=? AND event_no=?",
+                    new String[]{"cash_event", eventNo},
+                    null,
+                    null,
+                    null)) {
+                return cursor.moveToFirst();
+            }
+        }
+    }
+
+    private boolean removeCashEventRecord(String eventNo) {
+        if (blank(eventNo)) {
+            return false;
+        }
+        synchronized (store) {
+            SQLiteDatabase db = store.getWritableDatabase();
+            db.beginTransaction();
+            try {
+                db.delete(
+                        "outbox",
+                        "kind=? AND event_no=?",
+                        new String[]{"cash_event", eventNo}
+                );
+                int deleted = db.delete(
+                        "cash_events",
+                        "event_no=?",
+                        new String[]{eventNo}
+                );
+                if (deleted != 1) {
+                    return false;
+                }
+                db.setTransactionSuccessful();
+                return true;
+            } catch (Throwable error) {
+                Log.e(TAG, "remove cash event failed: " + eventNo, error);
+                return false;
+            } finally {
+                db.endTransaction();
+            }
+        }
+    }
+
+    private int cleanupCompletedCashEvents() {
+        synchronized (store) {
+            SQLiteDatabase db = store.getWritableDatabase();
+            db.beginTransaction();
+            try {
+                int deleted = db.delete(
+                        "cash_events",
+                        "status NOT IN (?,?) AND NOT EXISTS ("
+                                + "SELECT 1 FROM outbox "
+                                + "WHERE outbox.kind=? "
+                                + "AND outbox.event_no=cash_events.event_no)",
+                        new String[]{"pending", "unknown", "cash_event"}
+                );
+                db.setTransactionSuccessful();
+                return deleted;
+            } catch (Throwable error) {
+                Log.e(TAG, "cleanup completed cash events failed", error);
+                return 0;
+            } finally {
+                db.endTransaction();
+            }
+        }
+    }
+
     private void confirmCashStored(int sequence) {
         SerialManager.get(context).sendCommand(
                 CMD_CASH_EVENT_STORED,
@@ -1198,8 +1297,10 @@ final class PlatformCommandRuntime {
             return;
         }
 
-        store.removeCashOutbox(eventNo);
-        store.updateCashEventStatus(eventNo, safe(response.getStatus()));
+        if (!removeCashEventRecord(eventNo)) {
+            reportStorageFault("final cash event could not be removed: " + eventNo);
+            return;
+        }
         if (response.isManualReview() || response.isRejected()) {
             MqttManager.get(context).reportFault(
                     "CASH_EVENT_" + safe(response.getStatus()).toUpperCase(Locale.ROOT),
