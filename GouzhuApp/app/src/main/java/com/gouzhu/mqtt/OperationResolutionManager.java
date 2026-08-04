@@ -285,6 +285,10 @@ final class OperationResolutionManager {
             SdkCommandDecoder.DecodedCommand decoded,
             ResolutionRecord record
     ) {
+        if (!requeueStoredResults(record)) {
+            reportStorageFault("人工结案重复回执未能重新进入outbox：" + record.messageId);
+            return;
+        }
         if (!blank(record.ackPayload)) {
             MqttManager.get(context).reportCommandResult(record.ackPayload);
         }
@@ -319,6 +323,9 @@ final class OperationResolutionManager {
             restoreCashAcceptanceIfSafe();
         }
         MqttManager.get(context).reportStatus();
+        if (current.outcomeSuccess && !store.hasActivePhysicalOrder()) {
+            broadcastResolvedSession(runningStatus);
+        }
 
         String resultMessage = terminalResultMessage(current, runningStatus);
         try {
@@ -578,6 +585,43 @@ final class OperationResolutionManager {
         }
     }
 
+    private boolean requeueStoredResults(ResolutionRecord record) {
+        synchronized (store) {
+            SQLiteDatabase db = store.getWritableDatabase();
+            db.beginTransaction();
+            try {
+                if (!blank(record.ackPayload) && !saveOutbox(
+                        db,
+                        record.messageId + "|" + record.ackEventNo + "|ack",
+                        record.messageId,
+                        record.ackEventNo,
+                        "ack",
+                        record.ackPayload
+                )) {
+                    return false;
+                }
+                if (!blank(record.terminalPayload) && !saveOutbox(
+                        db,
+                        record.messageId + "|" + record.terminalEventNo
+                                + "|" + record.terminalStatus,
+                        record.messageId,
+                        record.terminalEventNo,
+                        record.terminalStatus,
+                        record.terminalPayload
+                )) {
+                    return false;
+                }
+                db.setTransactionSuccessful();
+                return true;
+            } catch (Throwable error) {
+                Log.e(TAG, "人工结案重复回执重新入队失败", error);
+                return false;
+            } finally {
+                db.endTransaction();
+            }
+        }
+    }
+
     private void awaitFreshHardwareStatus() {
         CountDownLatch latch = new CountDownLatch(1);
         hardwareStatusLatch = latch;
@@ -654,6 +698,23 @@ final class OperationResolutionManager {
                         + ", mask=0x" + Integer.toHexString(mask)
                         + ", version=" + record.configVersion
         );
+    }
+
+    private void broadcastResolvedSession(int runningStatus) {
+        Intent intent = new Intent(AppConfig.ACTION_DISPENSE_ORDER_EVENT);
+        intent.setPackage(context.getPackageName());
+        intent.putExtra("eventType", "idle");
+        intent.putExtra("orderSequence", 0);
+        intent.putExtra("requestedQuantity", 0);
+        intent.putExtra("actualQuantity", 0);
+        intent.putExtra("resultCode", 0);
+        intent.putExtra(
+                "message",
+                runningStatus == 0
+                        ? "manual operation resolved"
+                        : "manual operation resolved; hardware fault remains"
+        );
+        context.sendBroadcast(intent);
     }
 
     private void ensureSchema() {
