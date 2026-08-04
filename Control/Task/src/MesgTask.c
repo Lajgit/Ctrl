@@ -84,6 +84,14 @@ void Mesg_Task(void)
     {
         if (CashEvent_HasPending())
         {
+            /*
+             * A physically accepted cash event owns the device immediately. Disable both
+             * cash inputs before reporting the durable event so a second note/coin cannot
+             * enter while Android and the platform are still creating the corresponding
+             * dispense operation. Android will explicitly reapply the configured mask after
+             * the transaction reaches a safe terminal state.
+             */
+            CashAcceptance_Disable();
             if (SendMesgWithResend(CashAccepted,
                                    MakeCashAcceptedData(),
                                    (uint8_t)CashEvent_GetPendingSequence()))
