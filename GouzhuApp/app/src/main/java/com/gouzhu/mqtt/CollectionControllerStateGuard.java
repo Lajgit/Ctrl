@@ -24,10 +24,10 @@ import java.util.concurrent.Executors;
 /**
  * Detects a controller-side collection stop that occurs before the requested quantity.
  *
- * <p>BeadStockStatus expandCode=1 means the collection motor is active and 0 means inactive.
- * The controller emits a stock status after normal stop, target completion and motor timeout.
- * This closes the old ambiguity where a sensor timeout could later be reported as a successful
- * manual finish merely because CollectStop transport echo was received.</p>
+ * <p>Starting with controller 2.2.0.2, BeadStockStatus expandCode=1 means the collection
+ * motor is active and 0 means inactive. Older firmware used expandCode=0 unconditionally and
+ * is deliberately ignored by this guard. The controller emits a stock status after normal
+ * stop, target completion and motor timeout.</p>
  */
 final class CollectionControllerStateGuard {
 
@@ -35,6 +35,7 @@ final class CollectionControllerStateGuard {
     private static final String SESSION_TABLE = "collection_sessions";
     private static final int CMD_HARDWARE_STATUS = 0x20;
     private static final int EVT_BEAD_STOCK = 0x20;
+    private static final long MIN_COLLECTION_STATE_VERSION = 0x02020002L;
     private static final Object DB_LOCK = new Object();
 
     private final Context context;
@@ -52,7 +53,8 @@ final class CollectionControllerStateGuard {
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context receiverContext, Intent intent) {
-            if (intent == null) {
+            if (intent == null
+                    || store.getBoardVersion() < MIN_COLLECTION_STATE_VERSION) {
                 return;
             }
             if (TransactionOccupancyManager.ACTION_CHANGED.equals(intent.getAction())) {
