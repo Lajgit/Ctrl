@@ -20,6 +20,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -31,18 +32,13 @@ import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.payment.QrCodeUtil;
 import com.gouzhu.sdk.DeviceSdkManager;
 import com.gouzhu.service.DeviceService;
+import com.gouzhu.transaction.TransactionOccupancyManager;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
 
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 购珠机顾客主界面。
- *
- * <p>套餐、价格、购珠区标题和说明来自 SDK bootstrap。设备只提交服务端返回的
- * purchaseRuleId/priceTierId，不自行上传自定义金额或租户信息。支付结果本身不
- * 直接驱动控制板，真实出珠只等待 MQTT dispense_marbles。</p>
- */
+/** Customer-facing vending UI driven by the persisted global transaction occupancy state. */
 public class MainActivity extends AppCompatActivity {
 
     private static final int CODE_BACKEND_SETTINGS_REQUEST = 0x27;
@@ -57,6 +53,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView selectedPackageText;
     private TextView paymentStatusText;
     private Button paymentButton;
+    private Button cancelPaymentButton;
     private ImageView paymentQrImage;
     private Button[] packageButtons;
 
@@ -98,11 +95,17 @@ public class MainActivity extends AppCompatActivity {
                 handleDispenseOrderEvent(intent);
                 return;
             }
+            if (TransactionOccupancyManager.ACTION_CHANGED.equals(intent.getAction())
+                    || AppConfig.ACTION_TRANSACTION_OCCUPANCY_CHANGED.equals(intent.getAction())) {
+                applyTransactionOccupancy();
+                return;
+            }
             if (AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())
                     && "mqtt".equals(intent.getStringExtra("key"))) {
                 String value = intent.getStringExtra("value");
                 if (value != null && value.contains("已连接")) {
                     loadBootstrap(false);
+                    PaymentManager.get(MainActivity.this).resumePendingPayment();
                 }
             }
         }
@@ -135,13 +138,12 @@ public class MainActivity extends AppCompatActivity {
         backendOpening = false;
         hideSystemUi();
         loadBootstrap(false);
+        PaymentManager.get(this).resumePendingPayment();
         if (DeviceCommandManager.get(this).hasPendingCollection()) {
             collectionLayout.setVisibility(View.VISIBLE);
-            collectionStatusText.setText(R.string.collection_ready_hint);
-            collectionStartButton.setEnabled(true);
-            collectionFinishButton.setEnabled(false);
         }
         DeviceCommandManager.get(this).requestActivePhysicalOrderState();
+        applyTransactionOccupancy();
     }
 
     @Override
@@ -161,12 +163,25 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    @Override
+    public void onBackPressed() {
+        TransactionOccupancyManager.Snapshot snapshot =
+                TransactionOccupancyManager.get(this).current();
+        if (snapshot != null
+                && TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)) {
+            confirmCancelPayment();
+            return;
+        }
+        super.onBackPressed();
+    }
+
     private void bindViews() {
         packageSectionTitle = findViewById(R.id.text_package_section_title);
         packageSectionHint = findViewById(R.id.text_package_section_hint);
         selectedPackageText = findViewById(R.id.text_selected_package);
         paymentStatusText = findViewById(R.id.text_payment_status);
         paymentButton = findViewById(R.id.button_start_payment);
+        cancelPaymentButton = findViewById(R.id.button_cancel_payment);
         paymentQrImage = findViewById(R.id.image_payment_qr);
 
         packageButtons = new Button[]{
@@ -181,6 +196,7 @@ public class MainActivity extends AppCompatActivity {
             button.setEnabled(false);
         }
         paymentButton.setEnabled(false);
+        cancelPaymentButton.setVisibility(View.GONE);
 
         collectionLayout = findViewById(R.id.layout_collection);
         collectionStatusText = findViewById(R.id.text_collection_status);
@@ -200,6 +216,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         paymentButton.setOnClickListener(view -> startPayment());
+        cancelPaymentButton.setOnClickListener(view -> confirmCancelPayment());
         findViewById(R.id.button_backend_settings).setOnClickListener(
                 view -> openBackendSettings()
         );
@@ -213,6 +230,30 @@ public class MainActivity extends AppCompatActivity {
         collectionFinishButton.setOnClickListener(view ->
                 DeviceCommandManager.get(this).finishPendingCollection()
         );
+    }
+
+    private void confirmCancelPayment() {
+        String requestNo = PaymentManager.get(this).getCurrentOrderId();
+        if (requestNo.isEmpty()) {
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.payment_cancel_title)
+                .setMessage(R.string.payment_cancel_confirmation)
+                .setNegativeButton(R.string.payment_cancel_keep, null)
+                .setPositiveButton(R.string.payment_cancel_confirm, (dialog, which) -> {
+                    cancelPaymentButton.setEnabled(false);
+                    paymentQrImage.setVisibility(View.GONE);
+                    if (!PaymentManager.get(this).cancelCurrentPayment()) {
+                        cancelPaymentButton.setEnabled(true);
+                        Toast.makeText(
+                                this,
+                                R.string.payment_cancel_unavailable,
+                                Toast.LENGTH_SHORT
+                        ).show();
+                    }
+                })
+                .show();
     }
 
     private void loadBootstrap(boolean force) {
@@ -273,7 +314,6 @@ public class MainActivity extends AppCompatActivity {
 
         selectedOption = null;
         selectedPackageText.setText(R.string.package_not_selected);
-        paymentButton.setEnabled(false);
         paymentQrImage.setImageDrawable(null);
         paymentQrImage.setVisibility(View.GONE);
 
@@ -288,7 +328,6 @@ public class MainActivity extends AppCompatActivity {
             if (index < packageOptions.size()) {
                 PackageOption option = packageOptions.get(index);
                 button.setVisibility(View.VISIBLE);
-                button.setEnabled(true);
                 button.setText(getString(
                         R.string.package_button_dynamic_format,
                         option.quantity,
@@ -300,6 +339,7 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         paymentStatusText.setText(R.string.payment_select_package);
+        applyTransactionOccupancy();
     }
 
     private void appendRuleOptions(DeviceAppBootstrapResult.PurchaseRule rule) {
@@ -356,6 +396,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void selectPackage(int index) {
+        if (!TransactionOccupancyManager.get(this).canStartNewTransaction()) {
+            Toast.makeText(this, R.string.transaction_device_busy, Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (index < 0 || index >= packageOptions.size()) {
             return;
         }
@@ -377,6 +421,10 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, R.string.package_not_selected, Toast.LENGTH_SHORT).show();
             return;
         }
+        if (!TransactionOccupancyManager.get(this).canStartNewTransaction()) {
+            Toast.makeText(this, R.string.transaction_device_busy, Toast.LENGTH_SHORT).show();
+            return;
+        }
 
         try {
             PaymentManager.PaymentRequest request = PaymentManager.get(this).startPayment(
@@ -395,7 +443,7 @@ public class MainActivity extends AppCompatActivity {
             paymentButton.setEnabled(false);
         } catch (Throwable error) {
             paymentStatusText.setText(messageOf(error));
-            paymentButton.setEnabled(true);
+            applyTransactionOccupancy();
         }
     }
 
@@ -412,17 +460,29 @@ public class MainActivity extends AppCompatActivity {
             }
             paymentQrImage.setImageBitmap(bitmap);
             paymentQrImage.setVisibility(View.VISIBLE);
+            cancelPaymentButton.setVisibility(View.VISIBLE);
+            cancelPaymentButton.setEnabled(true);
             paymentStatusText.setText(R.string.payment_scan_hint);
+            applyTransactionOccupancy();
             return;
         }
 
         paymentStatusText.setText(message == null ? "" : message);
-        if (PaymentManager.EVENT_SUCCESS.equals(event)) {
+        if (PaymentManager.EVENT_CANCELLING.equals(event)) {
+            paymentQrImage.setVisibility(View.GONE);
+            cancelPaymentButton.setVisibility(View.VISIBLE);
+            cancelPaymentButton.setEnabled(false);
+        } else if (PaymentManager.EVENT_CLOSED.equals(event)) {
+            paymentQrImage.setImageDrawable(null);
+            paymentQrImage.setVisibility(View.GONE);
+            cancelPaymentButton.setVisibility(View.GONE);
+            cancelPaymentButton.setEnabled(true);
+        } else if (PaymentManager.EVENT_SUCCESS.equals(event)) {
             paymentButton.setEnabled(false);
             paymentQrImage.setVisibility(View.GONE);
-        } else if (PaymentManager.EVENT_FAILED.equals(event) && selectedOption != null) {
-            paymentButton.setEnabled(true);
+            cancelPaymentButton.setVisibility(View.GONE);
         }
+        applyTransactionOccupancy();
     }
 
     private void handleCollectionEvent(Intent intent) {
@@ -443,16 +503,16 @@ public class MainActivity extends AppCompatActivity {
             collectionStartButton.setEnabled(false);
             collectionFinishButton.setEnabled(false);
         }
+        applyTransactionOccupancy();
     }
 
     private void handleDispenseOrderEvent(Intent intent) {
         String eventType = intent.getStringExtra("eventType");
         int requested = intent.getIntExtra("requestedQuantity", 0);
         int actual = intent.getIntExtra("actualQuantity", 0);
-        int resultCode = intent.getIntExtra("resultCode", 0);
         String message = intent.getStringExtra("message");
 
-        if ("started".equals(eventType)) {
+        if ("started".equals(eventType) || "progress".equals(eventType)) {
             showDispenseOverlay(true);
             dispenseProgress.setVisibility(View.VISIBLE);
             dispenseMaintenanceButton.setVisibility(View.GONE);
@@ -461,20 +521,13 @@ public class MainActivity extends AppCompatActivity {
             paymentButton.setEnabled(false);
             return;
         }
-        if ("progress".equals(eventType)) {
-            showDispenseOverlay(true);
-            dispenseProgress.setVisibility(View.VISIBLE);
-            dispenseMaintenanceButton.setVisibility(View.GONE);
-            dispenseOverlayTitle.setText(R.string.dispense_order_started);
-            dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
-            return;
-        }
         if ("finished".equals(eventType)) {
             dispenseOverlayTitle.setText(R.string.dispense_order_finished);
             dispenseOverlayStatus.setText(formatDispenseCount(actual, requested));
             dispenseMaintenanceButton.setVisibility(View.GONE);
             showDispenseOverlay(false);
             paymentStatusText.setText(R.string.dispense_order_finished);
+            applyTransactionOccupancy();
             return;
         }
         if ("finishing".equals(eventType)) {
@@ -510,6 +563,68 @@ public class MainActivity extends AppCompatActivity {
         if ("idle".equals(eventType)) {
             dispenseMaintenanceButton.setVisibility(View.GONE);
             showDispenseOverlay(false);
+            applyTransactionOccupancy();
+        }
+    }
+
+    private void applyTransactionOccupancy() {
+        TransactionOccupancyManager manager = TransactionOccupancyManager.get(this);
+        TransactionOccupancyManager.Snapshot snapshot = manager.current();
+        boolean idle = snapshot == null;
+        boolean available = idle
+                && TransactionOccupancyManager.get(this).canStartNewTransaction()
+                && DeviceCommandManager.get(this).getRunningStatus() == 0;
+
+        for (int index = 0; index < packageButtons.length; index++) {
+            packageButtons[index].setEnabled(available && index < packageOptions.size());
+        }
+        paymentButton.setEnabled(available && selectedOption != null);
+
+        if (idle) {
+            cancelPaymentButton.setVisibility(View.GONE);
+            boolean pendingCollection = DeviceCommandManager.get(this).hasPendingCollection();
+            if (!pendingCollection) {
+                collectionLayout.setVisibility(View.GONE);
+                collectionStartButton.setEnabled(false);
+                collectionFinishButton.setEnabled(false);
+            }
+            if (!available) {
+                paymentStatusText.setText(R.string.machine_temporarily_unavailable);
+            }
+            return;
+        }
+
+        paymentButton.setEnabled(false);
+        String owner = snapshot.ownerType;
+        String phase = snapshot.phase;
+        if (TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(owner)) {
+            cancelPaymentButton.setVisibility(View.VISIBLE);
+            cancelPaymentButton.setEnabled(
+                    !TransactionOccupancyManager.PHASE_CANCELLING.equals(phase)
+                            && !TransactionOccupancyManager.PHASE_CONFIRMING_CLOSE.equals(phase)
+                            && !TransactionOccupancyManager.PHASE_BLOCKED.equals(phase)
+            );
+            collectionStartButton.setEnabled(false);
+            collectionFinishButton.setEnabled(false);
+            if (!TransactionOccupancyManager.PHASE_DISPENSING.equals(phase)
+                    && !TransactionOccupancyManager.PHASE_FINISHING.equals(phase)) {
+                paymentStatusText.setText(manager.displayMessage(snapshot));
+            }
+            return;
+        }
+
+        cancelPaymentButton.setVisibility(View.GONE);
+        paymentQrImage.setVisibility(View.GONE);
+        if (TransactionOccupancyManager.OWNER_CASH_PURCHASE.equals(owner)) {
+            paymentStatusText.setText(manager.displayMessage(snapshot));
+            collectionStartButton.setEnabled(false);
+            collectionFinishButton.setEnabled(false);
+        } else if (TransactionOccupancyManager.OWNER_MEMBER_DEPOSIT.equals(owner)) {
+            collectionLayout.setVisibility(View.VISIBLE);
+            paymentStatusText.setText(R.string.transaction_member_deposit_active);
+        } else {
+            collectionStartButton.setEnabled(false);
+            collectionFinishButton.setEnabled(false);
         }
     }
 
@@ -539,8 +654,10 @@ public class MainActivity extends AppCompatActivity {
                 paymentButton.setEnabled(false);
                 break;
             case CODE_BEAD_REFILLED:
-                paymentStatusText.setText(R.string.machine_ready);
-                paymentButton.setEnabled(selectedOption != null);
+                applyTransactionOccupancy();
+                if (TransactionOccupancyManager.get(this).isIdle()) {
+                    paymentStatusText.setText(R.string.machine_ready);
+                }
                 break;
             default:
                 break;
@@ -575,6 +692,7 @@ public class MainActivity extends AppCompatActivity {
         filter.addAction(PaymentManager.ACTION_PAYMENT_EVENT);
         filter.addAction(AppConfig.ACTION_COLLECTION_EVENT);
         filter.addAction(AppConfig.ACTION_DISPENSE_ORDER_EVENT);
+        filter.addAction(TransactionOccupancyManager.ACTION_CHANGED);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(appReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
