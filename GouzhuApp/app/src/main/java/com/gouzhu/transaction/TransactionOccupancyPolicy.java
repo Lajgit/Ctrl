@@ -19,14 +19,40 @@ public final class TransactionOccupancyPolicy {
         return isIdleOwner(currentOwner) || requestedOwner.equals(currentOwner);
     }
 
+    /**
+     * A QR session may reserve physical dispense only after the authoritative purchase state
+     * has become DISPENSING/WAITING_DISPENSE. This prevents an unrelated or stale
+     * dispense_marbles command from consuming an unpaid QR session. Cash is allowed from the
+     * accepted/reporting window because platform cash confirmation and the dispense command can
+     * cross in transit. Existing physical phases remain allowed for idempotent retransmission.
+     */
     public static boolean canReserveDispense(String owner, String phase) {
         if (isBlockingPhase(phase)) {
             return false;
         }
-        return isIdleOwner(owner)
-                || "QR_PURCHASE".equals(owner)
-                || "CASH_PURCHASE".equals(owner)
-                || "GENERIC_DISPENSE".equals(owner);
+        if (isIdleOwner(owner)) {
+            return true;
+        }
+        if ("QR_PURCHASE".equals(owner)) {
+            return "WAITING_DISPENSE".equals(phase)
+                    || "DISPENSE_RESERVED".equals(phase)
+                    || "DISPENSING".equals(phase)
+                    || "FINISHING".equals(phase);
+        }
+        if ("CASH_PURCHASE".equals(owner)) {
+            return "ACCEPTED".equals(phase)
+                    || "REPORTING".equals(phase)
+                    || "WAITING_DISPENSE".equals(phase)
+                    || "DISPENSE_RESERVED".equals(phase)
+                    || "DISPENSING".equals(phase)
+                    || "FINISHING".equals(phase);
+        }
+        if ("GENERIC_DISPENSE".equals(owner)) {
+            return "DISPENSE_RESERVED".equals(phase)
+                    || "DISPENSING".equals(phase)
+                    || "FINISHING".equals(phase);
+        }
+        return false;
     }
 
     public static boolean isBlockingPhase(String phase) {
@@ -59,7 +85,7 @@ public final class TransactionOccupancyPolicy {
             case "REFUNDED":
                 return "TERMINAL";
             default:
-                return status.isEmpty() ? "WAITING_PAYMENT" : "WAITING_PAYMENT";
+                return "WAITING_PAYMENT";
         }
     }
 
