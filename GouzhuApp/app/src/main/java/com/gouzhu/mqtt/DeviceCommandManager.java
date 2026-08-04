@@ -3,6 +3,7 @@ package com.gouzhu.mqtt;
 import android.content.Context;
 
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.transaction.TransactionIdleCashRestorer;
 import com.gouzhu.transaction.TransactionOccupancyManager;
 
 import org.json.JSONObject;
@@ -30,6 +31,7 @@ public final class DeviceCommandManager {
     private final OperationResolutionManager resolutionManager;
     private final CollectionSessionManager collectionManager;
     private final TransactionOccupancyManager occupancy;
+    private final TransactionIdleCashRestorer idleCashRestorer;
     private final DeviceCommandStore store;
 
     private DeviceCommandManager(Context context) {
@@ -38,6 +40,7 @@ public final class DeviceCommandManager {
         resolutionManager = new OperationResolutionManager(this.context);
         collectionManager = new CollectionSessionManager(this.context);
         occupancy = TransactionOccupancyManager.get(this.context);
+        idleCashRestorer = new TransactionIdleCashRestorer(this.context);
         store = new DeviceCommandStore(this.context);
     }
 
@@ -54,6 +57,7 @@ public final class DeviceCommandManager {
 
     public void start() {
         occupancy.start();
+        idleCashRestorer.start();
         resolutionManager.start();
         collectionManager.start();
         runtime.start();
@@ -66,6 +70,7 @@ public final class DeviceCommandManager {
         runtime.stop();
         collectionManager.stop();
         resolutionManager.stop();
+        idleCashRestorer.stop();
         occupancy.stop();
     }
 
