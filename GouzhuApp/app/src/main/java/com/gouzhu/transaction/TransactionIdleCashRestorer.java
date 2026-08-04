@@ -80,13 +80,15 @@ public final class TransactionIdleCashRestorer {
     }
 
     public synchronized void stop() {
-        if (registered) {
-            try {
-                context.unregisterReceiver(receiver);
-            } catch (Throwable ignored) {
-            }
-            registered = false;
+        if (!registered) {
+            return;
         }
-        executor.shutdownNow();
+        try {
+            context.unregisterReceiver(receiver);
+        } catch (Throwable ignored) {
+        }
+        registered = false;
+        // Keep the daemon executor alive because DeviceCommandManager is a process singleton
+        // and the service can stop/start again without recreating this object.
     }
 }
