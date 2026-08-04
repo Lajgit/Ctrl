@@ -131,7 +131,7 @@ void Mesg_Task(void)
                                Board_to_Android,
                                BeadStockStatus,
                                Hardware_GetBeadStock(),
-                               0x00U);
+                               Hardware_IsCollectActive() ? 0x01U : 0x00U);
         EventGroupClearBits(&Mesg_event, MesgEvent_BeadStockStatus);
     }
 
