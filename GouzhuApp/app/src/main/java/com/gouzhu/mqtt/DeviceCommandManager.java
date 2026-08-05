@@ -39,6 +39,8 @@ public final class DeviceCommandManager {
     private final TransactionIdleCashRestorer idleCashRestorer;
     private final DeviceCommandStore store;
 
+    private volatile boolean continuationReady;
+
     private DeviceCommandManager(Context context) {
         this.context = context.getApplicationContext();
         runtime = new PlatformCommandRuntime(this.context);
@@ -66,6 +68,7 @@ public final class DeviceCommandManager {
         occupancy.start();
         idleCashRestorer.start();
         continuationManager.start();
+        continuationReady = true;
         resolutionManager.start();
         collectionManager.start();
         collectionControllerGuard.start();
@@ -81,6 +84,7 @@ public final class DeviceCommandManager {
         collectionManager.stop();
         resolutionManager.stop();
         continuationManager.stop();
+        continuationReady = false;
         idleCashRestorer.stop();
         occupancy.stop();
     }
@@ -204,7 +208,7 @@ public final class DeviceCommandManager {
             return 2;
         }
         // 人工结案删除原暂停会话后，历史继续记录不得继续占用运行状态。
-        if (store.hasActivePhysicalOrder()) {
+        if (continuationReady && store.hasActivePhysicalOrder()) {
             int continuationStatus = continuationManager.getRunningStatus();
             if (continuationStatus != 0) {
                 return continuationStatus;
@@ -224,8 +228,11 @@ public final class DeviceCommandManager {
     public void requestActivePhysicalOrderState() {
         runtime.broadcastActivePhysicalOrderState();
         collectionManager.broadcastCurrentState();
-        // 原首轮会话仍保留时，以继续动作的实时状态覆盖顾客界面。
-        if (store.hasActivePhysicalOrder()) {
+        /*
+         * 原首轮会话仍保留且继续模块已完成建表/恢复时，才读取继续动作状态。
+         * 避免Activity早于DeviceService启动时访问尚未创建的继续出珠表。
+         */
+        if (continuationReady && store.hasActivePhysicalOrder()) {
             continuationManager.broadcastCurrentState();
         }
     }
