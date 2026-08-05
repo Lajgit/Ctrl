@@ -45,6 +45,10 @@ public final class AppConfig {
     public static final String ACTION_BOARD_EVENT =
             "com.gouzhu.action.BOARD_EVENT";
 
+    /** 控制板在线/离线状态广播。 */
+    public static final String ACTION_BOARD_CONNECTION_CHANGED =
+            "com.gouzhu.action.BOARD_CONNECTION_CHANGED";
+
     /** ttyS6 反扫模块状态和扫码结果广播。 */
     public static final String ACTION_REVERSE_SCANNER_EVENT =
             "com.gouzhu.action.REVERSE_SCANNER_EVENT";
