@@ -30,6 +30,7 @@ public final class BoardConnectionMonitor {
     private static final long RESPONSE_TIMEOUT_MS = 8_000L;
     private static final long SERIAL_RECYCLE_INTERVAL_MS = 12_000L;
     private static final long PROBE_SUPPRESSION_LIMIT_MS = 300_000L;
+    private static final long FAULT_SCREEN_RETRY_MS = 3_000L;
     private static final long TICK_INTERVAL_MS = 1_000L;
     private static final int CMD_QUERY_VERSION = 0x00;
 
@@ -51,7 +52,9 @@ public final class BoardConnectionMonitor {
     private volatile long lastFrameAt;
     private long lastProbeAt;
     private long lastSerialRecycleAt;
-    private long probeUnavailableSince;
+    private volatile long probeUnavailableSince;
+    private volatile boolean faultScreenVisible;
+    private long lastFaultScreenLaunchAt;
     private String lastReason = "";
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
@@ -120,6 +123,10 @@ public final class BoardConnectionMonitor {
 
     public synchronized String getLastReason() {
         return lastReason;
+    }
+
+    public void onFaultScreenVisibilityChanged(boolean visible) {
+        faultScreenVisible = visible;
     }
 
     private void registerReceiver() {
@@ -194,7 +201,12 @@ public final class BoardConnectionMonitor {
         synchronized (this) {
             offline = stateKnown && !connected;
         }
-        if (offline && now - lastSerialRecycleAt >= SERIAL_RECYCLE_INTERVAL_MS) {
+        if (!offline) {
+            return;
+        }
+
+        ensureFaultScreen(now);
+        if (now - lastSerialRecycleAt >= SERIAL_RECYCLE_INTERVAL_MS) {
             lastSerialRecycleAt = now;
             serial.close();
             if (!serial.open()) {
@@ -234,7 +246,7 @@ public final class BoardConnectionMonitor {
         if (changed) {
             Log.e(TAG, reason);
             broadcast(false, reason);
-            openFaultScreen();
+            ensureFaultScreen(SystemClock.elapsedRealtime());
         }
     }
 
@@ -246,7 +258,11 @@ public final class BoardConnectionMonitor {
         context.sendBroadcast(intent);
     }
 
-    private void openFaultScreen() {
+    private void ensureFaultScreen(long now) {
+        if (faultScreenVisible || now - lastFaultScreenLaunchAt < FAULT_SCREEN_RETRY_MS) {
+            return;
+        }
+        lastFaultScreenLaunchAt = now;
         Intent intent = new Intent(context, ControllerFaultActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                 | Intent.FLAG_ACTIVITY_CLEAR_TOP
