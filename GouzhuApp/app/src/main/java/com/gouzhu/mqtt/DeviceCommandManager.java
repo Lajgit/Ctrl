@@ -99,7 +99,12 @@ public final class DeviceCommandManager {
             return;
         }
         if (resolutionManager.handles(payload)) {
-            if (continuationManager.prepareResolution(topic, payload)) {
+            /*
+             * 只有字段完整且精确匹配本地BLOCKED首轮会话的人工结案才预占互斥流程。
+             * 无效或不匹配指令仍交给原结案管理器生成失败结果，避免残留错误占用。
+             */
+            if (!shouldClaimMarbleResolution(payload)
+                    || continuationManager.prepareResolution(topic, payload)) {
                 resolutionManager.handleCommand(topic, payload);
             }
             return;
@@ -227,6 +232,62 @@ public final class DeviceCommandManager {
 
     public void flushPending() {
         runtime.flushPending();
+    }
+
+    private boolean shouldClaimMarbleResolution(byte[] payload) {
+        JSONObject envelope = parseEnvelope(payload);
+        JSONObject data = envelope == null ? null : envelope.optJSONObject("data");
+        String messageId = envelope == null
+                ? ""
+                : envelope.optString("messageId", "").trim();
+        String operationNo = data == null
+                ? ""
+                : data.optString("operationNo", "").trim();
+        String resolutionNo = data == null
+                ? ""
+                : data.optString("resolutionNo", "").trim();
+        String resolutionType = data == null
+                ? ""
+                : data.optString("resolutionType", "").trim();
+        int settledQuantity = data == null
+                ? -1
+                : data.optInt("settledQuantity", -1);
+        String resolvedAt = data == null
+                ? ""
+                : data.optString("resolvedAt", "").trim();
+        if (messageId.isEmpty()
+                || operationNo.isEmpty()
+                || resolutionNo.isEmpty()
+                || !isSupportedResolutionType(resolutionType)
+                || settledQuantity < 0
+                || resolvedAt.isEmpty()) {
+            return false;
+        }
+
+        DeviceCommandStore.ActivePhysicalOrder active =
+                store.loadActivePhysicalOrder();
+        if (active == null || !"BLOCKED".equals(active.state)) {
+            return false;
+        }
+        JSONObject original = store.loadCommand(active.messageId);
+        JSONObject originalData = original == null
+                ? null
+                : original.optJSONObject("data");
+        return original != null
+                && "dispense_marbles".equals(
+                original.optString("commandType", ""))
+                && originalData != null
+                && operationNo.equals(
+                originalData.optString("operationNo", "").trim()
+        );
+    }
+
+    private static boolean isSupportedResolutionType(String value) {
+        return "manual_settlement".equals(value)
+                || "offline_cash_refund".equals(value)
+                || "offline_marble_delivery".equals(value)
+                || "device_cash_return".equals(value)
+                || "accept_actual_delivery".equals(value);
     }
 
     private void rejectCommand(
