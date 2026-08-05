@@ -3,6 +3,7 @@ package com.gouzhu.mqtt;
 import android.content.Context;
 
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.serial.BoardConnectionMonitor;
 import com.gouzhu.transaction.TransactionIdleCashRestorer;
 import com.gouzhu.transaction.TransactionOccupancyManager;
 
@@ -179,6 +180,10 @@ public final class DeviceCommandManager {
     }
 
     public int getRunningStatus() {
+        BoardConnectionMonitor boardMonitor = BoardConnectionMonitor.get(context);
+        if (boardMonitor.isStateKnown() && !boardMonitor.isConnected()) {
+            return 2;
+        }
         TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
         if (snapshot != null) {
             if (TransactionOccupancyManager.PHASE_BLOCKED.equals(snapshot.phase)
