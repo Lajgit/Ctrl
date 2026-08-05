@@ -32,6 +32,7 @@ public final class DeviceCommandManager {
     private final Context context;
     private final PlatformCommandRuntime runtime;
     private final OperationResolutionManager resolutionManager;
+    private final ContinuationDispenseManager continuationManager;
     private final CollectionSessionManager collectionManager;
     private final CollectionControllerStateGuard collectionControllerGuard;
     private final TransactionOccupancyManager occupancy;
@@ -42,6 +43,7 @@ public final class DeviceCommandManager {
         this.context = context.getApplicationContext();
         runtime = new PlatformCommandRuntime(this.context);
         resolutionManager = new OperationResolutionManager(this.context);
+        continuationManager = new ContinuationDispenseManager(this.context);
         collectionManager = new CollectionSessionManager(this.context);
         collectionControllerGuard = new CollectionControllerStateGuard(this.context);
         occupancy = TransactionOccupancyManager.get(this.context);
@@ -63,6 +65,7 @@ public final class DeviceCommandManager {
     public void start() {
         occupancy.start();
         idleCashRestorer.start();
+        continuationManager.start();
         resolutionManager.start();
         collectionManager.start();
         collectionControllerGuard.start();
@@ -77,17 +80,28 @@ public final class DeviceCommandManager {
         collectionControllerGuard.stop();
         collectionManager.stop();
         resolutionManager.stop();
+        continuationManager.stop();
         idleCashRestorer.stop();
         occupancy.stop();
     }
 
-    public void handleCommand(String topic, byte[] payload) {
+    /**
+     * 同步完成继续出珠与人工结案的本地流程占用，再把耗时硬件动作交给各自执行器。
+     * 这样两个互斥指令即使连续到达，也不会同时进入物理执行或本地结案事务。
+     */
+    public synchronized void handleCommand(String topic, byte[] payload) {
         if (collectionManager.handlesResolution(payload)) {
             collectionManager.handleResolution(topic, payload);
             return;
         }
+        if (continuationManager.handles(payload)) {
+            continuationManager.handleCommand(topic, payload);
+            return;
+        }
         if (resolutionManager.handles(payload)) {
-            resolutionManager.handleCommand(topic, payload);
+            if (continuationManager.prepareResolution(topic, payload)) {
+                resolutionManager.handleCommand(topic, payload);
+            }
             return;
         }
         if (collectionManager.handlesCollect(payload)) {
@@ -184,6 +198,10 @@ public final class DeviceCommandManager {
         if (boardMonitor.isStateKnown() && !boardMonitor.isConnected()) {
             return 2;
         }
+        int continuationStatus = continuationManager.getRunningStatus();
+        if (continuationStatus != 0) {
+            return continuationStatus;
+        }
         TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
         if (snapshot != null) {
             if (TransactionOccupancyManager.PHASE_BLOCKED.equals(snapshot.phase)
@@ -198,6 +216,8 @@ public final class DeviceCommandManager {
     public void requestActivePhysicalOrderState() {
         runtime.broadcastActivePhysicalOrderState();
         collectionManager.broadcastCurrentState();
+        // 原首轮会话仍处于BLOCKED时，以继续动作的实时状态覆盖顾客界面。
+        continuationManager.broadcastCurrentState();
     }
 
     public void flushPending() {
