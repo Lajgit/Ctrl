@@ -77,6 +77,19 @@
             </intent-filter>
         </receiver>
 
+        <!--
+            仅在本地订单仍处于PREPARING/CREATING且从未显示二维码时工作。
+            平台连续确认订单不存在后释放幽灵扫码占用，避免界面永久不可点击。
+        -->
+        <receiver
+            android:name=".payment.NativePurchaseExistenceGuard"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.gouzhu.action.PAYMENT_EVENT" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".boot.BootReceiver"
             android:enabled="true"
