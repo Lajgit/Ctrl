@@ -213,12 +213,23 @@ public final class SdkCommandDecoder {
             String normalizedCode = resultCode;
             String normalizedMessage = resultMessage;
             /*
-             * 只有首轮固定数量出珠在控制板明确返回无珠且已真实出过珠时，才转换为
-             * 平台允许继续出珠的库存不足结果。0颗、卡珠、传感器和其他故障保持原码。
+             * 只有首轮固定数量出珠在控制板明确返回无珠，且真实计数严格位于
+             * 0..应出数量之间时，才转换为平台允许继续出珠的库存不足结果。
              */
+            int requestedQuantity = -1;
+            if (DISPENSE_COMMAND.equals(sdkCommand.getCommandType())) {
+                try {
+                    requestedQuantity = hardwareMapper
+                            .toDispenseRequest(sdkCommand, nowMillis)
+                            .getQuantity();
+                } catch (Throwable ignored) {
+                    requestedQuantity = -1;
+                }
+            }
             if (!success
                     && DISPENSE_COMMAND.equals(sdkCommand.getCommandType())
                     && actualQuantity > 0
+                    && requestedQuantity > actualQuantity
                     && CONTROLLER_NO_MARBLES.equals(resultCode)) {
                 normalizedCode =
                         MarbleDispenseResultCodes.MARBLE_STOCK_INSUFFICIENT;
