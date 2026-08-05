@@ -222,7 +222,7 @@ final class CollectionControllerStateGuard {
             return;
         }
 
-        final SdkCommandDecoder.EncodedResult terminal;
+        SdkCommandDecoder.EncodedResult terminal;
         try {
             terminal = decoded.physicalTerminal(
                     session.messageId + "-result",
