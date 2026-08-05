@@ -1,26 +1,19 @@
 package com.gouzhu;
 
-import android.animation.ObjectAnimator;
-import android.animation.PropertyValuesHolder;
-import android.animation.ValueAnimator;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.util.Base64;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
-import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
@@ -34,8 +27,6 @@ import com.gouzhu.sdk.DeviceSdkManager;
 import com.gouzhu.service.DeviceService;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 
 /**
  * 购珠机启动加载页。
@@ -46,7 +37,7 @@ import java.io.InputStream;
 public final class SplashActivity extends AppCompatActivity {
 
     private static final int REQUEST_WIFI_CONFIG = 0x31;
-    private static final long MIN_DISPLAY_TIME_MS = 5_000L;
+    private static final long MIN_DISPLAY_TIME_MS = 10_000L;
     private static final long STATE_CHECK_INTERVAL_MS = 250L;
 
     private static volatile boolean startupVisible;
@@ -60,7 +51,6 @@ public final class SplashActivity extends AppCompatActivity {
     private boolean bootstrapFinished;
     private boolean leaving;
     private Intent pendingActivationIntent;
-    private ObjectAnimator splashAnimator;
 
     private final Runnable stateCheckRunnable = new Runnable() {
         @Override
@@ -148,10 +138,6 @@ public final class SplashActivity extends AppCompatActivity {
             unregisterReceiver(serviceStatusReceiver);
             receiverRegistered = false;
         }
-        if (splashAnimator != null) {
-            splashAnimator.cancel();
-            splashAnimator = null;
-        }
         super.onDestroy();
     }
 
@@ -161,10 +147,9 @@ public final class SplashActivity extends AppCompatActivity {
 
         ImageView imageView = new ImageView(this);
         imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        Bitmap bitmap = decodeSplashBitmap();
-        if (bitmap != null) {
-            imageView.setImageBitmap(bitmap);
-        }
+
+        // 直接显示静态启动图片，不执行缩放或透明度动画。
+        imageView.setImageResource(R.drawable.startup_splash);
 
         root.addView(
                 imageView,
@@ -173,48 +158,8 @@ public final class SplashActivity extends AppCompatActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT
                 )
         );
+
         setContentView(root);
-
-        PropertyValuesHolder scaleX =
-                PropertyValuesHolder.ofFloat(View.SCALE_X, 1.0f, 1.015f);
-        PropertyValuesHolder scaleY =
-                PropertyValuesHolder.ofFloat(View.SCALE_Y, 1.0f, 1.015f);
-        PropertyValuesHolder alpha =
-                PropertyValuesHolder.ofFloat(View.ALPHA, 0.97f, 1.0f);
-        splashAnimator = ObjectAnimator.ofPropertyValuesHolder(
-                imageView,
-                scaleX,
-                scaleY,
-                alpha
-        );
-        splashAnimator.setDuration(2_400L);
-        splashAnimator.setRepeatCount(ValueAnimator.INFINITE);
-        splashAnimator.setRepeatMode(ValueAnimator.REVERSE);
-        splashAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
-        splashAnimator.start();
-    }
-
-    private Bitmap decodeSplashBitmap() {
-        int[] resourceIds = {
-                R.raw.startup_splash_base64,
-                R.raw.startup_splash_base64_2
-        };
-        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8 * 1024];
-            for (int resourceId : resourceIds) {
-                try (InputStream input = getResources().openRawResource(resourceId)) {
-                    int read;
-                    while ((read = input.read(buffer)) != -1) {
-                        output.write(buffer, 0, read);
-                    }
-                }
-            }
-            byte[] encoded = output.toByteArray();
-            byte[] imageBytes = Base64.decode(encoded, Base64.DEFAULT);
-            return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
-        } catch (Throwable ignored) {
-            return null;
-        }
     }
 
     private void registerServiceStatusReceiver() {
