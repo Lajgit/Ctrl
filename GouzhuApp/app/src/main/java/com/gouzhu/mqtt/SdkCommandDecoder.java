@@ -11,6 +11,7 @@ import com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult;
 import com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResultCodec;
 import com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand;
 import com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandCodec;
+import com.pinball.xiaoda.device.sdk.protocol.MarbleDispenseResultCodes;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -23,6 +24,8 @@ public final class SdkCommandDecoder {
     /** 现金配置完整 JSON 使用独立标签，便于 Logcat 单独过滤。 */
     private static final String CASH_CONFIG_JSON_TAG = "GouzhuCashConfigJson";
     private static final String CASH_CONFIG_COMMAND = "sync_cash_configuration";
+    private static final String DISPENSE_COMMAND = "dispense_marbles";
+    private static final String CONTROLLER_NO_MARBLES = "NO_MARBLES";
     private static final int LOG_CHUNK_SIZE = 3000;
 
     private final DeviceMqttCommandCodec codec = new DeviceMqttCommandCodec();
@@ -171,6 +174,11 @@ public final class SdkCommandDecoder {
             return hardwareMapper.toDispenseRequest(sdkCommand, nowMillis);
         }
 
+        /** 使用新版SDK保留 continuationNo，不重放原 dispense_marbles。 */
+        public DispenseRequest toContinuationDispenseRequest(long nowMillis) {
+            return hardwareMapper.toContinuationDispenseRequest(sdkCommand, nowMillis);
+        }
+
         public CollectRequest toCollectRequest(long nowMillis) {
             return hardwareMapper.toCollectRequest(sdkCommand, nowMillis);
         }
@@ -202,12 +210,27 @@ public final class SdkCommandDecoder {
                 String resultMessage,
                 long nowMillis
         ) {
+            String normalizedCode = resultCode;
+            String normalizedMessage = resultMessage;
+            /*
+             * 只有首轮固定数量出珠在控制板明确返回无珠且已真实出过珠时，才转换为
+             * 平台允许继续出珠的库存不足结果。0颗、卡珠、传感器和其他故障保持原码。
+             */
+            if (!success
+                    && DISPENSE_COMMAND.equals(sdkCommand.getCommandType())
+                    && actualQuantity > 0
+                    && CONTROLLER_NO_MARBLES.equals(resultCode)) {
+                normalizedCode =
+                        MarbleDispenseResultCodes.MARBLE_STOCK_INSUFFICIENT;
+                normalizedMessage = "珠仓库存不足，已出" + actualQuantity + "颗";
+            }
+
             HardwareExecutionResult hardwareResult = success
                     ? HardwareExecutionResult.success(actualQuantity)
                     : HardwareExecutionResult.failed(
                             actualQuantity,
-                            resultCode,
-                            resultMessage
+                            normalizedCode,
+                            normalizedMessage
                     );
             return encode(hardwareMapper.toTerminalResult(
                     sdkCommand,
