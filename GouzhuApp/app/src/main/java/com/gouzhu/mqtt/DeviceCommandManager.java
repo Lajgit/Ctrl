@@ -198,9 +198,12 @@ public final class DeviceCommandManager {
         if (boardMonitor.isStateKnown() && !boardMonitor.isConnected()) {
             return 2;
         }
-        int continuationStatus = continuationManager.getRunningStatus();
-        if (continuationStatus != 0) {
-            return continuationStatus;
+        // 人工结案删除原暂停会话后，历史继续记录不得继续占用运行状态。
+        if (store.hasActivePhysicalOrder()) {
+            int continuationStatus = continuationManager.getRunningStatus();
+            if (continuationStatus != 0) {
+                return continuationStatus;
+            }
         }
         TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
         if (snapshot != null) {
@@ -216,8 +219,10 @@ public final class DeviceCommandManager {
     public void requestActivePhysicalOrderState() {
         runtime.broadcastActivePhysicalOrderState();
         collectionManager.broadcastCurrentState();
-        // 原首轮会话仍处于BLOCKED时，以继续动作的实时状态覆盖顾客界面。
-        continuationManager.broadcastCurrentState();
+        // 原首轮会话仍保留时，以继续动作的实时状态覆盖顾客界面。
+        if (store.hasActivePhysicalOrder()) {
+            continuationManager.broadcastCurrentState();
+        }
     }
 
     public void flushPending() {
