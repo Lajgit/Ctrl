@@ -5,13 +5,15 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
 import com.gouzhu.ControllerFaultActivity;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Monitors the real controller response instead of treating an opened tty node as online.
@@ -33,14 +35,19 @@ public final class BoardConnectionMonitor {
     private static volatile BoardConnectionMonitor instance;
 
     private final Context context;
-    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ScheduledExecutorService watchdogExecutor =
+            Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "购珠机-控制板在线监控");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     private boolean started;
     private boolean receiverRegistered;
     private boolean stateKnown;
     private boolean connected;
     private long startedAt;
-    private long lastFrameAt;
+    private volatile long lastFrameAt;
     private long lastProbeAt;
     private long lastSerialRecycleAt;
     private String lastReason = "";
@@ -70,14 +77,6 @@ public final class BoardConnectionMonitor {
         }
     };
 
-    private final Runnable watchdog = new Runnable() {
-        @Override
-        public void run() {
-            tick();
-            handler.postDelayed(this, TICK_INTERVAL_MS);
-        }
-    };
-
     private BoardConnectionMonitor(Context context) {
         this.context = context.getApplicationContext();
     }
@@ -101,8 +100,12 @@ public final class BoardConnectionMonitor {
         startedAt = SystemClock.elapsedRealtime();
         lastSerialRecycleAt = startedAt;
         registerReceiver();
-        handler.removeCallbacks(watchdog);
-        handler.post(watchdog);
+        watchdogExecutor.scheduleAtFixedRate(
+                this::safeTick,
+                0L,
+                TICK_INTERVAL_MS,
+                TimeUnit.MILLISECONDS
+        );
     }
 
     public synchronized boolean isStateKnown() {
@@ -132,6 +135,14 @@ public final class BoardConnectionMonitor {
         receiverRegistered = true;
     }
 
+    private void safeTick() {
+        try {
+            tick();
+        } catch (Throwable error) {
+            Log.e(TAG, "控制板在线监控异常", error);
+        }
+    }
+
     private void tick() {
         long now = SystemClock.elapsedRealtime();
         SerialManager serial = SerialManager.get(context);
@@ -149,10 +160,11 @@ public final class BoardConnectionMonitor {
             }
         }
 
-        long reference = lastFrameAt > 0L ? lastFrameAt : startedAt;
-        long allowedSilence = lastFrameAt > 0L ? RESPONSE_TIMEOUT_MS : STARTUP_GRACE_MS;
+        long latestFrameAt = lastFrameAt;
+        long reference = latestFrameAt > 0L ? latestFrameAt : startedAt;
+        long allowedSilence = latestFrameAt > 0L ? RESPONSE_TIMEOUT_MS : STARTUP_GRACE_MS;
         if (now - reference >= allowedSilence) {
-            markDisconnected(lastFrameAt > 0L
+            markDisconnected(latestFrameAt > 0L
                     ? "控制板通信超时，正在自动重连"
                     : "控制板未响应，正在自动重连");
         }
