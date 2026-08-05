@@ -69,67 +69,26 @@
         android:textSize="27sp"
         android:textStyle="bold" />
 
-    <LinearLayout
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="22dp"
-        android:gravity="center"
-        android:orientation="horizontal">
+        android:paddingStart="42dp"
+        android:paddingEnd="42dp">
 
         <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="360dp"
-            android:layout_marginEnd="10dp"
-            android:layout_weight="1"
+            android:layout_width="match_parent"
+            android:layout_height="390dp"
+            android:layout_gravity="center"
             android:background="@drawable/bg_payment_qr_method"
             android:gravity="center"
             android:orientation="vertical"
-            android:padding="18dp">
-
-            <TextView
-                android:layout_width="92dp"
-                android:layout_height="92dp"
-                android:background="@drawable/bg_payment_qr_code_icon"
-                android:gravity="center"
-                android:text="▦"
-                android:textColor="#E89A21"
-                android:textSize="48sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
-                android:gravity="center"
-                android:text="@string/payment_dialog_code_pay_title"
-                android:textColor="@color/text_primary"
-                android:textSize="23sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:gravity="center"
-                android:text="@string/payment_dialog_code_pay_hint"
-                android:textColor="@color/text_secondary"
-                android:textSize="16sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="360dp"
-            android:layout_marginStart="10dp"
-            android:layout_weight="1"
-            android:background="@drawable/bg_payment_qr_method"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:padding="18dp">
+            android:padding="20dp">
 
             <ImageView
                 android:id="@+id/image_payment_dialog_qr"
-                android:layout_width="252dp"
-                android:layout_height="252dp"
+                android:layout_width="270dp"
+                android:layout_height="270dp"
                 android:background="@color/white"
                 android:contentDescription="@string/payment_qr_description"
                 android:padding="8dp"
@@ -138,23 +97,23 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="14dp"
                 android:gravity="center"
                 android:text="@string/payment_dialog_scan_pay_title"
                 android:textColor="@color/text_primary"
-                android:textSize="23sp"
+                android:textSize="24sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="7dp"
                 android:gravity="center"
                 android:text="@string/payment_dialog_scan_pay_channels"
                 android:textColor="@color/text_secondary"
                 android:textSize="17sp" />
         </LinearLayout>
-    </LinearLayout>
+    </FrameLayout>
 
     <TextView
         android:id="@+id/text_payment_dialog_status"
