@@ -65,6 +65,7 @@ public final class ControllerFaultActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        BoardConnectionMonitor.get(this).onFaultScreenVisibilityChanged(true);
         Window window = getWindow();
         if (window == null) {
             return;
@@ -79,7 +80,14 @@ public final class ControllerFaultActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onStop() {
+        BoardConnectionMonitor.get(this).onFaultScreenVisibilityChanged(false);
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
+        BoardConnectionMonitor.get(this).onFaultScreenVisibilityChanged(false);
         if (receiverRegistered) {
             try {
                 unregisterReceiver(receiver);
