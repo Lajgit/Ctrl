@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="controller_fault_title">控制板故障</string>
+    <string name="controller_fault_message">控制板连接已断开，设备暂停使用</string>
+    <string name="controller_fault_operation_blocked">当前页面已锁定，请勿继续操作</string>
+    <string name="controller_fault_reconnecting">正在自动重连，恢复后页面会自动解锁</string>
+</resources>
