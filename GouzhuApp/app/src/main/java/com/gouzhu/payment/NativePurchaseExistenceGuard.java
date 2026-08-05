@@ -16,9 +16,11 @@ import java.util.concurrent.Executors;
  * Releases a phantom QR transaction after the platform repeatedly confirms that the order
  * does not exist.
  *
- * <p>This guard is intentionally conservative. It only operates while the local payment is
- * still PREPARING/CREATING and no QR code has ever been persisted. A displayed or otherwise
- * confirmed order is never auto-released by this component.</p>
+ * <p>The platform query result is authoritative for order existence. A stale local QR image or
+ * WAITING_PAYMENT status must not keep the device occupied forever when the platform repeatedly
+ * returns the exact "order does not exist" result. Destructive release is still limited to the
+ * same QR owner and to pre-physical phases; dispensing, finishing, refunding and blocked sessions
+ * are never released here.</p>
  */
 public final class NativePurchaseExistenceGuard extends BroadcastReceiver {
 
@@ -73,27 +75,33 @@ public final class NativePurchaseExistenceGuard extends BroadcastReceiver {
         String localStatus = safe(payment.getString(KEY_CURRENT_STATUS, ""));
         String scanUrl = safe(payment.getString(KEY_CURRENT_SCAN_URL, ""));
 
-        if (requestNo.isEmpty()
-                || !scanUrl.isEmpty()
-                || !("PREPARING".equals(localStatus) || "CREATING".equals(localStatus))) {
+        if (requestNo.isEmpty()) {
             resetCounter(context);
             return;
         }
 
         TransactionOccupancyManager occupancy = TransactionOccupancyManager.get(context);
         TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
-        if (snapshot == null
-                || !TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
-                || !requestNo.equals(snapshot.clientRequestNo)) {
+        if (!isSameSafeQrSession(snapshot, requestNo)) {
+            Log.d(
+                    TAG,
+                    "忽略空订单检查：requestNo=" + requestNo
+                            + "，localStatus=" + localStatus
+                            + "，hasQr=" + !scanUrl.isEmpty()
+                            + "，owner=" + (snapshot == null ? "NONE" : snapshot.ownerType)
+                            + "，phase=" + (snapshot == null ? "NONE" : snapshot.phase)
+            );
             resetCounter(context);
             return;
         }
 
         try {
             DeviceSdkManager.get(context).queryNativePurchase(requestNo);
+            Log.i(TAG, "扫码订单重新查询成功，清除空订单计数：requestNo=" + requestNo);
             resetCounter(context);
         } catch (Throwable error) {
             if (!isDefinitiveOrderNotFound(error)) {
+                Log.d(TAG, "扫码订单查询不是明确不存在，不解除占用：requestNo=" + requestNo);
                 resetCounter(context);
                 return;
             }
@@ -103,7 +111,10 @@ public final class NativePurchaseExistenceGuard extends BroadcastReceiver {
                     TAG,
                     "平台确认扫码订单不存在：requestNo=" + requestNo
                             + "，confirmation=" + count
-                            + "/" + REQUIRED_NOT_FOUND_CONFIRMATIONS,
+                            + "/" + REQUIRED_NOT_FOUND_CONFIRMATIONS
+                            + "，localStatus=" + localStatus
+                            + "，hasQr=" + !scanUrl.isEmpty()
+                            + "，phase=" + snapshot.phase,
                     error
             );
             if (count < REQUIRED_NOT_FOUND_CONFIRMATIONS) {
@@ -116,19 +127,23 @@ public final class NativePurchaseExistenceGuard extends BroadcastReceiver {
             String latestScanUrl = safe(payment.getString(KEY_CURRENT_SCAN_URL, ""));
             TransactionOccupancyManager.Snapshot latest = occupancy.current();
             if (!requestNo.equals(latestRequestNo)
-                    || !latestScanUrl.isEmpty()
-                    || !("PREPARING".equals(latestStatus)
-                    || "CREATING".equals(latestStatus))
-                    || latest == null
-                    || !TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(latest.ownerType)
-                    || !requestNo.equals(latest.clientRequestNo)) {
+                    || !isSameSafeQrSession(latest, requestNo)) {
+                Log.w(
+                        TAG,
+                        "空订单释放前状态已变化，放弃释放：requestNo=" + requestNo
+                                + "，latestRequestNo=" + latestRequestNo
+                                + "，latestStatus=" + latestStatus
+                                + "，hasQr=" + !latestScanUrl.isEmpty()
+                                + "，owner=" + (latest == null ? "NONE" : latest.ownerType)
+                                + "，phase=" + (latest == null ? "NONE" : latest.phase)
+                );
                 resetCounter(context);
                 return;
             }
 
             boolean released = occupancy.release(
                     latest.sessionId,
-                    "platform confirmed native purchase was never created",
+                    "platform confirmed native purchase does not exist",
                     true
             );
             if (!released) {
@@ -136,18 +151,42 @@ public final class NativePurchaseExistenceGuard extends BroadcastReceiver {
                 return;
             }
 
+            Log.w(
+                    TAG,
+                    "扫码空订单已解除占用：requestNo=" + requestNo
+                            + "，localStatus=" + latestStatus
+                            + "，hadQr=" + !latestScanUrl.isEmpty()
+                            + "，phase=" + latest.phase
+            );
             resetCounter(context);
             Intent event = new Intent(PaymentManager.ACTION_PAYMENT_EVENT);
             event.setPackage(context.getPackageName());
             event.putExtra(PaymentManager.EXTRA_EVENT, PaymentManager.EVENT_FAILED);
             event.putExtra(
                     PaymentManager.EXTRA_MESSAGE,
-                    "平台确认本次扫码订单未创建，设备已解除占用，请重新选择套餐"
+                    "平台确认本次扫码订单不存在，设备已解除占用，请重新选择套餐"
             );
             event.putExtra(PaymentManager.EXTRA_ORDER_ID, requestNo);
             event.putExtra(PaymentManager.EXTRA_PURCHASE_STATUS, "ORDER_NOT_CREATED");
             context.sendBroadcast(event);
         }
+    }
+
+    private static boolean isSameSafeQrSession(
+            TransactionOccupancyManager.Snapshot snapshot,
+            String requestNo
+    ) {
+        return snapshot != null
+                && TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
+                && requestNo.equals(snapshot.clientRequestNo)
+                && isSafePrePhysicalPhase(snapshot.phase);
+    }
+
+    private static boolean isSafePrePhysicalPhase(String phase) {
+        return TransactionOccupancyManager.PHASE_PREPARING.equals(phase)
+                || TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(phase)
+                || TransactionOccupancyManager.PHASE_CANCELLING.equals(phase)
+                || TransactionOccupancyManager.PHASE_CONFIRMING_CLOSE.equals(phase);
     }
 
     static boolean isDefinitiveOrderNotFound(Throwable error) {
