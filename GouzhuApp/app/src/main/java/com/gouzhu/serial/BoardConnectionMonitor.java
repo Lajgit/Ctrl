@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Monitors the real controller response instead of treating an opened tty node as online.
- * A version query is sent periodically; any valid controller frame restores the online state.
+ * A harmless hardware-status request is sent periodically; any valid controller frame restores
+ * the online state. Version is queried once after a disconnected link recovers.
  */
 public final class BoardConnectionMonitor {
 
@@ -32,7 +33,8 @@ public final class BoardConnectionMonitor {
     private static final long PROBE_SUPPRESSION_LIMIT_MS = 300_000L;
     private static final long FAULT_SCREEN_RETRY_MS = 3_000L;
     private static final long TICK_INTERVAL_MS = 1_000L;
-    private static final int CMD_QUERY_VERSION = 0x00;
+    private static final int CMD_VERSION = 0x00;
+    private static final int CMD_HARDWARE_STATUS = 0x20;
 
     private static volatile BoardConnectionMonitor instance;
 
@@ -165,7 +167,7 @@ public final class BoardConnectionMonitor {
         boolean probeUnavailable = false;
         if (serial.isOpen() && now - lastProbeAt >= PROBE_INTERVAL_MS) {
             lastProbeAt = now;
-            if (serial.sendCommand(CMD_QUERY_VERSION, 0L, false)) {
+            if (serial.sendCommand(CMD_HARDWARE_STATUS, 0L, false)) {
                 probeUnavailableSince = 0L;
             } else {
                 if (probeUnavailableSince <= 0L) {
@@ -232,6 +234,9 @@ public final class BoardConnectionMonitor {
         if (changed) {
             Log.i(TAG, reason);
             broadcast(true, reason);
+            // Refresh protocol readiness once after a real reconnect. Do not use the version
+            // command as the periodic probe because its event also triggers a platform status.
+            SerialManager.get(context).sendCommand(CMD_VERSION, 0L, false);
         }
     }
 
