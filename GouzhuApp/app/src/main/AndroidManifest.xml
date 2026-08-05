@@ -29,6 +29,12 @@
         android:theme="@style/Theme.GouzhuApp"
         android:usesCleartextTraffic="true">
 
+        <provider
+            android:name=".serial.BoardConnectionInitProvider"
+            android:authorities="${applicationId}.board-connection-init"
+            android:enabled="true"
+            android:exported="false" />
+
         <activity
             android:name=".network.WifiConfigActivity"
             android:exported="false"
@@ -66,6 +72,15 @@
             android:launchMode="singleTop"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.GouzhuApp.PaymentDialog" />
+
+        <activity
+            android:name=".ControllerFaultActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.GouzhuApp.ControllerFault" />
 
         <service
             android:name=".service.DeviceService"
