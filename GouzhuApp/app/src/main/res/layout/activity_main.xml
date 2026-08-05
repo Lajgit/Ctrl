@@ -116,22 +116,23 @@
                 android:layout_marginTop="18dp"
                 android:text="@string/start_payment" />
 
+            <!--
+                二维码和取消入口只允许显示在独立的 PaymentQrActivity 弹窗中。
+                保留零尺寸兼容节点，避免旧 MainActivity 字节码或迟到广播访问空控件。
+            -->
             <ImageView
                 android:id="@+id/image_payment_qr"
-                android:layout_width="340dp"
-                android:layout_height="340dp"
-                android:layout_marginTop="20dp"
-                android:background="@color/white"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
                 android:contentDescription="@string/payment_qr_description"
-                android:padding="12dp"
-                android:scaleType="fitCenter"
                 android:visibility="gone" />
 
             <com.gouzhu.widget.SafePaymentCancelButton
                 android:id="@+id/button_cancel_payment"
                 style="@style/Widget.Gouzhu.ActionButton"
-                android:layout_width="240dp"
-                android:layout_marginTop="12dp"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:enabled="false"
                 android:text="@string/payment_cancel_button"
                 android:visibility="gone" />
 
