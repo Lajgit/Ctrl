@@ -29,6 +29,7 @@ public final class BoardConnectionMonitor {
     private static final long PROBE_INTERVAL_MS = 2_000L;
     private static final long RESPONSE_TIMEOUT_MS = 8_000L;
     private static final long SERIAL_RECYCLE_INTERVAL_MS = 12_000L;
+    private static final long PROBE_SUPPRESSION_LIMIT_MS = 300_000L;
     private static final long TICK_INTERVAL_MS = 1_000L;
     private static final int CMD_QUERY_VERSION = 0x00;
 
@@ -50,6 +51,7 @@ public final class BoardConnectionMonitor {
     private volatile long lastFrameAt;
     private long lastProbeAt;
     private long lastSerialRecycleAt;
+    private long probeUnavailableSince;
     private String lastReason = "";
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
@@ -153,11 +155,30 @@ public final class BoardConnectionMonitor {
             }
         }
 
+        boolean probeUnavailable = false;
         if (serial.isOpen() && now - lastProbeAt >= PROBE_INTERVAL_MS) {
             lastProbeAt = now;
-            if (!serial.sendCommand(CMD_QUERY_VERSION, 0L, false)) {
-                Log.w(TAG, "控制板在线探测发送失败");
+            if (serial.sendCommand(CMD_QUERY_VERSION, 0L, false)) {
+                probeUnavailableSince = 0L;
+            } else {
+                if (probeUnavailableSince <= 0L) {
+                    probeUnavailableSince = now;
+                }
+                probeUnavailable = true;
+                Log.d(TAG, "控制板在线探测暂不可发送，可能正在进行串口升级");
             }
+        } else if (probeUnavailableSince > 0L) {
+            probeUnavailable = true;
+        }
+
+        boolean currentlyConnected;
+        synchronized (this) {
+            currentlyConnected = stateKnown && connected;
+        }
+        if (probeUnavailable
+                && currentlyConnected
+                && now - probeUnavailableSince < PROBE_SUPPRESSION_LIMIT_MS) {
+            return;
         }
 
         long latestFrameAt = lastFrameAt;
@@ -184,6 +205,7 @@ public final class BoardConnectionMonitor {
 
     private void onValidBoardFrame() {
         lastFrameAt = SystemClock.elapsedRealtime();
+        probeUnavailableSince = 0L;
         markConnected("控制板通信已恢复");
     }
 
