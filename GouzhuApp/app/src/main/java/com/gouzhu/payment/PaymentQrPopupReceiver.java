@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.util.Log;
 
+import com.gouzhu.transaction.TransactionOccupancyManager;
+
 /**
  * Opens and closes the dedicated QR payment window from PaymentManager broadcasts.
  * The 60-second display deadline is persisted per request so Activity recreation does not
@@ -35,6 +37,18 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
             String qrContent = safe(intent.getStringExtra(PaymentManager.EXTRA_QR_CONTENT));
             if (requestNo.isEmpty() || qrContent.isEmpty()) {
                 Log.w(TAG, "忽略无效二维码弹窗事件：requestNo=" + requestNo);
+                return;
+            }
+
+            TransactionOccupancyManager.Snapshot snapshot =
+                    TransactionOccupancyManager.get(context).current();
+            if (!isDisplayableQrSession(snapshot, requestNo)) {
+                Log.i(
+                        TAG,
+                        "忽略非待支付阶段二维码：requestNo=" + requestNo
+                                + "，owner=" + (snapshot == null ? "NONE" : snapshot.ownerType)
+                                + "，phase=" + (snapshot == null ? "NONE" : snapshot.phase)
+                );
                 return;
             }
 
@@ -104,6 +118,17 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
             return;
         }
         preferences.edit().clear().apply();
+    }
+
+    private static boolean isDisplayableQrSession(
+            TransactionOccupancyManager.Snapshot snapshot,
+            String requestNo
+    ) {
+        return snapshot != null
+                && TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
+                && requestNo.equals(snapshot.clientRequestNo)
+                && (TransactionOccupancyManager.PHASE_PREPARING.equals(snapshot.phase)
+                || TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(snapshot.phase));
     }
 
     private static String safe(String value) {
