@@ -25,8 +25,16 @@ public final class SdkCommandDecoder {
     private static final String CASH_CONFIG_JSON_TAG = "GouzhuCashConfigJson";
     private static final String CASH_CONFIG_COMMAND = "sync_cash_configuration";
     private static final String DISPENSE_COMMAND = "dispense_marbles";
+    private static final String CONTINUATION_COMMAND = "continue_marble_dispense";
     private static final String CONTROLLER_NO_MARBLES = "NO_MARBLES";
     private static final int LOG_CHUNK_SIZE = 3000;
+
+    /*
+     * 继续出珠只有一个设备级物理会话。缓存最近一次已通过SDK校验的强类型命令，
+     * 终态到达时复用同一对象，避免执行期间跨过 expireTime 后再次把合法终态误判为
+     * 过期命令。缓存只用于同topic、同deviceNo、同完整信封，不授权新的硬件动作。
+     */
+    private static volatile CachedContinuationCommand cachedContinuationCommand;
 
     private final DeviceMqttCommandCodec codec = new DeviceMqttCommandCodec();
     private final DeviceHardwareCommandMapper hardwareMapper =
@@ -52,18 +60,41 @@ public final class SdkCommandDecoder {
              */
             logCashConfigurationJson(topic, safePayload.length, envelope);
 
+            String commandType = envelope.optString("commandType", "");
+            String messageId = envelope.optString("messageId", "");
+            if (CONTINUATION_COMMAND.equals(commandType)) {
+                CachedContinuationCommand cached = cachedContinuationCommand;
+                if (cached != null
+                        && safe(topic).equals(cached.topic)
+                        && safe(deviceNo).equals(cached.deviceNo)
+                        && messageId.equals(cached.messageId)
+                        && rawJson.equals(cached.rawJson)) {
+                    return cached.decoded;
+                }
+            }
+
             DeviceMqttCommand<?> sdkCommand = codec.decode(
                     topic,
                     safePayload,
                     deviceNo,
                     nowMillis
             );
-            return new DecodedCommand(
+            DecodedCommand decoded = new DecodedCommand(
                     envelope,
                     sdkCommand,
                     hardwareMapper,
                     resultCodec
             );
+            if (CONTINUATION_COMMAND.equals(commandType)) {
+                cachedContinuationCommand = new CachedContinuationCommand(
+                        safe(topic),
+                        safe(deviceNo),
+                        messageId,
+                        rawJson,
+                        decoded
+                );
+            }
+            return decoded;
         } catch (Throwable error) {
             throw new IllegalArgumentException(
                     "MQTT命令未通过新版SDK协议校验：" + messageOf(error),
@@ -157,6 +188,7 @@ public final class SdkCommandDecoder {
 
         private final DeviceHardwareCommandMapper hardwareMapper;
         private final DeviceCommandResultCodec resultCodec;
+        private volatile int mappedDispenseQuantity = -1;
 
         DecodedCommand(
                 JSONObject envelope,
@@ -171,7 +203,12 @@ public final class SdkCommandDecoder {
         }
 
         public DispenseRequest toDispenseRequest(long nowMillis) {
-            return hardwareMapper.toDispenseRequest(sdkCommand, nowMillis);
+            DispenseRequest request = hardwareMapper.toDispenseRequest(
+                    sdkCommand,
+                    nowMillis
+            );
+            mappedDispenseQuantity = request.getQuantity();
+            return request;
         }
 
         /** 使用新版SDK保留 continuationNo，不重放原 dispense_marbles。 */
@@ -216,12 +253,11 @@ public final class SdkCommandDecoder {
              * 只有首轮固定数量出珠在控制板明确返回无珠，且真实计数严格位于
              * 0..应出数量之间时，才转换为平台允许继续出珠的库存不足结果。
              */
-            int requestedQuantity = -1;
-            if (DISPENSE_COMMAND.equals(sdkCommand.getCommandType())) {
+            int requestedQuantity = mappedDispenseQuantity;
+            if (requestedQuantity <= 0
+                    && DISPENSE_COMMAND.equals(sdkCommand.getCommandType())) {
                 try {
-                    requestedQuantity = hardwareMapper
-                            .toDispenseRequest(sdkCommand, nowMillis)
-                            .getQuantity();
+                    requestedQuantity = toDispenseRequest(nowMillis).getQuantity();
                 } catch (Throwable ignored) {
                     requestedQuantity = -1;
                 }
@@ -319,6 +355,28 @@ public final class SdkCommandDecoder {
             this.eventNo = eventNo;
             this.resultStatus = resultStatus;
             this.payload = payload;
+        }
+    }
+
+    private static final class CachedContinuationCommand {
+        final String topic;
+        final String deviceNo;
+        final String messageId;
+        final String rawJson;
+        final DecodedCommand decoded;
+
+        CachedContinuationCommand(
+                String topic,
+                String deviceNo,
+                String messageId,
+                String rawJson,
+                DecodedCommand decoded
+        ) {
+            this.topic = topic;
+            this.deviceNo = deviceNo;
+            this.messageId = messageId;
+            this.rawJson = rawJson;
+            this.decoded = decoded;
         }
     }
 }
