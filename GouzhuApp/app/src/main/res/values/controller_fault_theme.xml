@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.GouzhuApp.ControllerFault" parent="Theme.Material3.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">true</item>
+        <item name="android:windowCloseOnTouchOutside">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:colorAccent">@color/header_primary</item>
+        <item name="colorPrimary">@color/header_primary</item>
+        <item name="colorSecondary">@color/header_secondary</item>
+    </style>
+</resources>
