@@ -11,6 +11,7 @@ import android.os.SystemClock;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
+import com.gouzhu.ControllerFaultActivity;
 
 /**
  * Monitors the real controller response instead of treating an opened tty node as online.
@@ -199,6 +200,7 @@ public final class BoardConnectionMonitor {
         if (changed) {
             Log.e(TAG, reason);
             broadcast(false, reason);
+            openFaultScreen();
         }
     }
 
@@ -208,6 +210,19 @@ public final class BoardConnectionMonitor {
         intent.putExtra(EXTRA_CONNECTED, online);
         intent.putExtra(EXTRA_REASON, safe(reason));
         context.sendBroadcast(intent);
+    }
+
+    private void openFaultScreen() {
+        Intent intent = new Intent(context, ControllerFaultActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        try {
+            context.startActivity(intent);
+        } catch (Throwable error) {
+            Log.e(TAG, "打开控制板故障界面失败", error);
+        }
     }
 
     private static String safe(String value) {
