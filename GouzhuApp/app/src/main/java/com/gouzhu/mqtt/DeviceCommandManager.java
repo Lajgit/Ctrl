@@ -1,6 +1,7 @@
 package com.gouzhu.mqtt;
 
 import android.content.Context;
+import android.database.Cursor;
 
 import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.serial.BoardConnectionMonitor;
@@ -104,8 +105,9 @@ public final class DeviceCommandManager {
         }
         if (resolutionManager.handles(payload)) {
             /*
-             * 只有字段完整且精确匹配本地BLOCKED首轮会话的人工结案才预占互斥流程。
-             * 无效或不匹配指令仍交给原结案管理器生成失败结果，避免残留错误占用。
+             * 只有字段完整且匹配本地BLOCKED首轮会话，或已经存在继续出珠流程占用时，
+             * 才交给继续模块做互斥判定。无效指令仍由原结案管理器返回失败结果，
+             * 不会因为预占过早而永久阻止后续合法继续出珠。
              */
             if (!shouldClaimMarbleResolution(payload)
                     || continuationManager.prepareResolution(topic, payload)) {
@@ -271,6 +273,11 @@ public final class DeviceCommandManager {
             return false;
         }
 
+        // 已有继续流程时，即使原会话已完成，也必须由继续模块拒绝迟到的人工结案。
+        if (hasContinuationFlowClaim(operationNo)) {
+            return true;
+        }
+
         DeviceCommandStore.ActivePhysicalOrder active =
                 store.loadActivePhysicalOrder();
         if (active == null || !"BLOCKED".equals(active.state)) {
@@ -287,6 +294,27 @@ public final class DeviceCommandManager {
                 && operationNo.equals(
                 originalData.optString("operationNo", "").trim()
         );
+    }
+
+    private boolean hasContinuationFlowClaim(String operationNo) {
+        if (!continuationReady || operationNo == null || operationNo.trim().isEmpty()) {
+            return false;
+        }
+        try (Cursor cursor = store.getReadableDatabase().query(
+                "operation_flow_claims",
+                new String[]{"operation_no"},
+                "operation_no=? AND flow_type=?",
+                new String[]{operationNo, "CONTINUATION"},
+                null,
+                null,
+                null,
+                "1"
+        )) {
+            return cursor.moveToFirst();
+        } catch (Throwable ignored) {
+            // 继续模块尚未完成建表时不提前占用，交给原人工结案流程处理。
+            return false;
+        }
     }
 
     private static boolean isSupportedResolutionType(String value) {
