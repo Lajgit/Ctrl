@@ -52,6 +52,7 @@ public final class SdkCommandDecoder {
         try {
             String rawJson = new String(safePayload, StandardCharsets.UTF_8);
             JSONObject envelope = new JSONObject(rawJson);
+            String canonicalJson = envelope.toString();
 
             /*
              * 现金配置日志在 SDK 强类型校验前输出。这样即使配置字段错误、版本越界
@@ -68,7 +69,7 @@ public final class SdkCommandDecoder {
                         && safe(topic).equals(cached.topic)
                         && safe(deviceNo).equals(cached.deviceNo)
                         && messageId.equals(cached.messageId)
-                        && rawJson.equals(cached.rawJson)) {
+                        && canonicalJson.equals(cached.canonicalJson)) {
                     return cached.decoded;
                 }
             }
@@ -90,7 +91,7 @@ public final class SdkCommandDecoder {
                         safe(topic),
                         safe(deviceNo),
                         messageId,
-                        rawJson,
+                        canonicalJson,
                         decoded
                 );
             }
@@ -362,20 +363,20 @@ public final class SdkCommandDecoder {
         final String topic;
         final String deviceNo;
         final String messageId;
-        final String rawJson;
+        final String canonicalJson;
         final DecodedCommand decoded;
 
         CachedContinuationCommand(
                 String topic,
                 String deviceNo,
                 String messageId,
-                String rawJson,
+                String canonicalJson,
                 DecodedCommand decoded
         ) {
             this.topic = topic;
             this.deviceNo = deviceNo;
             this.messageId = messageId;
-            this.rawJson = rawJson;
+            this.canonicalJson = canonicalJson;
             this.decoded = decoded;
         }
     }
