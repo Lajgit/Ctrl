@@ -71,11 +71,9 @@ public final class ControllerFaultActivity extends AppCompatActivity {
             return;
         }
         window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         WindowManager.LayoutParams attributes = window.getAttributes();
         attributes.width = WindowManager.LayoutParams.MATCH_PARENT;
         attributes.height = WindowManager.LayoutParams.MATCH_PARENT;
-        attributes.dimAmount = 0.72f;
         window.setAttributes(attributes);
     }
 
