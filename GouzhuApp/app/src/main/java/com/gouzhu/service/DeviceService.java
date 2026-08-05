@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat;
 import com.gouzhu.ActivationActivity;
 import com.gouzhu.AppConfig;
 import com.gouzhu.R;
+import com.gouzhu.SplashActivity;
 import com.gouzhu.activation.ActivationLogStore;
 import com.gouzhu.activation.ActivationManager;
 import com.gouzhu.mqtt.DeviceCommandManager;
@@ -323,6 +324,10 @@ public class DeviceService extends Service {
             String identityPublicKey,
             String errorDetail
     ) {
+        // 启动加载页正在显示时，由加载页在最短5秒后接管界面跳转。
+        if (SplashActivity.isStartupVisible()) {
+            return;
+        }
         if (!activationScreenLaunchRequested.compareAndSet(false, true)) {
             return;
         }
