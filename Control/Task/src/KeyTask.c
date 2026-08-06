@@ -1,3 +1,7 @@
+/*
+ * 输入任务：扫描三路按键、硬币器脉冲和 ICT 纸钞机串口协议。
+ * 现金被物理接收后只写入掉电队列并上报事实，不在控制板本地计算订单或珠子数量。
+ */
 #include "KeyTask.h"
 #include "MesgTask.h"
 #include "CtrlTask.h"
@@ -5,6 +9,7 @@
 #include "port_key.h"
 #include "usart.h"
 
+/* 硬币脉冲软件消抖状态机。 */
 typedef enum
 {
     PULSE_IDLE = 0,
@@ -13,6 +18,7 @@ typedef enum
     PULSE_HIGH_FILTER,
 } PulseState_t;
 
+/* ICT 多字节响应接收状态机。 */
 typedef enum
 {
     BILL_RX_IDLE = 0,
@@ -21,6 +27,7 @@ typedef enum
     BILL_RX_WAIT_JAM_VALUE,
 } BillRxState_t;
 
+/* 单路脉冲输入的 GPIO、状态和状态进入时间。 */
 typedef struct
 {
     GPIO_TypeDef *gpio;
@@ -29,10 +36,12 @@ typedef struct
     uint32_t tick;
 } PulseInput_t;
 
+/* 三路面板按键和一路硬币脉冲输入。 */
 static Key_HandleTypeDef EncoderKey[3];
 static Key_HandleTypeDef *EncoderKeyList[3];
 static PulseInput_t CoinPulse;
 
+/* ICT 接收环形队列以及现金设备当前实际状态。 */
 static uint8_t BillRxQueue[32];
 static volatile uint8_t BillRxHead = 0U;
 static volatile uint8_t BillRxTail = 0U;
@@ -51,17 +60,20 @@ static bool CashApplyPending = false;
 static uint32_t CashPendingConfigVersion = 0U;
 static uint8_t CashPendingEnableMask = 0U;
 
+/* 纸钞机启用/禁用命令的等待确认和有限重试状态。 */
 static bool BillStateCommandPending = false;
 static uint8_t BillStateCommand = 0U;
 static uint8_t BillExpectedStatus = 0U;
 static uint8_t BillStateCommandRetryCount = 0U;
 static uint32_t BillStateCommandTick = 0U;
 
+/* USART3 中断每次接收一个字节到该变量。 */
 uint8_t BillAcceptor_RxByte;
 
 extern Event_Handle_t Mesg_event;
 extern Setting_TypeDef Setting;
 
+/* ICT106 命令、响应和时序参数。 */
 #define ICT_CMD_ACCEPT 0x02U
 #define ICT_CMD_REJECT 0x0FU
 #define ICT_CMD_POLL 0x0CU
@@ -82,6 +94,7 @@ extern Setting_TypeDef Setting;
 #define ICT_STATE_COMMAND_RETRY_TIME 1000U
 #define ICT_STATE_COMMAND_MAX_RETRY 3U
 
+/* PB13 高电平打开硬币器 12V 电源，并回读输出确认控制结果。 */
 bool CashHardware_SetCoinEnable(bool enable)
 {
     GPIO_PinState target = enable ? GPIO_PIN_SET : GPIO_PIN_RESET;
@@ -89,6 +102,7 @@ bool CashHardware_SetCoinEnable(bool enable)
     return HAL_GPIO_ReadPin(CoinPower_GPIO_Port, CoinPower_Pin) == target;
 }
 
+/* 将当前配置的 ICT 人民币类型码转换为金额，单位为分。 */
 static uint16_t BillTypeToFen(uint8_t bill_type)
 {
     switch (bill_type)
@@ -110,17 +124,20 @@ static uint16_t BillTypeToFen(uint8_t bill_type)
     }
 }
 
+/* 向 ICT 纸钞机发送一个单字节命令。 */
 static void BillAcceptor_SendCommand(uint8_t cmd)
 {
     HAL_UART_Transmit(&huart3, &cmd, 1U, 20U);
 }
 
+/* 切换 ICT 多字节响应状态并记录进入时间，用于超时恢复。 */
 static void BillAcceptor_SetRxState(BillRxState_t state)
 {
     BillRxState = state;
     BillRxStateTick = HAL_GetTick();
 }
 
+/* 启动一个需要纸钞机状态回报确认的启用或禁用命令。 */
 static void BillAcceptor_StartStateCommand(uint8_t cmd)
 {
     BillStateCommand = cmd;
@@ -131,6 +148,7 @@ static void BillAcceptor_StartStateCommand(uint8_t cmd)
     BillAcceptor_SendCommand(cmd);
 }
 
+/* 根据纸钞机真实状态和硬币器电源状态重新生成实际使能掩码。 */
 static void CashAcceptance_UpdateActualMask(void)
 {
     CashEnableMask =
@@ -138,6 +156,7 @@ static void CashAcceptance_UpdateActualMask(void)
         (CoinEnableState ? CASH_ACCEPT_COIN_MASK : 0U);
 }
 
+/* 控制硬币器电源，并同步实际状态掩码。 */
 static bool CoinAcceptor_SetEnableInternal(bool enable)
 {
     if (!CashHardware_SetCoinEnable(enable))
@@ -151,6 +170,7 @@ static bool CoinAcceptor_SetEnableInternal(bool enable)
     return true;
 }
 
+/* 只有实际掩码完全匹配请求掩码时，才提交新的现金配置版本。 */
 static bool CashAcceptance_CommitPendingIfMatched(void)
 {
     if (!CashApplyPending ||
@@ -167,17 +187,20 @@ static bool CashAcceptance_CommitPendingIfMatched(void)
     return true;
 }
 
+/* 记录平台期望状态并向纸钞机发送启用或禁用命令。 */
 static void BillAcceptor_SetEnableInternal(bool enable)
 {
     BillRequestedEnable = enable;
     BillAcceptor_StartStateCommand(enable ? ICT_CMD_ENABLE : ICT_CMD_DISABLE);
 }
 
+/* 将队首偏移转换为现金事实环形队列的实际数组索引。 */
 static uint32_t CashEvent_QueueIndex(uint32_t offset)
 {
     return (Setting.CashQueueHead + offset) % CASH_EVENT_QUEUE_CAPACITY;
 }
 
+/* 查询掉电现金事实队列状态。 */
 bool CashEvent_HasPending(void)
 {
     return Setting.CashQueueCount > 0U;
@@ -188,6 +211,10 @@ bool CashEvent_HasCapacity(void)
     return Setting.CashQueueCount < CASH_EVENT_QUEUE_CAPACITY;
 }
 
+/*
+ * 将一笔已经物理接收的现金追加到掉电队列。
+ * 序号为非零 16 位递增值，写入后请求先保存 Flash 再由消息任务上报。
+ */
 static bool CashEvent_RecordAccepted(uint8_t medium, uint16_t amount_fen)
 {
     uint32_t index;
@@ -226,6 +253,10 @@ static bool CashEvent_RecordAccepted(uint8_t medium, uint16_t amount_fen)
     return true;
 }
 
+/*
+ * 应用现金配置的公共实现。
+ * V2.2 路径允许在硬件安全门禁通过时启用现金，旧路径只允许执行关闭动作。
+ */
 static bool CashAcceptance_ApplyInternal(uint8_t enable_mask,
                                          uint32_t config_version,
                                          bool allow_enable)
@@ -264,16 +295,19 @@ static bool CashAcceptance_ApplyInternal(uint8_t enable_mask,
     return true;
 }
 
+/* 旧现金配置入口：出于兼容目的不允许开启现金。 */
 bool CashAcceptance_Apply(uint8_t enable_mask, uint32_t config_version)
 {
     return CashAcceptance_ApplyInternal(enable_mask, config_version, false);
 }
 
+/* V2.2 现金配置入口：通过硬件安全门禁后允许按掩码启用设备。 */
 bool CashAcceptance_ApplyV22(uint8_t enable_mask, uint32_t config_version)
 {
     return CashAcceptance_ApplyInternal(enable_mask, config_version, true);
 }
 
+/* 立即关闭硬币器电源并请求纸钞机进入禁用状态。 */
 void CashAcceptance_Disable(void)
 {
     CashApplyPending = false;
@@ -284,6 +318,7 @@ void CashAcceptance_Disable(void)
     EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
 }
 
+/* 请求消息任务重新上报现金配置、设备状态和队首现金事实。 */
 void CashAcceptance_RequestStatus(void)
 {
     EventGroupSetBits(&Mesg_event, MesgEvent_CashAcceptanceStatus);
@@ -294,6 +329,7 @@ void CashAcceptance_RequestStatus(void)
     }
 }
 
+/* 读取当前已确认的现金实际状态。 */
 uint8_t CashAcceptance_GetEnableMask(void)
 {
     return CashEnableMask;
@@ -304,6 +340,7 @@ uint32_t CashAcceptance_GetConfigVersion(void)
     return CashConfigVersion;
 }
 
+/* 组装现金设备综合状态：溢出、队列数、纸币类型、ICT 状态和两路使能位。 */
 uint32_t CashDevice_GetStatusData(void)
 {
     uint32_t queue_count = Setting.CashQueueCount & 0x7FU;
@@ -320,6 +357,7 @@ uint32_t CashDevice_GetStatusData(void)
            (CoinEnableState ? 1UL : 0UL);
 }
 
+/* 以下三个接口读取当前等待 Android 确认的队首现金事实。 */
 uint8_t CashEvent_GetPendingMedium(void)
 {
     uint32_t packed;
@@ -351,6 +389,7 @@ uint16_t CashEvent_GetPendingSequence(void)
     return (uint16_t)Setting.CashQueueSequence[Setting.CashQueueHead];
 }
 
+/* Android 确认已持久化队首现金事实后，删除该项并调度下一项上报。 */
 void CashEvent_ConfirmTransport(uint16_t sequence)
 {
     uint32_t head;
@@ -376,6 +415,7 @@ void CashEvent_ConfirmTransport(uint16_t sequence)
     EventGroupSetBits(&Mesg_event, MesgEvent_CashDeviceStatus);
 }
 
+/* 上电恢复后若队列非空，重新触发队首现金事实上报。 */
 void CashEvent_RestorePending(void)
 {
     if (CashEvent_HasPending())
@@ -384,6 +424,7 @@ void CashEvent_RestorePending(void)
     }
 }
 
+/* 第三路短按键作为 K1 补珠确认。 */
 static void Encoder_ShortCallback(uint16_t id)
 {
     if (id == 2U)
@@ -392,6 +433,7 @@ static void Encoder_ShortCallback(uint16_t id)
     }
 }
 
+/* 初始化硬币脉冲输入状态。 */
 static void PulseInput_Init(PulseInput_t *input,
                             GPIO_TypeDef *gpio,
                             uint16_t pin)
@@ -402,6 +444,10 @@ static void PulseInput_Init(PulseInput_t *input,
     input->tick = HAL_GetTick();
 }
 
+/*
+ * 扫描硬币器低脉冲和释放高电平，两个阶段均通过软件消抖。
+ * 只有现金入口已启用且硬件安全门禁通过时，才生成一元硬币事实。
+ */
 static void PulseInput_Scan(PulseInput_t *input)
 {
     GPIO_PinState pin_state = HAL_GPIO_ReadPin(input->gpio, input->pin);
@@ -458,6 +504,7 @@ static void PulseInput_Scan(PulseInput_t *input)
     }
 }
 
+/* 从 ICT 接收环形队列取出一个字节。 */
 static bool BillAcceptor_ReadByte(uint8_t *data)
 {
     if (BillRxHead == BillRxTail)
@@ -469,12 +516,14 @@ static bool BillAcceptor_ReadByte(uint8_t *data)
     return true;
 }
 
+/* 判断字节是否为纸币类型码。 */
 static bool BillAcceptor_IsDenomination(uint8_t data)
 {
     return (data == ICT_DENOM_UNKNOWN) ||
            ((data >= ICT_DENOM_MIN) && (data <= ICT_DENOM_MAX));
 }
 
+/* 判断字节是否为需要记录和上报的 ICT 状态码。 */
 static bool BillAcceptor_IsStatus(uint8_t data)
 {
     return ((data >= 0x20U) && (data <= 0x2FU)) ||
@@ -484,6 +533,7 @@ static bool BillAcceptor_IsStatus(uint8_t data)
            (data == 0xA1U);
 }
 
+/* 更新纸钞机实际状态，并在实际掩码匹配后提交待应用配置。 */
 static void BillAcceptor_ReportStatus(uint8_t status)
 {
     uint8_t previous_status = BillLastReportStatus;
@@ -512,6 +562,7 @@ static void BillAcceptor_ReportStatus(uint8_t status)
     }
 }
 
+/* 纸币完成堆叠后转换金额并追加现金事实队列。 */
 static void BillAcceptor_CompletePayment(uint8_t bill_type, uint8_t complete_status)
 {
     uint16_t amount_fen = BillTypeToFen(bill_type);
@@ -526,6 +577,7 @@ static void BillAcceptor_CompletePayment(uint8_t bill_type, uint8_t complete_sta
     }
 }
 
+/* 解析 ICT 单字节或多字节响应，并完成握手、暂存、接收、拒收和状态更新。 */
 static void BillAcceptor_HandleByte(uint8_t data)
 {
     if (BillRxState == BILL_RX_WAIT_POWER_ON_2)
@@ -620,6 +672,7 @@ static void BillAcceptor_HandleByte(uint8_t data)
     }
 }
 
+/* 初始化纸钞机接收队列、现金状态和默认禁用命令。 */
 static void BillAcceptor_Init(void)
 {
     BillRxHead = 0U;
@@ -644,6 +697,10 @@ static void BillAcceptor_Init(void)
     (void)CoinAcceptor_SetEnableInternal(false);
 }
 
+/*
+ * 主循环处理 ICT 接收队列、序列超时、150 ms 轮询以及启用/禁用有限重试。
+ * 重试耗尽时回退为两种现金设备均关闭的安全状态。
+ */
 static void BillAcceptor_Task(void)
 {
     uint8_t data;
@@ -694,6 +751,7 @@ static void BillAcceptor_Task(void)
     }
 }
 
+/* USART3 中断回调：字节入队后立即重新启动下一字节中断接收。 */
 void BillAcceptor_RxCpltCallback(void)
 {
     uint8_t next_head = (uint8_t)((BillRxHead + 1U) % sizeof(BillRxQueue));
@@ -705,6 +763,7 @@ void BillAcceptor_RxCpltCallback(void)
     HAL_UART_Receive_IT(&huart3, &BillAcceptor_RxByte, 1U);
 }
 
+/* 清空当前暂存状态并向纸钞机发送复位命令。 */
 void BillAcceptor_Reset(void)
 {
     BillEscrowType = 0U;
@@ -714,6 +773,7 @@ void BillAcceptor_Reset(void)
     BillAcceptor_SendCommand(ICT_CMD_RESET);
 }
 
+/* 初始化三路按键、硬币脉冲输入和 ICT 纸钞机。 */
 void KeyAll_Init(void)
 {
     Key_Init(&EncoderKey[0], 0U, KeyBoard1_GPIO_Port, KeyBoard1_Pin,
@@ -735,6 +795,7 @@ void KeyAll_Init(void)
     BillAcceptor_Init();
 }
 
+/* 主循环周期扫描所有本地输入。 */
 void Key_Task(void)
 {
     Key_Scan(EncoderKeyList, 3U);
