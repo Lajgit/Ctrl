@@ -143,6 +143,20 @@ public final class DeviceCommandManager {
         }
         if ("sync_cash_configuration".equals(commandType)) {
             JSONObject data = envelope.optJSONObject("data");
+            int configVersion = data == null
+                    ? -1
+                    : data.optInt("configVersion", -1);
+            /*
+             * 首次硬件应用失败时，旧实现会把未应用版本永久保留为latest，导致服务端
+             * 使用新的messageId重试同一配置版本时一直返回CASH_CONFIGURATION_STALE。
+             * 在进入正式幂等和硬件处理前，只释放“无pending、未应用、且恰好等于本次
+             * incomingVersion”的失败占位，不放宽已应用版本的单调性。
+             */
+            CashConfigurationRetryState.repairForIncomingVersion(
+                    context,
+                    configVersion
+            );
+
             boolean enablesCash = data != null
                     && data.optBoolean("cashAcceptanceEnabled", false);
             TransactionOccupancyManager.Snapshot occupied = occupancy.current();
