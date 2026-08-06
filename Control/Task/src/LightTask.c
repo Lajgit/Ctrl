@@ -1,3 +1,7 @@
+/*
+ * 灯光任务：初始化 32 颗 WS2812 孔洞灯和六路 PWM 呼吸灯，
+ * 根据主任务场景选择对应灯效。当前空闲场景分支保持原代码注释状态。
+ */
 #include "LightTask.h"
 #include "MainTask.h"
 #include "FlashTask.h"
@@ -5,9 +9,11 @@
 #include "CommunicateTask.h"
 #include "tim.h"
 
+/* WS2812 颜色数据、定时器比较值和发送互斥信号量。 */
 RGB_t Light_RGBbuffer[Light_RGBbuffer_SIZE];
 uint16_t Light_CRRbuffer[Light_CRRbuffer_SIZE];
 Semaphore_t Light_Semaphore = {1};
+/* 主灯带对象、六路呼吸灯及四个孔洞灯分区。 */
 Light_t Light;
 BreathLight_t J1, J2, J3, J4, J5, J6;
 Light_Handle_t Hole1, Hole2, Hole3, Hole4;
@@ -18,8 +24,10 @@ extern uint8_t sm16306s_data[2];
 extern Scene_t Scene;
 extern Tx_HandleTypeDef Tx3;
 
+/* 预留开机孔洞灯测试亮度。 */
 #define HOLE_BOOT_TEST_LIGHTNESS 5
 
+/* 绑定各定时器通道，注册灯对象并将 32 颗灯划分为四个孔洞区域。 */
 void Light_Init(void)
 {
     RGB_Init(&Light, &htim3, TIM_CHANNEL_2, Light_RGBbuffer_SIZE, Light_RGBbuffer, Light_CRRbuffer, &Light_Semaphore, GRB);
@@ -75,6 +83,7 @@ void Light_Init(void)
     // HAL_Delay(10);
 }
 
+/* 设置场景：孔洞灯常亮白色，六路呼吸灯保持设定亮度。 */
 static void SettingSceneLight(void)
 {
     LightEffect_Unblock_SetColor(&Light, 0, Light_RGBbuffer_SIZE, WHITE, Setting.Board_Lightness, 255, false);
@@ -82,6 +91,7 @@ static void SettingSceneLight(void)
         BreathLight_SetLightKeep(BreathList[i], 0, Setting.LightBelt_Lightness, 255);
 }
 
+/* 空闲场景：孔洞灯在熄灭与白色之间循环流动。 */
 static void IdleSceneLight(void)
 {
     static uint8_t LightBoard_dir = 0;
@@ -101,10 +111,12 @@ static void IdleSceneLight(void)
         BreathLight_SetLightKeep(BreathList[i], 0, Setting.LightBelt_Lightness, 255);
 }
 
+/* 预留进珠场景灯效入口。 */
 static void HoolleInputSceneLight(void)
 {
 }
 
+/* 公共概率场景：孔洞灯随机变化，呼吸灯保持设定亮度。 */
 static void PublicRatioLight(void)
 {
     LightEffect_Unblock_SetRand(&Light, 0, Light_RGBbuffer_SIZE, Setting.Board_Lightness, 255, 30);
@@ -112,12 +124,14 @@ static void PublicRatioLight(void)
         BreathLight_SetLightKeep(BreathList[i], 0, Setting.LightBelt_Lightness, 255);
 }
 
+/* 游戏进行场景：呼吸灯常亮，孔洞灯关闭。 */
 static void PlayingSceneLight(void)
 {
     for (uint8_t i = 0; i < 6; i++)
         BreathLight_SetLightKeep(BreathList[i], 0, Setting.LightBelt_Lightness, 255);
     LightEffect_Unblock_SetColor(&Light, 0, Light_RGBbuffer_SIZE, NONE, Setting.Board_Lightness, 0, false);
 }
+/* 胜利场景：孔洞灯黄色闪烁。 */
 static void VictorySceneLight(void)
 {
 
@@ -126,6 +140,7 @@ static void VictorySceneLight(void)
     LightEffect_Unblock_Blink(&Light, 0, Light_RGBbuffer_SIZE, YELLOW, Setting.Board_Lightness, 255, 100);
 }
 
+/* 失败场景：孔洞灯红色呼吸。 */
 static void DefeatSceneLight(void)
 {
 
@@ -133,6 +148,7 @@ static void DefeatSceneLight(void)
     for (uint8_t i = 0; i < 6; i++)
         BreathLight_SetLightKeep(BreathList[i], 0, Setting.LightBelt_Lightness, 255);
 }
+/* 根据当前主场景调用对应灯效函数。 */
 void Light_Task(void)
 {
     if (Scene == SCENE_SETTING)
