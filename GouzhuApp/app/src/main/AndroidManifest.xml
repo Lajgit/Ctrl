@@ -108,6 +108,19 @@
         </receiver>
 
         <!--
+            K1补珠确认后原子清除库存阻塞和本地复位门禁，并修复旧版APP保存的
+            部分出珠SENSOR_TIMEOUT状态；这里只解除门禁，不会自动继续出珠。
+        -->
+        <receiver
+            android:name=".mqtt.RefillStateReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.gouzhu.action.BOARD_EVENT" />
+            </intent-filter>
+        </receiver>
+
+        <!--
             仅在本地扫码会话处于物理执行前阶段时工作。
             平台连续确认订单不存在后释放幽灵扫码占用，避免界面永久不可点击。
         -->
