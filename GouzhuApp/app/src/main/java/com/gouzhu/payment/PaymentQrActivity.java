@@ -11,6 +11,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.CountDownTimer;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -25,7 +26,10 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.gouzhu.R;
 
-/** Dedicated modal QR payment window. It can only be exited through the X button or terminal flow. */
+/**
+ * 底部抽屉式二维码支付窗口。
+ * 点击关闭按钮或抽屉外的变暗区域都会请求取消当前订单；支付终态也会自动关闭。
+ */
 public final class PaymentQrActivity extends AppCompatActivity {
 
     public static final String ACTION_CLOSE = "com.gouzhu.action.PAYMENT_QR_DIALOG_CLOSE";
@@ -45,6 +49,7 @@ public final class PaymentQrActivity extends AppCompatActivity {
     private String requestNo = "";
     private boolean closeReceiverRegistered;
     private boolean timeoutHandled;
+    private boolean userCloseInProgress;
 
     private final BroadcastReceiver closeReceiver = new BroadcastReceiver() {
         @Override
@@ -75,6 +80,7 @@ public final class PaymentQrActivity extends AppCompatActivity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        userCloseInProgress = false;
         handleIntent(intent);
     }
 
@@ -86,15 +92,17 @@ public final class PaymentQrActivity extends AppCompatActivity {
             return;
         }
         window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        WindowManager.LayoutParams attributes = window.getAttributes();
-        attributes.gravity = Gravity.CENTER;
-        attributes.dimAmount = 0.58f;
-        attributes.width = Math.max(
-                1,
-                (int) (getResources().getDisplayMetrics().widthPixels * 0.92f)
+        window.addFlags(
+                WindowManager.LayoutParams.FLAG_DIM_BEHIND
+                        | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
         );
+        WindowManager.LayoutParams attributes = window.getAttributes();
+        attributes.gravity = Gravity.BOTTOM;
+        attributes.dimAmount = 0.58f;
+        attributes.width = WindowManager.LayoutParams.MATCH_PARENT;
         attributes.height = WindowManager.LayoutParams.WRAP_CONTENT;
+        attributes.horizontalMargin = 0f;
+        attributes.verticalMargin = 0f;
         window.setAttributes(attributes);
     }
 
@@ -113,7 +121,16 @@ public final class PaymentQrActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        // The payment window is intentionally modal. Use the visible X button to cancel.
+        // 避免系统返回键误取消订单；使用可见关闭按钮或点击抽屉外区域。
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        if (event != null && event.getActionMasked() == MotionEvent.ACTION_OUTSIDE) {
+            requestUserClose();
+            return true;
+        }
+        return super.onTouchEvent(event);
     }
 
     @Override
@@ -177,8 +194,13 @@ public final class PaymentQrActivity extends AppCompatActivity {
     }
 
     private void requestUserClose() {
+        if (userCloseInProgress) {
+            return;
+        }
+        userCloseInProgress = true;
         boolean accepted = PaymentManager.get(this).cancelCurrentPayment();
         if (!accepted) {
+            userCloseInProgress = false;
             Toast.makeText(
                     this,
                     R.string.payment_cancel_unavailable,
@@ -246,7 +268,6 @@ public final class PaymentQrActivity extends AppCompatActivity {
         stopCountdown();
         if (!isFinishing()) {
             finish();
-            overridePendingTransition(0, 0);
         }
     }
 
