@@ -1,6 +1,7 @@
 #ifndef __FLASHTASK_H__
 #define __FLASHTASK_H__
 
+/* 控制板硬件事实、库存和现金事件队列的掉电保存接口。 */
 #include "port_flash.h"
 #include "stdbool.h"
 
@@ -11,6 +12,7 @@
 #define Setting_Addr 0x08008000U
 #define Setting_End_Addr 0x0800C000U
 
+/* HardwareFlags 各位含义。 */
 #define HARDWARE_FLAG_NO_BEAD (1UL << 0)
 #define HARDWARE_FLAG_CASH_QUEUE_OVERFLOW (1UL << 1)
 
@@ -19,11 +21,13 @@
  * 连续入钞以及 Android 短时重启。控制板只保存现金事实，不计算购买余额。
  */
 #define CASH_EVENT_QUEUE_CAPACITY 16U
+/* 将现金介质和金额（分）压缩到一个 32 位字段中。 */
 #define CASH_EVENT_PACK(medium, amount_fen) \
     ((((uint32_t)(medium) & 0xFFU) << 16U) | ((uint32_t)(amount_fen) & 0xFFFFU))
 #define CASH_EVENT_PACKED_MEDIUM(value) (((value) >> 16U) & 0xFFU)
 #define CASH_EVENT_PACKED_AMOUNT(value) ((value) & 0xFFFFU)
 
+/* 需要写入内部 Flash 的控制板持久化数据。 */
 typedef struct
 {
     uint32_t Board_Lightness;
@@ -42,9 +46,13 @@ typedef struct
     uint32_t CashQueuePacked[CASH_EVENT_QUEUE_CAPACITY];
 } Setting_TypeDef;
 
+/* 恢复默认配置。 */
 void ResumeSetting(void);
+/* 扫描 Flash 记录并恢复最新有效数据。 */
 void FlashTask_Init(void);
+/* 标记当前数据需要保存，实际写入由主循环完成。 */
 void FlashTask_RequestSave(void);
+/* 执行挂起的 Flash 写入任务。 */
 void FlashTask(void);
 
 #endif
