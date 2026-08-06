@@ -27,6 +27,7 @@ public final class SdkCommandDecoder {
     private static final String DISPENSE_COMMAND = "dispense_marbles";
     private static final String CONTINUATION_COMMAND = "continue_marble_dispense";
     private static final String CONTROLLER_NO_MARBLES = "NO_MARBLES";
+    private static final String CONTROLLER_SENSOR_TIMEOUT = "SENSOR_TIMEOUT";
     private static final int LOG_CHUNK_SIZE = 3000;
 
     /*
@@ -173,6 +174,15 @@ public final class SdkCommandDecoder {
         return value == null ? "" : value;
     }
 
+    /**
+     * 当前控制板以 NO_MARBLES 表示直接无珠，以 SENSOR_TIMEOUT 表示出珠过程中
+     * 超时后确认珠仓无珠；两者都属于可转换的珠仓不足物理终态。
+     */
+    static boolean isConfirmedNoMarblesResult(String resultCode) {
+        return CONTROLLER_NO_MARBLES.equals(resultCode)
+                || CONTROLLER_SENSOR_TIMEOUT.equals(resultCode);
+    }
+
     private static String messageOf(Throwable error) {
         if (error == null) {
             return "未知错误";
@@ -251,8 +261,9 @@ public final class SdkCommandDecoder {
             String normalizedCode = resultCode;
             String normalizedMessage = resultMessage;
             /*
-             * 只有首轮固定数量出珠在控制板明确返回无珠，且真实计数严格位于
+             * 只有首轮固定数量出珠在控制板确认珠仓无珠，且真实计数严格位于
              * 0..应出数量之间时，才转换为平台允许继续出珠的库存不足结果。
+             * 兼容控制板直接无珠 NO_MARBLES，以及部分出珠后确认无珠的 SENSOR_TIMEOUT。
              */
             int requestedQuantity = mappedDispenseQuantity;
             if (requestedQuantity <= 0
@@ -267,7 +278,7 @@ public final class SdkCommandDecoder {
                     && DISPENSE_COMMAND.equals(sdkCommand.getCommandType())
                     && actualQuantity > 0
                     && requestedQuantity > actualQuantity
-                    && CONTROLLER_NO_MARBLES.equals(resultCode)) {
+                    && isConfirmedNoMarblesResult(resultCode)) {
                 normalizedCode =
                         MarbleDispenseResultCodes.MARBLE_STOCK_INSUFFICIENT;
                 normalizedMessage = "珠仓库存不足，已出" + actualQuantity + "颗";
