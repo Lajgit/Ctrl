@@ -1,3 +1,7 @@
+/*
+ * Flash 任务：使用追加写记录保存库存、硬件标志和现金事实队列。
+ * 上电扫描整个保留扇区，校验记录后恢复序号最大的有效快照；空间用尽时整扇区擦除。
+ */
 #include "FlashTask.h"
 #include "CtrlTask.h"
 #include "MainTask.h"
@@ -13,6 +17,7 @@
 #define SETTING_CHECK_SEED 0xA55A5AA5UL
 #define DEFAULT_BEAD_STOCK 10000U
 
+/* 单条 Flash 快照：版本标识、递增序号、业务数据和完整性校验值。 */
 typedef struct
 {
     uint32_t Magic;
@@ -21,15 +26,19 @@ typedef struct
     uint32_t Checksum;
 } SettingRecord_t;
 
+/* 记录按 32 位字写入，大小用于计算下一条追加地址。 */
 #define SETTING_RECORD_WORDS ((uint32_t)(sizeof(SettingRecord_t) / sizeof(uint32_t)))
 #define SETTING_RECORD_SIZE ((uint32_t)sizeof(SettingRecord_t))
 
+/* 当前 RAM 中的控制板持久化状态。 */
 Setting_TypeDef Setting;
 extern Event_Handle_t Event;
 
+/* 下一条记录的写入地址及当前最新记录序号。 */
 static uint32_t SettingNextWriteAddress = Setting_Addr;
 static uint32_t SettingSequence = 0U;
 
+/* 对校验字段之前的全部 32 位字进行旋转异或校验。 */
 static uint32_t FlashTask_CalculateChecksum(const SettingRecord_t *record)
 {
     const uint32_t *word = (const uint32_t *)record;
@@ -44,6 +53,7 @@ static uint32_t FlashTask_CalculateChecksum(const SettingRecord_t *record)
     return checksum;
 }
 
+/* 检查现金环形队列的索引、数量、介质、金额和序号是否在合法范围内。 */
 static bool FlashTask_IsQueueValid(const Setting_TypeDef *setting)
 {
     uint32_t offset;
@@ -70,6 +80,7 @@ static bool FlashTask_IsQueueValid(const Setting_TypeDef *setting)
     return true;
 }
 
+/* 同时验证记录版本、校验和及队列数据。 */
 static bool FlashTask_IsRecordValid(const SettingRecord_t *record)
 {
     return (record->Magic == SETTING_RECORD_MAGIC_V4) &&
@@ -77,11 +88,13 @@ static bool FlashTask_IsRecordValid(const SettingRecord_t *record)
            FlashTask_IsQueueValid(&record->SettingData);
 }
 
+/* 将选中的有效 Flash 记录恢复到 RAM。 */
 static void FlashTask_RecordToSetting(const SettingRecord_t *record)
 {
     Setting = record->SettingData;
 }
 
+/* 根据当前 RAM 状态构造下一条待写入记录。 */
 static void FlashTask_SettingToRecord(SettingRecord_t *record)
 {
     memset(record, 0, sizeof(*record));
@@ -91,6 +104,7 @@ static void FlashTask_SettingToRecord(SettingRecord_t *record)
     record->Checksum = FlashTask_CalculateChecksum(record);
 }
 
+/* 擦除专用 Sector 2，擦除前后刷新独立看门狗。 */
 static int FlashTask_EraseSector(void)
 {
     FLASH_EraseInitTypeDef erase = {0};
@@ -116,6 +130,7 @@ static int FlashTask_EraseSector(void)
     return 0;
 }
 
+/* 按 32 位字写入一条记录，并通过内存比较确认写入内容。 */
 static int FlashTask_ProgramRecord(uint32_t address, const SettingRecord_t *record)
 {
     const uint32_t *word = (const uint32_t *)record;
@@ -144,6 +159,7 @@ static int FlashTask_ProgramRecord(uint32_t address, const SettingRecord_t *reco
     return 0;
 }
 
+/* 追加写入最新快照；剩余空间不足时先擦除扇区再从起始地址写入。 */
 static int FlashTask_WriteRecord(void)
 {
     SettingRecord_t record;
@@ -169,6 +185,7 @@ static int FlashTask_WriteRecord(void)
     return result;
 }
 
+/* 恢复无有效记录时使用的默认亮度、库存和空队列。 */
 void ResumeSetting(void)
 {
     memset(&Setting, 0, sizeof(Setting));
@@ -178,6 +195,7 @@ void ResumeSetting(void)
     Setting.BeadStock = DEFAULT_BEAD_STOCK;
 }
 
+/* 扫描整个保留扇区，恢复序号最大的有效记录并确定下一写入位置。 */
 void FlashTask_Init(void)
 {
     SettingRecord_t latest_record;
@@ -220,6 +238,7 @@ void FlashTask_Init(void)
         return;
     }
 
+    /* 扇区存在无效内容时先擦除，再写入一条默认记录。 */
     ResumeSetting();
     SettingSequence = 0U;
     SettingNextWriteAddress = Setting_Addr;
@@ -230,11 +249,13 @@ void FlashTask_Init(void)
     (void)FlashTask_WriteRecord();
 }
 
+/* 仅设置事件位，避免在中断或业务处理函数中直接进行耗时 Flash 操作。 */
 void FlashTask_RequestSave(void)
 {
     EventGroupSetBits(&Event, Event_SaveSetting);
 }
 
+/* 主循环检测保存请求，写入成功后才清除事件位。 */
 void FlashTask(void)
 {
     if (EventGroupCheckBits(&Event, Event_SaveSetting) == true)
