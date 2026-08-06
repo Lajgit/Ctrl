@@ -2,8 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-def appVersionName = "2.3.9"
-def appVersionCode = 27
+def appVersionName = "2.3.10"
+def appVersionCode = 28
 
 android {
     namespace 'com.gouzhu'
