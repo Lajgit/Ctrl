@@ -1,3 +1,7 @@
+/*
+ * 硬件控制任务：驱动吐珠电机、存珠电机和电子锁，并维护单订单出珠状态机。
+ * 控制板只执行 Android 已授权的数量，所有 actualQuantity 均来自真实光眼脉冲。
+ */
 #include "CtrlTask.h"
 #include "MesgTask.h"
 #include "CommunicateTask.h"
@@ -6,6 +10,7 @@
 #include "tim.h"
 #include "string.h"
 
+/* 本地维护存珠动作，只记录本次最大数量和真实光眼计数。 */
 typedef struct
 {
     bool active;
@@ -13,6 +18,7 @@ typedef struct
     uint16_t actualQuantity;
 } CollectMaintenance_t;
 
+/* 两路电机和电子锁的全局硬件对象。 */
 BeadMotor_t BeadMotor1;
 BeadMotor_t BeadMotor2;
 Lock_t Lock;
@@ -20,11 +26,13 @@ Lock_t Lock;
 extern Event_Handle_t Mesg_event;
 extern Setting_TypeDef Setting;
 
+/* 当前出珠订单、最近确认结果和存珠维护状态。 */
 static DispenseOrder_t DispenseOrder;
 static LastDispenseResult_t LastDispenseResult;
 static CollectMaintenance_t CollectMaintenance;
 static bool LowStockNotified = false;
 
+/* 清空当前出珠订单并恢复为空闲状态。 */
 static void Hardware_ResetDispenseOrder(void)
 {
     memset(&DispenseOrder, 0, sizeof(DispenseOrder));
@@ -32,6 +40,7 @@ static void Hardware_ResetDispenseOrder(void)
     DispenseOrder.resultCode = HW_RESULT_OK;
 }
 
+/* 只有结果码成功、实际数量等于应出数量且数量大于零才算完整成功。 */
 static bool Hardware_IsDispenseSuccess(const DispenseOrder_t *order)
 {
     return (order != NULL) &&
@@ -40,6 +49,7 @@ static bool Hardware_IsDispenseSuccess(const DispenseOrder_t *order)
            (order->actualQuantity > 0U);
 }
 
+/* 保存刚刚完成确认的订单结果，用于阻止相同订单序号再次驱动电机。 */
 static void Hardware_SaveLastDispenseResult(void)
 {
     LastDispenseResult.valid = true;
@@ -50,6 +60,7 @@ static void Hardware_SaveLastDispenseResult(void)
     LastDispenseResult.terminalFrameId = DispenseOrder.terminalFrameId;
 }
 
+/* 判断新命令是否与最近一次已确认订单完全相同。 */
 static bool Hardware_LastMatches(uint16_t order_sequence,
                                  uint16_t requested_quantity)
 {
@@ -58,6 +69,7 @@ static bool Hardware_LastMatches(uint16_t order_sequence,
            (LastDispenseResult.requestedQuantity == requested_quantity);
 }
 
+/* 发送一次性拒绝终态，不创建新的持久出珠订单。 */
 static void Hardware_SendDispenseReject(uint16_t order_sequence,
                                         uint16_t actual_quantity,
                                         uint8_t result_code)
@@ -67,6 +79,7 @@ static void Hardware_SendDispenseReject(uint16_t order_sequence,
                                         result_code);
 }
 
+/* 停止吐珠电机并清空电机内部剩余数量和重试计数。 */
 static void Hardware_StopDispenseMotor(void)
 {
     BeadMotor1.motor.Stop(&BeadMotor1.motor);
@@ -75,6 +88,7 @@ static void Hardware_StopDispenseMotor(void)
     BeadMotor1.retry_count = 0U;
 }
 
+/* 停止存珠电机并清空电机内部剩余数量和重试计数。 */
 static void Hardware_StopCollectMotor(void)
 {
     BeadMotor2.motor.Stop(&BeadMotor2.motor);
@@ -83,12 +97,14 @@ static void Hardware_StopCollectMotor(void)
     BeadMotor2.retry_count = 0U;
 }
 
+/* 库存为零或掉电标志记录无珠时，均禁止开始新的出珠动作。 */
 static bool Hardware_HasNoBead(void)
 {
     return (Setting.BeadStock == 0U) ||
            ((Setting.HardwareFlags & HARDWARE_FLAG_NO_BEAD) != 0U);
 }
 
+/* 停止电机并将当前订单切换为等待 Android 确认终态。 */
 static void Hardware_SetDispenseTerminal(uint8_t result_code)
 {
     if (DispenseOrder.state != DISPENSE_STATE_RUNNING)
@@ -104,6 +120,10 @@ static void Hardware_SetDispenseTerminal(uint8_t result_code)
     EventGroupSetBits(&Mesg_event, MesgEvent_DispenseTerminal);
 }
 
+/*
+ * 通用电机状态机：启动正转，超时后断电并短暂反转清障，再按配置次数重试。
+ * 重试耗尽后回调对应的吐珠或存珠超时处理函数。
+ */
 static void Ctrl_BeadMotor(BeadMotor_t *bead_motor,
                            uint16_t speed,
                            uint8_t dir,
@@ -163,6 +183,7 @@ static void Ctrl_BeadMotor(BeadMotor_t *bead_motor,
     }
 }
 
+/* 电子锁状态机：启动后吸合，达到持续时间后转入关闭状态。 */
 static void Ctrl_Lock(Lock_t *lock, uint32_t timeout)
 {
     if (lock->sw.state == DEVICE_STATE_START)
@@ -182,6 +203,7 @@ static void Ctrl_Lock(Lock_t *lock, uint32_t timeout)
     }
 }
 
+/* 在电机空闲且数量有效时启动指定数量的电机动作。 */
 void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num)
 {
     if ((bead_motor == NULL) || (num == 0U) ||
@@ -196,6 +218,7 @@ void BeadMotor_Output(BeadMotor_t *bead_motor, uint16_t num)
     bead_motor->motor.state = DEVICE_STATE_START;
 }
 
+/* 一个有效光眼脉冲到达后，重置超时并减少电机剩余数量。 */
 void BeadMotor_Feedback(BeadMotor_t *bead_motor)
 {
     if (bead_motor == NULL)
@@ -216,6 +239,7 @@ void BeadMotor_Feedback(BeadMotor_t *bead_motor)
     }
 }
 
+/* 绑定两路 TIM1 PWM 电机通道和电子锁 GPIO。 */
 void Device_Init(void)
 {
     Device_Motor_Init(&BeadMotor1.motor, &htim1, TIM_CHANNEL_1, &htim1, TIM_CHANNEL_2);
@@ -228,6 +252,7 @@ void Device_Init(void)
     BeadMotor2.retry_count = 0U;
 }
 
+/* 紧急关闭两路电机和电子锁，不在此函数中修改业务终态。 */
 void Device_StopAllImmediately(void)
 {
     BeadMotor1.motor.LosePower(&BeadMotor1.motor);
@@ -244,6 +269,7 @@ void Device_StopAllImmediately(void)
     Lock.sw.state = DEVICE_STATE_IDLE;
 }
 
+/* 初始化业务状态机，并在上电时默认关闭现金入口。 */
 void Hardware_Init(void)
 {
     Hardware_ResetDispenseOrder();
@@ -253,6 +279,10 @@ void Hardware_Init(void)
     CashAcceptance_Disable();
 }
 
+/*
+ * 接收一个新的平台授权出珠订单。
+ * 相同运行中订单只返回已有状态；不同订单在忙、等待确认或阻塞状态下直接拒绝。
+ */
 bool Hardware_StartDispenseOrder(uint16_t order_sequence,
                                  uint16_t requested_quantity)
 {
@@ -344,6 +374,7 @@ bool Hardware_StartDispenseOrder(uint16_t order_sequence,
     DispenseOrder.requestedQuantity = requested_quantity;
     DispenseOrder.resultCode = HW_RESULT_OK;
 
+    /* 出珠期间禁止纸币和硬币继续进入。 */
     CashAcceptance_Disable();
 
     if (Hardware_HasNoBead())
@@ -362,6 +393,7 @@ bool Hardware_StartDispenseOrder(uint16_t order_sequence,
     return true;
 }
 
+/* 仅在设备完全空闲时启动本地存珠维护动作。 */
 bool Hardware_StartCollect(uint32_t maximum_quantity)
 {
     if ((maximum_quantity == 0U) ||
@@ -382,6 +414,7 @@ bool Hardware_StartCollect(uint32_t maximum_quantity)
     return true;
 }
 
+/* 停止当前存珠维护动作，并请求上报最终库存。 */
 void Hardware_StopCollect(void)
 {
     if (!CollectMaintenance.active)
@@ -394,6 +427,7 @@ void Hardware_StopCollect(void)
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
 }
 
+/* 紧急停止全部机构；若出珠正在运行，则生成中止终态。 */
 void Hardware_AbortAll(void)
 {
     bool dispense_running = DispenseOrder.state == DISPENSE_STATE_RUNNING;
@@ -406,6 +440,7 @@ void Hardware_AbortAll(void)
     CollectMaintenance.active = false;
 }
 
+/* 处理一个真实吐珠光眼脉冲，同步实际数量、库存和低库存事件。 */
 void Hardware_OnDispensePulse(void)
 {
     if (DispenseOrder.state != DISPENSE_STATE_RUNNING)
@@ -439,6 +474,7 @@ void Hardware_OnDispensePulse(void)
     }
 }
 
+/* 处理一个真实存珠光眼脉冲，增加库存并在达到目标后停止电机。 */
 void Hardware_OnCollectPulse(void)
 {
     if (!CollectMaintenance.active)
@@ -465,6 +501,7 @@ void Hardware_OnCollectPulse(void)
     }
 }
 
+/* 吐珠重试耗尽后锁定无珠状态、关闭现金并生成传感器超时终态。 */
 void Hardware_OnDispenseTimeout(void)
 {
     if (DispenseOrder.state != DISPENSE_STATE_RUNNING)
@@ -483,6 +520,7 @@ void Hardware_OnDispenseTimeout(void)
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
 }
 
+/* 存珠超时只停止本地维护动作，不修改出珠订单终态。 */
 void Hardware_OnCollectTimeout(void)
 {
     if (!CollectMaintenance.active)
@@ -493,6 +531,10 @@ void Hardware_OnCollectTimeout(void)
     Hardware_StopCollect();
 }
 
+/*
+ * Android 确认已安全保存出珠终态后，移除重发帧并保存最近结果。
+ * 完整成功回到空闲；失败结果进入阻塞状态并保持现金关闭。
+ */
 void Hardware_ConfirmDispenseTerminal(uint16_t order_sequence,
                                       uint8_t terminal_frame_id)
 {
@@ -530,6 +572,7 @@ void Hardware_ConfirmDispenseTerminal(uint16_t order_sequence,
     }
 }
 
+/* 终态成功进入可靠发送队列后，记录其帧 ID 供业务确认匹配。 */
 void Hardware_MarkDispenseTerminalQueued(uint8_t terminal_frame_id)
 {
     if ((DispenseOrder.state == DISPENSE_STATE_WAIT_TERMINAL_ACK) &&
@@ -540,6 +583,7 @@ void Hardware_MarkDispenseTerminalQueued(uint8_t terminal_frame_id)
     }
 }
 
+/* K1 补珠：恢复默认库存、清除无珠标志并解除失败订单的本地阻塞。 */
 void Hardware_Refill(void)
 {
     Setting.BeadStock = HARDWARE_DEFAULT_STOCK;
@@ -556,6 +600,7 @@ void Hardware_Refill(void)
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
 }
 
+/* 请求重新上报库存、现金状态及当前订单过程或终态。 */
 void Hardware_RequestStatus(void)
 {
     EventGroupSetBits(&Mesg_event, MesgEvent_BeadStockStatus);
@@ -570,6 +615,7 @@ void Hardware_RequestStatus(void)
     }
 }
 
+/* 以下接口只读取当前硬件状态，不产生副作用。 */
 uint32_t Hardware_GetBeadStock(void)
 {
     return Setting.BeadStock;
@@ -590,6 +636,7 @@ bool Hardware_IsCollectActive(void)
     return CollectMaintenance.active;
 }
 
+/* 只有订单、电机和存珠维护均空闲且库存正常时，才允许重新开启现金入口。 */
 bool Hardware_CanEnableCashAcceptance(void)
 {
     return (DispenseOrder.state == DISPENSE_STATE_IDLE) &&
@@ -604,6 +651,7 @@ const DispenseOrder_t *Hardware_GetDispenseOrder(void)
     return &DispenseOrder;
 }
 
+/* 主循环中依次推进吐珠电机、存珠电机和电子锁状态机。 */
 void CtrlTask(void)
 {
     Ctrl_BeadMotor(&BeadMotor1,
