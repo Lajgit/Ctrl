@@ -1,3 +1,7 @@
+/*
+ * 串口通信任务：解析 Android 14 字节协议帧，完成 CRC 校验、命令去重和硬件调度。
+ * 对现金事实及出珠终态使用持久重发语义；普通 ACK 只代表线路收到，不代表业务已保存。
+ */
 #include "CommunicateTask.h"
 #include "MesgTask.h"
 #include "CtrlTask.h"
@@ -7,16 +11,19 @@
 #include "string.h"
 #include "usart.h"
 
+/* 内部命令处理、重启和可靠事件辅助函数声明。 */
 static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg);
 static bool Board_WriteBootRequest(uint32_t request_magic);
 static void Board_SystemRestart(bool enter_bootloader);
 static void USART_RemoveCashResend(uint16_t sequence);
 static bool USART_IsDurableBoardEvent(uint8_t code2);
 
+/* 待确认发送表容量、帧 ID 退休表容量和退休保护时间。 */
 #define PENDING_TX_ENTRY_COUNT 100U
 #define RETIRED_FRAME_ID_COUNT 255U
 #define FRAME_ID_RETIRE_TIME 5000U
 
+/* 待确认消息类型决定线路 ACK 后是否仍需业务确认。 */
 typedef enum
 {
     PENDING_TX_KIND_NONE = 0,
@@ -25,6 +32,7 @@ typedef enum
     PENDING_TX_KIND_PHYSICAL_EVENT
 } PendingTxKind_t;
 
+/* 一条待确认发送记录，保存原始帧和重发状态。 */
 typedef struct
 {
     bool used;
@@ -37,6 +45,7 @@ typedef struct
     PendingTxKind_t kind;
 } PendingTxEntry_t;
 
+/* 已释放帧 ID 在保护时间内禁止立即复用，避免迟到 ACK 误匹配新帧。 */
 typedef struct
 {
     bool used;
@@ -46,9 +55,11 @@ typedef struct
 
 static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, PendingTxEntry_t *entry);
 
+/* Android 命令 ID 去重列表。 */
 ListHandle_t DealList;
 static ListNode_t DealList_buffer[100];
 
+/* 可靠发送表、退休帧 ID 表和 USART1 接收缓冲区。 */
 static PendingTxEntry_t PendingTxTable[PENDING_TX_ENTRY_COUNT];
 static RetiredFrameId_t RetiredFrameIds[RETIRED_FRAME_ID_COUNT];
 static uint8_t NextFrameId = 0U;
@@ -61,6 +72,7 @@ Rx_HandleTypeDef Rx1;
 extern Event_Handle_t Mesg_event;
 extern Lock_t Lock;
 
+/* 将是否进入 Bootloader 的请求写入 RTC 备份寄存器，并回读确认。 */
 static bool Board_WriteBootRequest(uint32_t request_magic)
 {
     uint32_t timeout;
@@ -97,6 +109,7 @@ static bool Board_WriteBootRequest(uint32_t request_magic)
     return false;
 }
 
+/* 安全停止执行机构和现金入口后复位 MCU。 */
 static void Board_SystemRestart(bool enter_bootloader)
 {
     uint32_t request_magic = enter_bootloader ? OTA_REQUEST_MAGIC : 0U;
@@ -113,6 +126,7 @@ static void Board_SystemRestart(bool enter_bootloader)
     }
 }
 
+/* 对接收帧字节 0～10 计算 CRC16，并与帧中高低字节比较。 */
 static bool USART_ReceiveMesg_Verify(void *self, void *mesg)
 {
     Rx_HandleTypeDef *rx = (Rx_HandleTypeDef *)self;
@@ -122,6 +136,7 @@ static bool USART_ReceiveMesg_Verify(void *self, void *mesg)
     return crc16 == mesg_crc16;
 }
 
+/* 从 Data1～Data4 读取一个大端 32 位值。 */
 static uint32_t USART_GetData32(Mesg_TypeDef *mesg)
 {
     return ((uint32_t)mesg->Data1 << 24U) |
@@ -130,6 +145,7 @@ static uint32_t USART_GetData32(Mesg_TypeDef *mesg)
            (uint32_t)mesg->Data4;
 }
 
+/* 从 Data2～Data4 读取 24 位配置值。 */
 static uint32_t USART_GetValue24(Mesg_TypeDef *mesg)
 {
     return ((uint32_t)mesg->Data2 << 16U) |
@@ -137,12 +153,14 @@ static uint32_t USART_GetValue24(Mesg_TypeDef *mesg)
            (uint32_t)mesg->Data4;
 }
 
+/* 现金事件序号由 Data4 和 ExpandCode 组成。 */
 static uint16_t USART_GetCashSequence(const Mesg_TypeDef *mesg)
 {
     return ((uint16_t)mesg->Data4 << 8U) |
            (uint16_t)mesg->ExpandCode;
 }
 
+/* 出珠终态属于业务持久事件，线路 ACK 后仍需 Android 明确确认。 */
 static bool USART_IsDurableBoardEvent(uint8_t code2)
 {
     return code2 == DispenseTerminal;
@@ -153,6 +171,7 @@ static bool PendingTx_IsDurableCode(uint8_t code2)
     return (code2 == CashAccepted) || USART_IsDurableBoardEvent(code2);
 }
 
+/* 根据事件码选择普通线路 ACK、现金事实或物理终态类型。 */
 static PendingTxKind_t PendingTx_GetKind(uint8_t code2)
 {
     if (code2 == CashAccepted)
@@ -166,6 +185,7 @@ static PendingTxKind_t PendingTx_GetKind(uint8_t code2)
     return PENDING_TX_KIND_LINE_ACK;
 }
 
+/* 按现金序号查找已经入队的同一现金事实，防止重复创建发送帧。 */
 static PendingTxEntry_t *PendingTx_FindCashAccepted(uint16_t sequence)
 {
     uint16_t i;
@@ -182,16 +202,19 @@ static PendingTxEntry_t *PendingTx_FindCashAccepted(uint16_t sequence)
     return NULL;
 }
 
+/* 出珠协议数据的高 16 位为订单序号。 */
 static uint16_t USART_GetOrderSequence(const Mesg_TypeDef *mesg)
 {
     return ((uint16_t)mesg->Data1 << 8U) | (uint16_t)mesg->Data2;
 }
 
+/* 出珠协议数据的低 16 位为应出或实出数量。 */
 static uint16_t USART_GetOrderValue(const Mesg_TypeDef *mesg)
 {
     return ((uint16_t)mesg->Data3 << 8U) | (uint16_t)mesg->Data4;
 }
 
+/* 按订单序号、实际数量和结果码查找已经入队的同一出珠终态。 */
 static PendingTxEntry_t *PendingTx_FindDispenseTerminal(uint16_t order_sequence,
                                                         uint16_t actual_quantity,
                                                         uint8_t result_code)
@@ -212,6 +235,7 @@ static PendingTxEntry_t *PendingTx_FindDispenseTerminal(uint16_t order_sequence,
     return NULL;
 }
 
+/* 检查帧 ID 是否仍被待确认发送表占用。 */
 static bool PendingTx_IsFrameIdUsed(uint8_t frame_id)
 {
     uint16_t i;
@@ -225,6 +249,7 @@ static bool PendingTx_IsFrameIdUsed(uint8_t frame_id)
     return false;
 }
 
+/* 检查帧 ID 是否仍处于释放后的保护时间内。 */
 static bool PendingTx_IsFrameIdRetired(uint8_t frame_id, uint32_t now)
 {
     uint16_t i;
@@ -240,6 +265,7 @@ static bool PendingTx_IsFrameIdRetired(uint8_t frame_id, uint32_t now)
     return false;
 }
 
+/* 将已释放帧 ID 放入退休表，表满时复用最旧项。 */
 static void PendingTx_RetireFrameId(uint8_t frame_id)
 {
     uint16_t i;
@@ -282,6 +308,7 @@ static void PendingTx_RetireFrameId(uint8_t frame_id)
     RetiredFrameIds[selected].retiredTick = now;
 }
 
+/* 分配 1～255 的帧 ID，可选择跳过仍在退休保护期内的 ID。 */
 static uint8_t PendingTx_AllocateFrameId(bool skip_retired)
 {
     uint16_t attempts;
@@ -309,6 +336,7 @@ static uint8_t PendingTx_AllocateFrameId(bool skip_retired)
     return 0U;
 }
 
+/* 从固定发送表中找到一个空闲记录。 */
 static PendingTxEntry_t *PendingTx_FindFreeEntry(void)
 {
     uint16_t i;
@@ -322,6 +350,7 @@ static PendingTxEntry_t *PendingTx_FindFreeEntry(void)
     return NULL;
 }
 
+/* 删除待确认记录，并按需将原帧 ID 放入退休保护表。 */
 static void PendingTx_RemoveEntry(PendingTxEntry_t *entry, bool retire_frame_id)
 {
     uint8_t frame_id;
@@ -339,6 +368,7 @@ static void PendingTx_RemoveEntry(PendingTxEntry_t *entry, bool retire_frame_id)
     }
 }
 
+/* 原样比较业务字段，确认收到的是某条发送帧的线路回显。 */
 static bool PendingTx_IsEchoMatch(const PendingTxEntry_t *entry, const Mesg_TypeDef *echo)
 {
     if ((entry == NULL) || !entry->used || (echo == NULL))
@@ -357,6 +387,7 @@ static bool PendingTx_IsEchoMatch(const PendingTxEntry_t *entry, const Mesg_Type
            (entry->frame.ExpandCode == echo->ExpandCode);
 }
 
+/* 处理 Android 对控制板上报帧的原样线路回显。 */
 static void USART_ConfirmBoardEvent(Mesg_TypeDef *mesg)
 {
     uint16_t i;
@@ -379,6 +410,7 @@ static void USART_ConfirmBoardEvent(Mesg_TypeDef *mesg)
     }
 }
 
+/* Android 明确保存现金事实后，按现金序号删除对应重发项。 */
 static void USART_RemoveCashResend(uint16_t sequence)
 {
     PendingTxEntry_t *entry = PendingTx_FindCashAccepted(sequence);
@@ -388,6 +420,7 @@ static void USART_RemoveCashResend(uint16_t sequence)
     }
 }
 
+/* Android 明确保存出珠终态后，按订单序号和终态帧 ID 删除重发项。 */
 void Comm_RemoveDispenseTerminal(uint16_t order_sequence, uint8_t terminal_frame_id)
 {
     uint16_t i;
@@ -405,6 +438,10 @@ void Comm_RemoveDispenseTerminal(uint16_t order_sequence, uint8_t terminal_frame
     }
 }
 
+/*
+ * 处理一帧已通过校验的 USART1 消息。
+ * Android 命令先原样回显，再按消息 ID 去重并分发到硬件、现金或重启接口。
+ */
 static void USART1_Deal(void *rx_mesg)
 {
     uint32_t data;
@@ -481,6 +518,7 @@ static void USART1_Deal(void *rx_mesg)
     }
 }
 
+/* 将消息结构展开为 14 字节帧并计算 CRC16。 */
 static void USART_FillFrameBytes(Mesg_TypeDef *mesg, uint8_t data[14])
 {
     uint16_t crc;
@@ -506,6 +544,7 @@ static void USART_FillFrameBytes(Mesg_TypeDef *mesg, uint8_t data[14])
     mesg->Tail = Mesg_Tail;
 }
 
+/* 填充帧字节后通过底层发送接口输出。 */
 static void USART_TransmitMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
 {
     uint8_t data[14];
@@ -514,6 +553,7 @@ static void USART_TransmitMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
     tx->Transimit(tx, data, sizeof(data));
 }
 
+/* 分配帧 ID；需要 ACK 的消息先占用发送表，再进行实际发送。 */
 static uint8_t USART_SendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
 {
     uint8_t frame_id;
@@ -553,6 +593,7 @@ static uint8_t USART_SendMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
     return frame_id;
 }
 
+/* 组装并发送不需要 ACK 的普通协议帧。 */
 uint8_t Comm_SendMesg_FillData(Tx_HandleTypeDef *tx,
                                uint8_t code_1,
                                uint8_t code_2,
@@ -573,6 +614,7 @@ uint8_t Comm_SendMesg_FillData(Tx_HandleTypeDef *tx,
     return USART_SendMesg(tx, &mesg);
 }
 
+/* 组装并发送需要可靠确认的协议帧；同一现金序号复用已有帧。 */
 uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *tx,
                                           uint8_t code_1,
                                           uint8_t code_2,
@@ -606,6 +648,7 @@ uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *tx,
     return USART_SendMesg(tx, &mesg);
 }
 
+/* 发送或重发同一出珠终态，返回其稳定帧 ID。 */
 uint8_t Comm_SendDispenseTerminal(uint16_t order_sequence,
                                   uint16_t actual_quantity,
                                   uint8_t result_code)
@@ -630,6 +673,7 @@ uint8_t Comm_SendDispenseTerminal(uint16_t order_sequence,
                                              result_code);
 }
 
+/* 发送一次性出珠拒绝结果，不占用可靠发送表。 */
 uint8_t Comm_SendDispenseTerminalOnce(uint16_t order_sequence,
                                       uint16_t actual_quantity,
                                       uint8_t result_code)
@@ -644,6 +688,7 @@ uint8_t Comm_SendDispenseTerminalOnce(uint16_t order_sequence,
                                   result_code);
 }
 
+/* 增加 ResendID 并重发；普通消息超过次数后结束，持久事件循环重发。 */
 static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, PendingTxEntry_t *entry)
 {
     if ((entry == NULL) || !entry->used)
@@ -666,6 +711,7 @@ static uint8_t USART_ReSendMesg(Tx_HandleTypeDef *tx, PendingTxEntry_t *entry)
     return 0U;
 }
 
+/* 对 Android 命令原样回传应答，并重新计算 CRC。 */
 static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
 {
     uint8_t data[14];
@@ -689,6 +735,7 @@ static void USART_RequestMesg(Tx_HandleTypeDef *tx, Mesg_TypeDef *mesg)
     tx->Transimit(tx, data, sizeof(data));
 }
 
+/* 周期检查发送表，并按重发周期处理所有超时项。 */
 void Resend_Task(void)
 {
     uint16_t i;
@@ -710,6 +757,7 @@ void Resend_Task(void)
     }
 }
 
+/* 清除超过去重窗口的 Android 命令 ID，使帧 ID 可以在未来安全复用。 */
 void MesgDeal_Task(void)
 {
     ListNode_t *current = DealList.Head;
@@ -725,6 +773,7 @@ void MesgDeal_Task(void)
     }
 }
 
+/* 初始化命令去重表、可靠发送表以及 USART1 收发对象。 */
 void Communicate_Init(void)
 {
     Rx_InitTypeDef rx_init;
@@ -752,6 +801,7 @@ void Communicate_Init(void)
     Communicate_Tx_Init(&Tx1, tx_init);
 }
 
+/* 主循环从 USART1 环形缓冲区尝试提取并处理一帧消息。 */
 void Communicate_Task(void)
 {
     Rx1.Receive(&Rx1, &Receive1_mesg, sizeof(Mesg_TypeDef));
