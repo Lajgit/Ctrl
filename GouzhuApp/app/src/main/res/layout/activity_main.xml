@@ -18,7 +18,7 @@
             android:paddingStart="36dp"
             android:paddingTop="34dp"
             android:paddingEnd="36dp"
-            android:paddingBottom="28dp">
+            android:paddingBottom="88dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -96,25 +96,24 @@
                 <Button android:id="@+id/button_package_100" style="@style/Widget.Gouzhu.PackageButton" android:text="--" />
             </GridLayout>
 
+            <!--
+                保留原控件 ID 供现有业务状态代码使用，但不再在顾客主界面显示。
+                点击套餐按钮后由原支付入口直接发起支付。
+            -->
             <TextView
                 android:id="@+id/text_selected_package"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:background="@drawable/bg_selected_package"
-                android:gravity="center"
-                android:padding="16dp"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
                 android:text="@string/package_not_selected"
-                android:textColor="@color/header_primary"
-                android:textSize="19sp"
-                android:textStyle="bold" />
+                android:visibility="gone" />
 
             <Button
                 android:id="@+id/button_start_payment"
                 style="@style/Widget.Gouzhu.PrimaryButton"
-                android:layout_width="match_parent"
-                android:layout_marginTop="18dp"
-                android:text="@string/start_payment" />
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:text="@string/start_payment"
+                android:visibility="gone" />
 
             <!--
                 二维码和取消入口只允许显示在独立的 PaymentQrActivity 弹窗中。
@@ -135,16 +134,6 @@
                 android:enabled="false"
                 android:text="@string/payment_cancel_button"
                 android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/text_payment_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:gravity="center"
-                android:text="@string/payment_select_package"
-                android:textColor="@color/text_secondary"
-                android:textSize="18sp" />
 
             <LinearLayout
                 android:id="@+id/layout_collection"
@@ -205,6 +194,57 @@
                 android:text="@string/backend_debug_entry" />
         </LinearLayout>
     </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="58dp"
+        android:layout_gravity="bottom"
+        android:background="@color/page_background"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="18dp"
+        android:paddingEnd="18dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="start|center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="V2.3.16"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+
+            <TextClock
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:format12Hour="HH:mm:ss"
+                android:format24Hour="HH:mm:ss"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/text_payment_status"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:maxLines="2"
+            android:text="@string/payment_select_package"
+            android:textColor="@color/text_secondary"
+            android:textSize="16sp" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/layout_dispense_overlay"
