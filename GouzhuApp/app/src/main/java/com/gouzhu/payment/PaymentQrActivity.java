@@ -311,11 +311,11 @@ public final class PaymentQrActivity extends AppCompatActivity {
         drawerView.animate()
                 .translationY(drawerView.getHeight())
                 .setDuration(220L)
+                .withEndAction(this::finishWithoutAnimation)
                 .start();
         scrimView.animate()
                 .alpha(0f)
                 .setDuration(180L)
-                .withEndAction(this::finishWithoutAnimation)
                 .start();
     }
 
