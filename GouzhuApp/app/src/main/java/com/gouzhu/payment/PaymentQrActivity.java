@@ -10,8 +10,6 @@ import android.graphics.drawable.ColorDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.CountDownTimer;
-import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -28,7 +26,7 @@ import com.gouzhu.R;
 
 /**
  * 底部抽屉式二维码支付窗口。
- * 点击关闭按钮或抽屉外的变暗区域都会请求取消当前订单；支付终态也会自动关闭。
+ * 点击关闭按钮或抽屉外的全屏遮罩都会请求取消当前订单；支付终态也会自动关闭。
  */
 public final class PaymentQrActivity extends AppCompatActivity {
 
@@ -39,6 +37,8 @@ public final class PaymentQrActivity extends AppCompatActivity {
     public static final String EXTRA_PRICE_FEN = "priceFen";
     public static final String EXTRA_DEADLINE = "deadline";
 
+    private View scrimView;
+    private View drawerView;
     private TextView countdownText;
     private TextView purchaseText;
     private TextView priceText;
@@ -50,6 +50,8 @@ public final class PaymentQrActivity extends AppCompatActivity {
     private boolean closeReceiverRegistered;
     private boolean timeoutHandled;
     private boolean userCloseInProgress;
+    private boolean enterAnimationStarted;
+    private boolean finishAnimationStarted;
 
     private final BroadcastReceiver closeReceiver = new BroadcastReceiver() {
         @Override
@@ -67,12 +69,16 @@ public final class PaymentQrActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        overridePendingTransition(0, 0);
         setContentView(R.layout.activity_payment_qr);
         setFinishOnTouchOutside(false);
         bindViews();
         bindActions();
         registerCloseReceiver();
         handleIntent(getIntent());
+        if (!isFinishing()) {
+            startEnterAnimation();
+        }
         hideSystemUi();
     }
 
@@ -92,15 +98,13 @@ public final class PaymentQrActivity extends AppCompatActivity {
             return;
         }
         window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        window.addFlags(
+        window.clearFlags(
                 WindowManager.LayoutParams.FLAG_DIM_BEHIND
                         | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
         );
         WindowManager.LayoutParams attributes = window.getAttributes();
-        attributes.gravity = Gravity.BOTTOM;
-        attributes.dimAmount = 0.58f;
         attributes.width = WindowManager.LayoutParams.MATCH_PARENT;
-        attributes.height = WindowManager.LayoutParams.WRAP_CONTENT;
+        attributes.height = WindowManager.LayoutParams.MATCH_PARENT;
         attributes.horizontalMargin = 0f;
         attributes.verticalMargin = 0f;
         window.setAttributes(attributes);
@@ -109,6 +113,12 @@ public final class PaymentQrActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         stopCountdown();
+        if (scrimView != null) {
+            scrimView.animate().cancel();
+        }
+        if (drawerView != null) {
+            drawerView.animate().cancel();
+        }
         if (closeReceiverRegistered) {
             try {
                 unregisterReceiver(closeReceiver);
@@ -121,16 +131,7 @@ public final class PaymentQrActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        // 避免系统返回键误取消订单；使用可见关闭按钮或点击抽屉外区域。
-    }
-
-    @Override
-    public boolean onTouchEvent(MotionEvent event) {
-        if (event != null && event.getActionMasked() == MotionEvent.ACTION_OUTSIDE) {
-            requestUserClose();
-            return true;
-        }
-        return super.onTouchEvent(event);
+        // 避免系统返回键误取消订单；使用可见关闭按钮或点击抽屉外遮罩。
     }
 
     @Override
@@ -142,6 +143,8 @@ public final class PaymentQrActivity extends AppCompatActivity {
     }
 
     private void bindViews() {
+        scrimView = findViewById(R.id.payment_dialog_scrim);
+        drawerView = findViewById(R.id.payment_dialog_drawer);
         countdownText = findViewById(R.id.text_payment_dialog_countdown);
         purchaseText = findViewById(R.id.text_payment_dialog_purchase);
         priceText = findViewById(R.id.text_payment_dialog_price);
@@ -150,6 +153,10 @@ public final class PaymentQrActivity extends AppCompatActivity {
     }
 
     private void bindActions() {
+        scrimView.setOnClickListener(view -> requestUserClose());
+        drawerView.setOnClickListener(view -> {
+            // 抽屉本体消费点击，避免内部空白区域穿透到遮罩并取消订单。
+        });
         findViewById(R.id.button_payment_dialog_close).setOnClickListener(
                 view -> requestUserClose()
         );
@@ -257,6 +264,28 @@ public final class PaymentQrActivity extends AppCompatActivity {
         finishSafely();
     }
 
+    private void startEnterAnimation() {
+        if (enterAnimationStarted || scrimView == null || drawerView == null) {
+            return;
+        }
+        enterAnimationStarted = true;
+        scrimView.setAlpha(0f);
+        drawerView.setTranslationY(getResources().getDisplayMetrics().heightPixels);
+        drawerView.post(() -> {
+            if (isFinishing() || finishAnimationStarted) {
+                return;
+            }
+            drawerView.animate()
+                    .translationY(0f)
+                    .setDuration(260L)
+                    .start();
+            scrimView.animate()
+                    .alpha(1f)
+                    .setDuration(220L)
+                    .start();
+        });
+    }
+
     private void stopCountdown() {
         if (countDownTimer != null) {
             countDownTimer.cancel();
@@ -266,8 +295,34 @@ public final class PaymentQrActivity extends AppCompatActivity {
 
     private void finishSafely() {
         stopCountdown();
+        if (isFinishing() || finishAnimationStarted) {
+            return;
+        }
+        if (drawerView == null
+                || scrimView == null
+                || drawerView.getHeight() <= 0) {
+            finishWithoutAnimation();
+            return;
+        }
+
+        finishAnimationStarted = true;
+        drawerView.animate().cancel();
+        scrimView.animate().cancel();
+        drawerView.animate()
+                .translationY(drawerView.getHeight())
+                .setDuration(220L)
+                .start();
+        scrimView.animate()
+                .alpha(0f)
+                .setDuration(180L)
+                .withEndAction(this::finishWithoutAnimation)
+                .start();
+    }
+
+    private void finishWithoutAnimation() {
         if (!isFinishing()) {
             finish();
+            overridePendingTransition(0, 0);
         }
     }
 
