@@ -68,13 +68,15 @@
         <TextView
             android:id="@+id/text_payment_dialog_purchase"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="48dp"
             android:layout_marginTop="10dp"
+            android:fontFamily="sans-serif-medium"
             android:gravity="center"
+            android:includeFontPadding="true"
             android:text="@string/payment_dialog_purchase_preview"
             android:textColor="#F04452"
             android:textSize="31sp"
-            android:textStyle="bold" />
+            android:textStyle="normal" />
 
         <TextView
             android:id="@+id/text_payment_dialog_price"

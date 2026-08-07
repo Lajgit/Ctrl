@@ -434,10 +434,10 @@ public class MainActivity extends AppCompatActivity {
                     option.quantity,
                     option.priceFen
             );
-            paymentStatusText.setText(getString(
-                    R.string.payment_waiting_qr_format,
-                    request.orderId
-            ));
+//            paymentStatusText.setText(getString(
+//                    R.string.payment_waiting_qr_format,
+//                    request.orderId
+//            ));
             paymentQrImage.setImageDrawable(null);
             paymentQrImage.setVisibility(View.GONE);
             paymentButton.setEnabled(false);
