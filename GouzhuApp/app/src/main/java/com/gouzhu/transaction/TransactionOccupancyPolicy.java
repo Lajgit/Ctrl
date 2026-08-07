@@ -47,6 +47,7 @@ public final class TransactionOccupancyPolicy {
         return "DISPENSE_RESERVED".equals(phase)
                 || "DISPENSING".equals(phase)
                 || "FINISHING".equals(phase)
+                || "WAITING_CONTINUATION".equals(phase)
                 || "COLLECTING".equals(phase);
     }
 
