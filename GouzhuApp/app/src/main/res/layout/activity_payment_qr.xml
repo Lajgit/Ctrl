@@ -1,127 +1,146 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/payment_dialog_root"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:background="@drawable/bg_payment_qr_dialog"
-    android:orientation="vertical"
-    android:paddingStart="24dp"
-    android:paddingTop="18dp"
-    android:paddingEnd="24dp"
-    android:paddingBottom="28dp">
+    android:layout_height="match_parent">
 
-    <FrameLayout
+    <View
+        android:id="@+id/payment_dialog_scrim"
         android:layout_width="match_parent"
-        android:layout_height="52dp">
+        android:layout_height="match_parent"
+        android:background="#94000000"
+        android:clickable="true"
+        android:contentDescription="@string/payment_dialog_close"
+        android:focusable="true" />
 
-        <TextView
-            android:id="@+id/button_payment_dialog_close"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:layout_gravity="start|center_vertical"
-            android:background="@drawable/bg_payment_qr_close"
-            android:contentDescription="@string/payment_dialog_close"
-            android:gravity="center"
-            android:text="×"
-            android:textColor="@color/text_primary"
-            android:textSize="30sp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="match_parent"
-            android:layout_gravity="center"
-            android:gravity="center"
-            android:text="@string/payment_dialog_title"
-            android:textColor="@color/text_primary"
-            android:textSize="26sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/text_payment_dialog_countdown"
-            android:layout_width="88dp"
-            android:layout_height="match_parent"
-            android:layout_gravity="end|center_vertical"
-            android:gravity="center"
-            android:text="60S"
-            android:textColor="@color/header_primary"
-            android:textSize="24sp"
-            android:textStyle="bold" />
-    </FrameLayout>
-
-    <TextView
-        android:id="@+id/text_payment_dialog_purchase"
+    <LinearLayout
+        android:id="@+id/payment_dialog_drawer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:gravity="center"
-        android:text="@string/payment_dialog_purchase_preview"
-        android:textColor="#F04452"
-        android:textSize="31sp"
-        android:textStyle="bold" />
+        android:layout_gravity="bottom"
+        android:background="@drawable/bg_payment_qr_dialog"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:paddingStart="24dp"
+        android:paddingTop="18dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="28dp">
 
-    <TextView
-        android:id="@+id/text_payment_dialog_price"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
-        android:gravity="center"
-        android:text="@string/payment_dialog_price_preview"
-        android:textColor="@color/text_primary"
-        android:textSize="27sp"
-        android:textStyle="bold" />
-
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="22dp"
-        android:paddingStart="42dp"
-        android:paddingEnd="42dp">
-
-        <LinearLayout
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="390dp"
-            android:layout_gravity="center"
-            android:background="@drawable/bg_payment_qr_method"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <ImageView
-                android:id="@+id/image_payment_dialog_qr"
-                android:layout_width="270dp"
-                android:layout_height="270dp"
-                android:background="@color/white"
-                android:contentDescription="@string/payment_qr_description"
-                android:padding="8dp"
-                android:scaleType="fitCenter" />
+            android:layout_height="52dp">
 
             <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
+                android:id="@+id/button_payment_dialog_close"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="start|center_vertical"
+                android:background="@drawable/bg_payment_qr_close"
+                android:contentDescription="@string/payment_dialog_close"
                 android:gravity="center"
-                android:text="@string/payment_dialog_scan_pay_title"
+                android:text="×"
                 android:textColor="@color/text_primary"
-                android:textSize="24sp"
+                android:textSize="30sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="@string/payment_dialog_title"
+                android:textColor="@color/text_primary"
+                android:textSize="26sp"
                 android:textStyle="bold" />
 
             <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="7dp"
+                android:id="@+id/text_payment_dialog_countdown"
+                android:layout_width="88dp"
+                android:layout_height="match_parent"
+                android:layout_gravity="end|center_vertical"
                 android:gravity="center"
-                android:text="@string/payment_dialog_scan_pay_channels"
-                android:textColor="@color/text_secondary"
-                android:textSize="17sp" />
-        </LinearLayout>
-    </FrameLayout>
+                android:text="60S"
+                android:textColor="@color/header_primary"
+                android:textSize="24sp"
+                android:textStyle="bold" />
+        </FrameLayout>
 
-    <TextView
-        android:id="@+id/text_payment_dialog_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="18dp"
-        android:gravity="center"
-        android:text="@string/payment_dialog_scan_hint"
-        android:textColor="@color/text_secondary"
-        android:textSize="17sp" />
-</LinearLayout>
+        <TextView
+            android:id="@+id/text_payment_dialog_purchase"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:text="@string/payment_dialog_purchase_preview"
+            android:textColor="#F04452"
+            android:textSize="31sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/text_payment_dialog_price"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:gravity="center"
+            android:text="@string/payment_dialog_price_preview"
+            android:textColor="@color/text_primary"
+            android:textSize="27sp"
+            android:textStyle="bold" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:paddingStart="42dp"
+            android:paddingEnd="42dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="390dp"
+                android:layout_gravity="center"
+                android:background="@drawable/bg_payment_qr_method"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="20dp">
+
+                <ImageView
+                    android:id="@+id/image_payment_dialog_qr"
+                    android:layout_width="270dp"
+                    android:layout_height="270dp"
+                    android:background="@color/white"
+                    android:contentDescription="@string/payment_qr_description"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:gravity="center"
+                    android:text="@string/payment_dialog_scan_pay_title"
+                    android:textColor="@color/text_primary"
+                    android:textSize="24sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="7dp"
+                    android:gravity="center"
+                    android:text="@string/payment_dialog_scan_pay_channels"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="17sp" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/text_payment_dialog_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center"
+            android:text="@string/payment_dialog_scan_hint"
+            android:textColor="@color/text_secondary"
+            android:textSize="17sp" />
+    </LinearLayout>
+</FrameLayout>
