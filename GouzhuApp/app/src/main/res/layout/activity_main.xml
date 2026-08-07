@@ -236,7 +236,7 @@
             android:layout_weight="1"
             android:gravity="center"
             android:maxLines="2"
-            android:text="@string/payment_select_package"
+            android:text=""
             android:textColor="@color/text_secondary"
             android:textSize="16sp" />
 
