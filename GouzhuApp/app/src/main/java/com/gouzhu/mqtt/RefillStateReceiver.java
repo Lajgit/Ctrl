@@ -19,7 +19,7 @@ import com.gouzhu.transaction.TransactionOccupancyManager;
  * <ol>
  *     <li>将真实部分出珠后的 SENSOR_TIMEOUT 归一化为本地无珠结果码；</li>
  *     <li>清除现金阻塞、本地复位门禁；</li>
- *     <li>仅对可继续的库存不足会话清除 physical_blocked；</li>
+ *     <li>仅对可继续且尚未进入继续/人工流程的库存不足会话清除 physical_blocked；</li>
  *     <li>保留 active_physical_order，同时把交易占用从 BLOCKED 切到
  *     WAITING_CONTINUATION，等待商家明确下发 continue_marble_dispense。</li>
  * </ol>
@@ -43,7 +43,6 @@ public final class RefillStateReceiver extends BroadcastReceiver {
     private static final String PHASE_WAITING_DISPENSE = "WAITING_DISPENSE";
     private static final String PHASE_FINISHING = "FINISHING";
     private static final String PHASE_WAITING_CONTINUATION = "WAITING_CONTINUATION";
-    private static final String FLOW_RESOLUTION = "RESOLUTION";
 
     private static final String META_PHYSICAL_BLOCKED = "physical_blocked";
     private static final String META_CASH_BLOCKED = "cash_blocked";
@@ -144,7 +143,7 @@ public final class RefillStateReceiver extends BroadcastReceiver {
                         OccupancySnapshot occupancy = loadOccupancy(db);
                         if (occupancy != null
                                 && active.messageId.equals(occupancy.sourceMessageId)
-                                && !hasResolutionStarted(db, occupancy.operationNo)) {
+                                && !hasOperationFlowStarted(db, occupancy.operationNo)) {
                             ContentValues values = new ContentValues();
                             values.put("phase", PHASE_WAITING_CONTINUATION);
                             values.put("blocked_reason", "");
@@ -201,8 +200,8 @@ public final class RefillStateReceiver extends BroadcastReceiver {
 
     /**
      * 进程重建时会根据保留的 BLOCKED 物理会话重建占用；扫码订单轮询也可能把状态
-     * 改为 WAITING_DISPENSE/FINISHING。如果 K1 门禁已经可靠清除，则统一恢复成
-     * WAITING_CONTINUATION，避免平台再次把会话解释为故障或普通出珠阶段。
+     * 改为 WAITING_DISPENSE/FINISHING。如果 K1 门禁已经可靠清除，且该 operationNo
+     * 尚未进入继续或人工结案流程，则统一恢复成 WAITING_CONTINUATION。
      */
     private void recoverWaitingContinuationIfReady(Context context, String source) {
         DeviceCommandStore store = new DeviceCommandStore(context);
@@ -228,7 +227,7 @@ public final class RefillStateReceiver extends BroadcastReceiver {
                 if (occupancy == null
                         || !isRecoverableOccupancyPhase(occupancy.phase)
                         || !active.messageId.equals(occupancy.sourceMessageId)
-                        || hasResolutionStarted(db, occupancy.operationNo)) {
+                        || hasOperationFlowStarted(db, occupancy.operationNo)) {
                     return;
                 }
 
@@ -428,15 +427,19 @@ public final class RefillStateReceiver extends BroadcastReceiver {
         }
     }
 
-    private static boolean hasResolutionStarted(SQLiteDatabase db, String operationNo) {
+    /**
+     * operation_flow_claims 对继续出珠和人工结案共用同一 operationNo 互斥记录。
+     * 只要任一流程已经取得过该 operationNo，就不能因再次按 K1 重新开放继续按钮。
+     */
+    private static boolean hasOperationFlowStarted(SQLiteDatabase db, String operationNo) {
         if (blank(operationNo)) {
             return false;
         }
         try (Cursor cursor = db.query(
                 TABLE_FLOW_CLAIMS,
                 new String[]{"operation_no"},
-                "operation_no=? AND flow_type=?",
-                new String[]{operationNo, FLOW_RESOLUTION},
+                "operation_no=?",
+                new String[]{operationNo},
                 null,
                 null,
                 null,
