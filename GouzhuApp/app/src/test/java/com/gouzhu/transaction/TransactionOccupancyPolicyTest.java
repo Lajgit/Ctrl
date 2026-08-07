@@ -37,6 +37,12 @@ public class TransactionOccupancyPolicyTest {
     }
 
     @Test
+    public void waitingContinuationRemainsPhysicalButNotFaultBlocked() {
+        assertTrue(TransactionOccupancyPolicy.isPhysicalPhase("WAITING_CONTINUATION"));
+        assertFalse(TransactionOccupancyPolicy.isBlockingPhase("WAITING_CONTINUATION"));
+    }
+
+    @Test
     public void paymentReleaseOnlyUsesAuthoritativeTerminalStates() {
         assertFalse(TransactionOccupancyPolicy.shouldReleasePayment("WAITING_PAYMENT"));
         assertFalse(TransactionOccupancyPolicy.shouldReleasePayment("EXPIRED"));
