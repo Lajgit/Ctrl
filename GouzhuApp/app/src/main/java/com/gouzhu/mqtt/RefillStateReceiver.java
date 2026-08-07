@@ -12,8 +12,6 @@ import com.gouzhu.AppConfig;
 import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.transaction.TransactionOccupancyManager;
 
-import org.json.JSONObject;
-
 /**
  * 统一处理控制板 K1 补珠确认以及“已补珠、等待继续出珠”状态恢复。
  *
@@ -26,9 +24,8 @@ import org.json.JSONObject;
  *     WAITING_CONTINUATION，等待商家明确下发 continue_marble_dispense。</li>
  * </ol>
  *
- * <p>本接收器还会在进程重建后修复 TransactionOccupancyManager 将保留的
- * BLOCKED 物理会话重新恢复成 BLOCKED 的情况；人工结案完成时则释放本接收器维护的
- * WAITING_CONTINUATION 占用。任何补珠事件都不会自行驱动出珠。</p>
+ * <p>本接收器还会修复进程重建或支付状态轮询把等待继续会话改回其他阶段的情况；
+ * 人工结案完成时则释放本接收器维护的等待继续占用。任何补珠事件都不会自行驱动出珠。</p>
  */
 public final class RefillStateReceiver extends BroadcastReceiver {
 
@@ -43,6 +40,8 @@ public final class RefillStateReceiver extends BroadcastReceiver {
     private static final String TABLE_RESOLUTIONS = "operation_resolutions";
 
     private static final String PHASE_BLOCKED = "BLOCKED";
+    private static final String PHASE_WAITING_DISPENSE = "WAITING_DISPENSE";
+    private static final String PHASE_FINISHING = "FINISHING";
     private static final String PHASE_WAITING_CONTINUATION = "WAITING_CONTINUATION";
     private static final String FLOW_RESOLUTION = "RESOLUTION";
 
@@ -67,9 +66,13 @@ public final class RefillStateReceiver extends BroadcastReceiver {
         }
 
         if (AppConfig.ACTION_TRANSACTION_OCCUPANCY_CHANGED.equals(action)) {
-            if (PHASE_BLOCKED.equals(intent.getStringExtra(
-                    TransactionOccupancyManager.EXTRA_PHASE))) {
-                recoverWaitingContinuationIfReady(context, "occupancy-blocked");
+            String phase = safe(intent.getStringExtra(
+                    TransactionOccupancyManager.EXTRA_PHASE));
+            if (isRecoverableOccupancyPhase(phase)) {
+                recoverWaitingContinuationIfReady(
+                        context,
+                        "occupancy-" + phase.toLowerCase()
+                );
             }
             return;
         }
@@ -149,10 +152,13 @@ public final class RefillStateReceiver extends BroadcastReceiver {
                             int updated = db.update(
                                     TABLE_OCCUPANCY,
                                     values,
-                                    "id=1 AND source_message_id=? AND phase IN (?,?)",
+                                    "id=1 AND source_message_id=? "
+                                            + "AND phase IN (?,?,?,?)",
                                     new String[]{
                                             active.messageId,
                                             PHASE_BLOCKED,
+                                            PHASE_WAITING_DISPENSE,
+                                            PHASE_FINISHING,
                                             PHASE_WAITING_CONTINUATION
                                     }
                             );
@@ -194,8 +200,9 @@ public final class RefillStateReceiver extends BroadcastReceiver {
     }
 
     /**
-     * 进程重建时 TransactionOccupancyManager 会根据保留的 BLOCKED 物理会话恢复占用。
-     * 如果 K1 门禁已经在数据库中可靠清除，则重新进入等待继续状态，避免重启后退回异常态。
+     * 进程重建时会根据保留的 BLOCKED 物理会话重建占用；扫码订单轮询也可能把状态
+     * 改为 WAITING_DISPENSE/FINISHING。如果 K1 门禁已经可靠清除，则统一恢复成
+     * WAITING_CONTINUATION，避免平台再次把会话解释为故障或普通出珠阶段。
      */
     private void recoverWaitingContinuationIfReady(Context context, String source) {
         DeviceCommandStore store = new DeviceCommandStore(context);
@@ -219,7 +226,7 @@ public final class RefillStateReceiver extends BroadcastReceiver {
                 }
                 OccupancySnapshot occupancy = loadOccupancy(db);
                 if (occupancy == null
-                        || !PHASE_BLOCKED.equals(occupancy.phase)
+                        || !isRecoverableOccupancyPhase(occupancy.phase)
                         || !active.messageId.equals(occupancy.sourceMessageId)
                         || hasResolutionStarted(db, occupancy.operationNo)) {
                     return;
@@ -242,8 +249,13 @@ public final class RefillStateReceiver extends BroadcastReceiver {
                 changed = db.update(
                         TABLE_OCCUPANCY,
                         values,
-                        "id=1 AND source_message_id=? AND phase=?",
-                        new String[]{active.messageId, PHASE_BLOCKED}
+                        "id=1 AND source_message_id=? AND phase IN (?,?,?)",
+                        new String[]{
+                                active.messageId,
+                                PHASE_BLOCKED,
+                                PHASE_WAITING_DISPENSE,
+                                PHASE_FINISHING
+                        }
                 ) == 1;
                 if (changed) {
                     db.setTransactionSuccessful();
@@ -264,8 +276,9 @@ public final class RefillStateReceiver extends BroadcastReceiver {
     }
 
     /**
-     * 人工结案成功会先删除 active_physical_order，再广播 idle。原占用此前已从 BLOCKED
-     * 转成 WAITING_CONTINUATION，因此这里补充释放该行，保持与原 BLOCKED 释放路径一致。
+     * 人工结案成功会先删除 active_physical_order，再广播 idle。等待继续状态可能被扫码
+     * 订单轮询短暂改成 WAITING_DISPENSE/FINISHING，因此仅在同一 operationNo 已存在
+     * 成功人工结案记录时释放这些可识别阶段，避免迟到广播误删后续新交易。
      */
     private void releaseWaitingContinuationAfterResolution(Context context) {
         DeviceCommandStore store = new DeviceCommandStore(context);
@@ -279,13 +292,14 @@ public final class RefillStateReceiver extends BroadcastReceiver {
                 }
                 OccupancySnapshot occupancy = loadOccupancy(db);
                 if (occupancy == null
-                        || !PHASE_WAITING_CONTINUATION.equals(occupancy.phase)) {
+                        || !isResolutionReleasePhase(occupancy.phase)
+                        || !hasSuccessfulResolution(db, occupancy.operationNo)) {
                     return;
                 }
                 if (db.delete(
                         TABLE_OCCUPANCY,
-                        "id=1 AND session_id=? AND phase=?",
-                        new String[]{occupancy.sessionId, PHASE_WAITING_CONTINUATION}
+                        "id=1 AND session_id=?",
+                        new String[]{occupancy.sessionId}
                 ) != 1) {
                     return;
                 }
@@ -334,6 +348,18 @@ public final class RefillStateReceiver extends BroadcastReceiver {
                 || resultCode == CONTROLLER_SENSOR_TIMEOUT)
                 && actualQuantity > 0
                 && requestedQuantity > actualQuantity;
+    }
+
+    static boolean isRecoverableOccupancyPhase(String phase) {
+        return PHASE_BLOCKED.equals(phase)
+                || PHASE_WAITING_DISPENSE.equals(phase)
+                || PHASE_FINISHING.equals(phase);
+    }
+
+    private static boolean isResolutionReleasePhase(String phase) {
+        return PHASE_WAITING_CONTINUATION.equals(phase)
+                || PHASE_WAITING_DISPENSE.equals(phase)
+                || PHASE_FINISHING.equals(phase);
     }
 
     private static ActiveSnapshot loadBlockedActive(SQLiteDatabase db) {
@@ -438,6 +464,26 @@ public final class RefillStateReceiver extends BroadcastReceiver {
         }
     }
 
+    private static boolean hasSuccessfulResolution(SQLiteDatabase db, String operationNo) {
+        if (blank(operationNo)) {
+            return false;
+        }
+        try (Cursor cursor = db.query(
+                TABLE_RESOLUTIONS,
+                new String[]{"operation_no"},
+                "operation_no=? AND outcome_success=1",
+                new String[]{operationNo},
+                null,
+                null,
+                "updated_at DESC",
+                "1"
+        )) {
+            return cursor.moveToFirst();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private static boolean hasActivePhysicalOrder(SQLiteDatabase db) {
         try (Cursor cursor = db.query(
                 "active_physical_order",
@@ -518,17 +564,6 @@ public final class RefillStateReceiver extends BroadcastReceiver {
         intent.putExtra(TransactionOccupancyManager.EXTRA_BLOCKED_REASON, "");
         intent.putExtra(TransactionOccupancyManager.EXTRA_MESSAGE, "设备空闲");
         context.sendBroadcast(intent);
-    }
-
-    private static JSONObject parseObject(String value) {
-        if (blank(value)) {
-            return null;
-        }
-        try {
-            return new JSONObject(value);
-        } catch (Throwable ignored) {
-            return null;
-        }
     }
 
     private static boolean blank(String value) {
