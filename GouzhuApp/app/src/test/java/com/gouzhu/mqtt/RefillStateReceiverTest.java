@@ -29,4 +29,13 @@ public final class RefillStateReceiverTest {
         assertFalse(RefillStateReceiver.isContinuableStockInsufficiency(4, 10, 10));
         assertFalse(RefillStateReceiver.isContinuableStockInsufficiency(3, 3, 10));
     }
+
+    @Test
+    public void blockedAndPaymentPollingPhases_canRecoverWaitingContinuation() {
+        assertTrue(RefillStateReceiver.isRecoverableOccupancyPhase("BLOCKED"));
+        assertTrue(RefillStateReceiver.isRecoverableOccupancyPhase("WAITING_DISPENSE"));
+        assertTrue(RefillStateReceiver.isRecoverableOccupancyPhase("FINISHING"));
+        assertFalse(RefillStateReceiver.isRecoverableOccupancyPhase("DISPENSING"));
+        assertFalse(RefillStateReceiver.isRecoverableOccupancyPhase("WAITING_CONTINUATION"));
+    }
 }
