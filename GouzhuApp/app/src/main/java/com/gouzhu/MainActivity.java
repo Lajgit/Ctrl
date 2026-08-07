@@ -340,7 +340,7 @@ public class MainActivity extends AppCompatActivity {
                 button.setVisibility(View.GONE);
             }
         }
-        paymentStatusText.setText(R.string.payment_select_package);
+        paymentStatusText.setText("");
         applyTransactionOccupancy();
     }
 
@@ -411,7 +411,7 @@ public class MainActivity extends AppCompatActivity {
                 selectedOption.quantity,
                 selectedOption.priceFen / 100.0
         ));
-        paymentStatusText.setText(R.string.payment_ready);
+        paymentStatusText.setText("");
         paymentQrImage.setImageDrawable(null);
         paymentQrImage.setVisibility(View.GONE);
         paymentButton.setEnabled(true);
