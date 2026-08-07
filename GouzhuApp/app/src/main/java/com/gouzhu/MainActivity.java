@@ -210,7 +210,12 @@ public class MainActivity extends AppCompatActivity {
     private void bindActions() {
         for (int index = 0; index < packageButtons.length; index++) {
             final int optionIndex = index;
-            packageButtons[index].setOnClickListener(view -> selectPackage(optionIndex));
+            packageButtons[index].setOnClickListener(view -> {
+                selectPackage(optionIndex);
+                if (paymentButton.isEnabled()) {
+                    startPayment();
+                }
+            });
         }
 
         paymentButton.setOnClickListener(view -> startPayment());
