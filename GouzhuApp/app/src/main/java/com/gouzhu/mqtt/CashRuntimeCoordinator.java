@@ -94,46 +94,32 @@ public final class CashRuntimeCoordinator {
     public void onMqttStatusChanged(String statusText) {
         boolean connected = MqttManager.get(context).isConnected();
         mqttOnline = connected;
-        lastRequestedMask = -1;
-        lastRequestedVersion = -1L;
-
-        if (!connected) {
-            bootstrapKnown = false;
-            bootstrapAvailable = false;
-            unavailableReason = "MQTT未连接";
-            reconcile("mqtt_offline:" + safe(statusText));
-            return;
+        invalidateRuntimeAvailability(
+                connected
+                        ? "MQTT已连接，等待bootstrap刷新"
+                        : "MQTT未连接"
+        );
+        reconcile(connected
+                ? "mqtt_online_wait_bootstrap"
+                : "mqtt_offline:" + safe(statusText));
+        if (connected) {
+            refreshBootstrap("mqtt_online");
         }
-
-        // 即使断线前缓存为 true，重连后也必须先关闭现金，再等待新的 bootstrap。
-        bootstrapKnown = false;
-        bootstrapAvailable = false;
-        unavailableReason = "MQTT已连接，等待bootstrap刷新";
-        reconcile("mqtt_online_wait_bootstrap");
-        refreshBootstrap("mqtt_online");
     }
 
     /** 新现金配置开始处理时，旧 bootstrap 版本事实立即失效，现金保持关闭。 */
     public void onConfigurationPending(long configVersion) {
         setConfigurationSafe(false);
-        bootstrapKnown = false;
-        bootstrapAvailable = false;
-        unavailableReason = "现金配置版本正在应用：" + configVersion;
-        lastRequestedMask = -1;
-        lastRequestedVersion = -1L;
+        invalidateRuntimeAvailability("现金配置版本正在应用：" + configVersion);
         reconcile("cash_config_pending");
     }
 
     /** 配置形成终态后重新请求 bootstrap，由服务端版本一致性决定能否重新营业。 */
     public void onConfigurationTerminal(long configVersion, boolean success) {
         setConfigurationSafe(success);
-        bootstrapKnown = false;
-        bootstrapAvailable = false;
-        unavailableReason = success
+        invalidateRuntimeAvailability(success
                 ? "现金配置已应用，等待服务端确认版本"
-                : "现金配置应用失败";
-        lastRequestedMask = -1;
-        lastRequestedVersion = -1L;
+                : "现金配置应用失败");
         reconcile("cash_config_terminal:" + configVersion + ":" + success);
         if (mqttOnline && MqttManager.get(context).isConnected()) {
             executor.schedule(
@@ -144,8 +130,21 @@ public final class CashRuntimeCoordinator {
         }
     }
 
+    /**
+     * 一旦任意扫码、现金、存珠或物理出珠占用成立，先作废占用前的 available=true。
+     * 这样旧恢复路径即使在交易结束的窄窗口被调用，也不能使用交易前 bootstrap 重开现金。
+     */
+    public void onTransactionOccupied(String ownerType, String phase) {
+        invalidateRuntimeAvailability(
+                "设备存在交易占用：" + safe(ownerType) + "/" + safe(phase)
+        );
+        reconcile("transaction_occupied");
+    }
+
     /** 交易释放后先尝试处理延迟配置，再重新读取 bootstrap，最后恢复现金。 */
     public void onTransactionIdle() {
+        invalidateRuntimeAvailability("交易已释放，等待bootstrap重新确认");
+        reconcile("transaction_idle_wait_bootstrap");
         executor.execute(() -> {
             try {
                 DeviceCommandManager.get(context).resumeDeferredCashConfiguration();
@@ -155,19 +154,42 @@ public final class CashRuntimeCoordinator {
         });
         if (mqttOnline && MqttManager.get(context).isConnected()) {
             refreshBootstrap("transaction_idle");
-        } else {
-            reconcile("transaction_idle_offline");
         }
     }
 
-    /** 控制板重连后旧的已请求掩码不再可信，需要重新协调。 */
+    /** 控制板连接状态变化后，旧 bootstrap 与旧硬件掩码都不再视为可复用。 */
+    public void onBoardConnectionChanged(boolean connected) {
+        invalidateRuntimeAvailability(
+                connected ? "控制板已重连，等待状态确认" : "控制板连接已断开"
+        );
+        reconcile(connected ? "board_connected_wait_state" : "board_disconnected");
+    }
+
+    /** 控制板重连并留出版本状态恢复时间后，重新请求服务端当前运行状态。 */
     public void onBoardRecovered() {
-        lastRequestedMask = -1;
-        lastRequestedVersion = -1L;
+        invalidateRuntimeAvailability("控制板已恢复，等待bootstrap重新确认");
+        reconcile("board_recovered_wait_bootstrap");
         if (mqttOnline && MqttManager.get(context).isConnected()) {
             refreshBootstrap("board_recovered");
-        } else {
-            reconcile("board_recovered_offline");
+        }
+    }
+
+    /**
+     * 本地库存 0、补珠或库存数变化都可能改变服务端库存门控。先关闭现金并作废缓存，
+     * 再刷新 bootstrap；若 Account 域尚未完成更新，周期刷新会继续保持故障关闭直至可用。
+     */
+    public void onInventoryChanged(int eventCode, long reportedStock) {
+        invalidateRuntimeAvailability(
+                "库存状态变化：code=0x" + Integer.toHexString(eventCode)
+                        + "，stock=" + reportedStock
+        );
+        reconcile("inventory_changed");
+        if (mqttOnline && MqttManager.get(context).isConnected()) {
+            executor.schedule(
+                    () -> refreshBootstrap("inventory_changed"),
+                    700L,
+                    TimeUnit.MILLISECONDS
+            );
         }
     }
 
@@ -353,6 +375,14 @@ public final class CashRuntimeCoordinator {
             Log.e(TAG, "读取本地现金配置快照失败，保持现金关闭", error);
             return 0;
         }
+    }
+
+    private void invalidateRuntimeAvailability(String reason) {
+        bootstrapKnown = false;
+        bootstrapAvailable = false;
+        unavailableReason = safe(reason);
+        lastRequestedMask = -1;
+        lastRequestedVersion = -1L;
     }
 
     private void setConfigurationSafe(boolean safe) {
