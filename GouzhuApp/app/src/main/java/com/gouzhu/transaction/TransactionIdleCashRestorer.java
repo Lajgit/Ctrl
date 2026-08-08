@@ -15,7 +15,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 交易释放和控制板恢复后的现金运行状态触发器。
+ * 交易占用、交易释放和控制板连接变化后的现金运行状态触发器。
  *
  * <p>不再直接恢复旧现金掩码。所有恢复必须先经过 CashRuntimeCoordinator，重新确认
  * MQTT、bootstrap cashSale.available、交易占用和控制板状态，再决定是否允许收现。</p>
@@ -44,19 +44,24 @@ public final class TransactionIdleCashRestorer {
                 String phase = intent.getStringExtra(
                         TransactionOccupancyManager.EXTRA_PHASE
                 );
-                if (!"NONE".equals(owner) || !"IDLE".equals(phase)) {
-                    return;
+                if ("NONE".equals(owner) && "IDLE".equals(phase)) {
+                    scheduleTransactionIdle(150L);
+                } else {
+                    // 交易开始/阶段变化后立即废弃交易前的available=true，防止迟到恢复重开现金。
+                    CashRuntimeCoordinator.get(context).onTransactionOccupied(owner, phase);
                 }
-                scheduleTransactionIdle(150L);
                 return;
             }
-            if (AppConfig.ACTION_BOARD_CONNECTION_CHANGED.equals(intent.getAction())
-                    && intent.getBooleanExtra(
-                    BoardConnectionMonitor.EXTRA_CONNECTED,
-                    false
-            )) {
-                // 等控制板版本和硬件状态帧先完成，再重新计算当前现金目标状态。
-                scheduleBoardRecovered(1500L);
+            if (AppConfig.ACTION_BOARD_CONNECTION_CHANGED.equals(intent.getAction())) {
+                boolean connected = intent.getBooleanExtra(
+                        BoardConnectionMonitor.EXTRA_CONNECTED,
+                        false
+                );
+                CashRuntimeCoordinator.get(context).onBoardConnectionChanged(connected);
+                if (connected) {
+                    // 等控制板版本和硬件状态帧先完成，再刷新服务端运行状态。
+                    scheduleBoardRecovered(1500L);
+                }
             }
         }
     };
