@@ -309,6 +309,8 @@ public final class MqttManager implements MqttTransport {
             heartbeatTask = null;
         }
         closeOldClient();
+        // 主动关闭连接与异常断线采用同一运行门控，避免服务退出时现金输入仍保持开启。
+        broadcastStatus("mqtt", "MQTT连接已断开");
     }
 
     @Override
