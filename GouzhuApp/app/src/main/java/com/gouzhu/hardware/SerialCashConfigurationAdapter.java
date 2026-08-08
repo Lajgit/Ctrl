@@ -138,15 +138,21 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
     }
 
     /**
-     * SDK 兼容入口只用于已有配置的恢复。运行条件不允许时只保持现金关闭，
-     * 不把“交易占用/bootstrap不可用”误报成现金配置应用故障。
+     * SDK 兼容入口只用于已有配置的运行恢复。旧恢复链不能再产生
+     * CASH_CONFIGURATION_REAPPLY_FAILED；配置损坏或运行条件暂不可用时都保守关闭，
+     * 真正的新配置校验/应用失败只由 applyConfiguration 返回 rejected。
      */
     @Override
     public CashConfigurationResult apply(long configVersion, List<CashTier> tiers) {
         CashConfigurationResult validation = validateConfiguration(configVersion, tiers);
         if (validation != null) {
             disableCashAcceptance();
-            return validation;
+            Log.w(
+                    TAG,
+                    "本地已应用现金快照无法用于运行恢复，保持关闭：configVersion="
+                            + configVersion + "，message=" + validation.getMessage()
+            );
+            return CashConfigurationResult.applied();
         }
         int mask = buildMask(tiers);
         if (!CashRuntimeCoordinator.get(context).isCashAcceptanceAllowed()) {
@@ -164,7 +170,6 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
         if (result != null && result.isApplied()) {
             return result;
         }
-        // 旧恢复链不再上报 CASH_CONFIGURATION_REAPPLY_FAILED；真实硬件故障由组件状态上报。
         disableCashAcceptance();
         Log.w(
                 TAG,
