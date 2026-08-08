@@ -95,8 +95,8 @@
             android:foregroundServiceType="dataSync" />
 
         <!--
-            仅接收本应用内部的MQTT状态广播。收到已连接/已重连后打印明确日志，
-            并重新读取bootstrap确认服务端在线状态。
+            仅接收本应用内部的MQTT状态广播。MQTT断线立即关闭现金；重连后先保持关闭，
+            等首次心跳/状态上报后的bootstrap重新确认cashSale.available。
         -->
         <receiver
             android:name=".mqtt.MqttOnlineStatusReceiver"
@@ -104,6 +104,19 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.gouzhu.action.SERVICE_STATUS" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            库存为0、库存数变化或K1补珠后作废旧cashSale.available并重新请求bootstrap。
+            这里只更新现金运行门控，不修改MQTT现金配置版本或档位。
+        -->
+        <receiver
+            android:name=".mqtt.CashInventoryRuntimeReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.gouzhu.action.BOARD_EVENT" />
             </intent-filter>
         </receiver>
 
