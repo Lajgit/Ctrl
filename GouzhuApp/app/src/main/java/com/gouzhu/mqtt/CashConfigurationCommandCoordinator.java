@@ -295,11 +295,18 @@ final class CashConfigurationCommandCoordinator {
                 ack.resultStatus,
                 ack.payload
         )) {
+            String failureMessage = "现金配置pending/ACK无法可靠保存";
             ledger.markVersionTerminal(
                     incomingVersion,
                     false,
                     "LOCAL_STORAGE_ERROR",
-                    "现金配置pending/ACK无法可靠保存"
+                    failureMessage
+            );
+            publishVersionTerminals(
+                    incomingVersion,
+                    false,
+                    "LOCAL_STORAGE_ERROR",
+                    failureMessage
             );
             CashRuntimeCoordinator.get(context).onConfigurationTerminal(
                     incomingVersion,
@@ -436,6 +443,16 @@ final class CashConfigurationCommandCoordinator {
                     record,
                     "CASH_CONFIGURATION_INVALID",
                     "现金配置执行前重新解码失败：" + messageOf(error)
+            );
+            return;
+        }
+
+        if (config.isCashAcceptanceEnabled()
+                && store.getBoardVersion() < MIN_CONTROLLER_PROTOCOL_VERSION) {
+            finishVersionFailure(
+                    record,
+                    "CONTROLLER_PROTOCOL_UNSUPPORTED",
+                    "controller protocol 2.2.0.0 is required before enabling cash"
             );
             return;
         }
@@ -651,6 +668,13 @@ final class CashConfigurationCommandCoordinator {
                         resultMessage,
                         System.currentTimeMillis()
                 );
+
+                // 版本账本自身就是 durable 记录；先落账本，再补主 outbox。
+                ledger.saveTerminal(
+                        message.messageId,
+                        terminal.resultStatus,
+                        terminal.payload
+                );
                 if (!store.hasCommand(message.messageId)) {
                     store.saveCommand(decoded.envelope);
                 }
@@ -661,13 +685,7 @@ final class CashConfigurationCommandCoordinator {
                         terminal.payload
                 )) {
                     Log.e(TAG, "现金配置终态outbox保存失败：messageId=" + message.messageId);
-                    continue;
                 }
-                ledger.saveTerminal(
-                        message.messageId,
-                        terminal.resultStatus,
-                        terminal.payload
-                );
                 MqttManager.get(context).reportCommandResult(terminal.payload);
             } catch (Throwable error) {
                 Log.e(TAG, "生成现金配置终态失败：messageId=" + message.messageId, error);
@@ -845,11 +863,27 @@ final class CashConfigurationCommandCoordinator {
     }
 
     private void replaySavedMessage(MessageRecord message) {
-        if (!blank(message.ackPayload)) {
-            MqttManager.get(context).reportCommandResult(message.ackPayload);
+        MessageRecord current = message;
+        if (blank(current.terminalPayload)) {
+            VersionRecord version = ledger.findVersion(current.configVersion);
+            if (version != null && version.isTerminal()) {
+                publishVersionTerminals(
+                        version.configVersion,
+                        version.success,
+                        version.resultCode,
+                        version.resultMessage
+                );
+                MessageRecord refreshed = ledger.findMessage(current.messageId);
+                if (refreshed != null) {
+                    current = refreshed;
+                }
+            }
         }
-        if (!blank(message.terminalPayload)) {
-            MqttManager.get(context).reportCommandResult(message.terminalPayload);
+        if (!blank(current.ackPayload)) {
+            MqttManager.get(context).reportCommandResult(current.ackPayload);
+        }
+        if (!blank(current.terminalPayload)) {
+            MqttManager.get(context).reportCommandResult(current.terminalPayload);
         }
     }
 
@@ -871,9 +905,76 @@ final class CashConfigurationCommandCoordinator {
             return;
         }
 
-        // APP 重启后不能猜测旧 pending 的硬件应用结果，全部收敛为失败并保持现金关闭。
-        store.clearPendingCashConfiguration((String) null);
         for (VersionRecord version : interrupted) {
+            DeviceCommandStore.OutboxItem storedTerminal =
+                    findStoredTerminal(version.primaryMessageId);
+            boolean appliedPointer = store.getCashConfigVersion() == version.configVersion;
+
+            if ((storedTerminal != null
+                    && "success".equals(storedTerminal.resultStatus))
+                    || (storedTerminal == null && appliedPointer)) {
+                ledger.markVersionTerminal(
+                        version.configVersion,
+                        true,
+                        "CASH_CONFIGURATION_APPLIED",
+                        "cash configuration applied"
+                );
+                if (storedTerminal != null) {
+                    ledger.saveTerminal(
+                            version.primaryMessageId,
+                            storedTerminal.resultStatus,
+                            storedTerminal.payload
+                    );
+                }
+                publishVersionTerminals(
+                        version.configVersion,
+                        true,
+                        "CASH_CONFIGURATION_APPLIED",
+                        "cash configuration applied"
+                );
+                CashRuntimeCoordinator.get(context).onConfigurationTerminal(
+                        version.configVersion,
+                        true
+                );
+                continue;
+            }
+
+            if (storedTerminal != null
+                    && "failed".equals(storedTerminal.resultStatus)) {
+                String code = resultCodeFromPayload(
+                        storedTerminal.payload,
+                        "CASH_CONFIGURATION_INTERRUPTED"
+                );
+                String message = resultMessageFromPayload(
+                        storedTerminal.payload,
+                        "cash configuration was interrupted by app restart"
+                );
+                ledger.markVersionTerminal(
+                        version.configVersion,
+                        false,
+                        code,
+                        message
+                );
+                ledger.saveTerminal(
+                        version.primaryMessageId,
+                        storedTerminal.resultStatus,
+                        storedTerminal.payload
+                );
+                publishVersionTerminals(
+                        version.configVersion,
+                        false,
+                        code,
+                        message
+                );
+                CashRuntimeCoordinator.get(context).onConfigurationTerminal(
+                        version.configVersion,
+                        false
+                );
+                continue;
+            }
+
+            // 没有可靠终态证据时不能猜测控制板已经成功应用。
+            store.clearPendingCashConfiguration(version.primaryMessageId);
             ledger.markVersionTerminal(
                     version.configVersion,
                     false,
@@ -890,6 +991,34 @@ final class CashConfigurationCommandCoordinator {
                     version.configVersion,
                     false
             );
+        }
+    }
+
+    private static String resultCodeFromPayload(String payload, String fallback) {
+        try {
+            JSONObject json = new JSONObject(safe(payload));
+            String value = json.optString("resultCode", "");
+            if (blank(value)) {
+                JSONObject data = json.optJSONObject("data");
+                value = data == null ? "" : data.optString("resultCode", "");
+            }
+            return blank(value) ? fallback : value;
+        } catch (Throwable ignored) {
+            return fallback;
+        }
+    }
+
+    private static String resultMessageFromPayload(String payload, String fallback) {
+        try {
+            JSONObject json = new JSONObject(safe(payload));
+            String value = json.optString("resultMessage", "");
+            if (blank(value)) {
+                JSONObject data = json.optJSONObject("data");
+                value = data == null ? "" : data.optString("resultMessage", "");
+            }
+            return blank(value) ? fallback : value;
+        } catch (Throwable ignored) {
+            return fallback;
         }
     }
 
