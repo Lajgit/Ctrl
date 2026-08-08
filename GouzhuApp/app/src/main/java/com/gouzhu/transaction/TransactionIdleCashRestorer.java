@@ -7,6 +7,7 @@ import android.content.IntentFilter;
 import android.os.Build;
 
 import com.gouzhu.AppConfig;
+import com.gouzhu.mqtt.CashRuntimeCoordinator;
 import com.gouzhu.serial.BoardConnectionMonitor;
 
 import java.util.concurrent.Executors;
@@ -14,18 +15,14 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Restores the configured cash mask after the global transaction lock becomes idle or after the
- * controller link has recovered.
+ * 交易释放和控制板恢复后的现金运行状态触发器。
  *
- * <p>The physical runtime broadcasts dispense completion before its legacy cash reapply call.
- * Broadcast delivery is asynchronous, so that legacy call can still see the old occupancy and
- * be rejected by the safety gate. This receiver runs after the persisted occupancy row has been
- * deleted and closes that ordering gap. Reapplying the same mask/version is idempotent.</p>
+ * <p>不再直接恢复旧现金掩码。所有恢复必须先经过 CashRuntimeCoordinator，重新确认
+ * MQTT、bootstrap cashSale.available、交易占用和控制板状态，再决定是否允许收现。</p>
  */
 public final class TransactionIdleCashRestorer {
 
     private final Context context;
-    private final TransactionOccupancyManager occupancy;
     private final ScheduledExecutorService executor =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "gouzhu-idle-cash-restore");
@@ -50,7 +47,7 @@ public final class TransactionIdleCashRestorer {
                 if (!"NONE".equals(owner) || !"IDLE".equals(phase)) {
                     return;
                 }
-                scheduleRestore(150L);
+                scheduleTransactionIdle(150L);
                 return;
             }
             if (AppConfig.ACTION_BOARD_CONNECTION_CHANGED.equals(intent.getAction())
@@ -58,16 +55,14 @@ public final class TransactionIdleCashRestorer {
                     BoardConnectionMonitor.EXTRA_CONNECTED,
                     false
             )) {
-                // BoardConnectionMonitor requests version once on recovery. Allow that reply and
-                // the hardware-status events to be processed before restoring the configured mask.
-                scheduleRestore(1500L);
+                // 等控制板版本和硬件状态帧先完成，再重新计算当前现金目标状态。
+                scheduleBoardRecovered(1500L);
             }
         }
     };
 
     public TransactionIdleCashRestorer(Context context) {
         this.context = context.getApplicationContext();
-        this.occupancy = TransactionOccupancyManager.get(this.context);
     }
 
     public synchronized void start() {
@@ -87,6 +82,7 @@ public final class TransactionIdleCashRestorer {
             context.registerReceiver(receiver, filter);
         }
         registered = true;
+        CashRuntimeCoordinator.get(context).reconcile("idle_cash_restorer_started");
     }
 
     public synchronized void stop() {
@@ -98,13 +94,20 @@ public final class TransactionIdleCashRestorer {
         } catch (Throwable ignored) {
         }
         registered = false;
-        // Keep the daemon executor alive because DeviceCommandManager is a process singleton
-        // and the service can stop/start again without recreating this object.
+        // DeviceCommandManager 是进程单例，保留 daemon executor 供服务重启后继续使用。
     }
 
-    private void scheduleRestore(long delayMs) {
+    private void scheduleTransactionIdle(long delayMs) {
         executor.schedule(
-                occupancy::restoreCashAcceptanceIfSafe,
+                () -> CashRuntimeCoordinator.get(context).onTransactionIdle(),
+                Math.max(0L, delayMs),
+                TimeUnit.MILLISECONDS
+        );
+    }
+
+    private void scheduleBoardRecovered(long delayMs) {
+        executor.schedule(
+                () -> CashRuntimeCoordinator.get(context).onBoardRecovered(),
                 Math.max(0L, delayMs),
                 TimeUnit.MILLISECONDS
         );
