@@ -5,6 +5,7 @@ import android.database.Cursor;
 
 import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.serial.BoardConnectionMonitor;
+import com.gouzhu.transaction.CashTransactionIsolation;
 import com.gouzhu.transaction.TransactionIdleCashRestorer;
 import com.gouzhu.transaction.TransactionOccupancyManager;
 
@@ -180,6 +181,22 @@ public final class DeviceCommandManager {
             return;
         }
 
+        // 获得物理出珠占用后，必须等控制板明确确认现金掩码=0，才能启动出珠硬件。
+        if (reservation.current == null
+                || !CashTransactionIsolation.confirmDisabled(
+                context,
+                reservation.current.sessionId
+        )) {
+            occupancy.rollbackDispense(reservation);
+            rejectCommand(
+                    topic,
+                    payload,
+                    "CASH_ISOLATION_FAILED",
+                    "cash hardware could not be confirmed disabled before dispensing"
+            );
+            return;
+        }
+
         runtime.handleCommand(topic, payload);
         DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
         if (active != null && messageId.equals(active.messageId)) {
@@ -190,6 +207,15 @@ public final class DeviceCommandManager {
     }
 
     public boolean startPendingCollection() {
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+        if (snapshot == null
+                || !TransactionOccupancyManager.OWNER_MEMBER_DEPOSIT.equals(snapshot.ownerType)) {
+            return false;
+        }
+        // 存珠电机启动前同样要求控制板确认纸钞机/硬币器已经停止接收现金。
+        if (!CashTransactionIsolation.confirmDisabled(context, snapshot.sessionId)) {
+            return false;
+        }
         return collectionManager.startPendingCollection();
     }
 
