@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 现金运行状态协调器。
@@ -49,6 +50,7 @@ public final class CashRuntimeCoordinator {
                 return thread;
             });
     private final AtomicBoolean bootstrapRefreshing = new AtomicBoolean(false);
+    private final AtomicLong runtimeEpoch = new AtomicLong(0L);
 
     private volatile boolean mqttOnline;
     private volatile boolean bootstrapKnown;
@@ -138,6 +140,7 @@ public final class CashRuntimeCoordinator {
      */
     public void onTransactionOccupied(String ownerType, String phase) {
         boolean needsHardwareClose = lastRequestedMask != 0;
+        runtimeEpoch.incrementAndGet();
         bootstrapKnown = false;
         bootstrapAvailable = false;
         unavailableReason = "设备存在交易占用："
@@ -247,17 +250,38 @@ public final class CashRuntimeCoordinator {
             return;
         }
 
+        final long requestEpoch = runtimeEpoch.get();
         DeviceSdkManager.get(context).refreshBootstrap(
                 new DeviceSdkManager.BootstrapCallback() {
                     @Override
                     public void onSuccess(DeviceAppBootstrapResult result) {
                         bootstrapRefreshing.set(false);
+                        if (requestEpoch != runtimeEpoch.get()) {
+                            Log.i(
+                                    TAG,
+                                    "忽略运行状态变化前发起的bootstrap响应：trigger="
+                                            + trigger + "，requestEpoch=" + requestEpoch
+                                            + "，currentEpoch=" + runtimeEpoch.get()
+                            );
+                            retryBootstrapAfterStaleResponse(trigger);
+                            return;
+                        }
                         applyBootstrap(result, trigger);
                     }
 
                     @Override
                     public void onFailure(Throwable error) {
                         bootstrapRefreshing.set(false);
+                        if (requestEpoch != runtimeEpoch.get()) {
+                            Log.i(
+                                    TAG,
+                                    "忽略运行状态变化前发起的bootstrap失败：trigger="
+                                            + trigger + "，requestEpoch=" + requestEpoch
+                                            + "，currentEpoch=" + runtimeEpoch.get()
+                            );
+                            retryBootstrapAfterStaleResponse(trigger);
+                            return;
+                        }
                         bootstrapKnown = false;
                         bootstrapAvailable = false;
                         unavailableReason = "bootstrap请求失败";
@@ -309,6 +333,20 @@ public final class CashRuntimeCoordinator {
             Log.e(TAG, "解析bootstrap.cashSale失败", error);
         }
         reconcile(trigger + ":bootstrap_updated");
+    }
+
+    private void retryBootstrapAfterStaleResponse(String trigger) {
+        if (!configurationSafe
+                || !mqttOnline
+                || !MqttManager.get(context).isConnected()
+                || !TransactionOccupancyManager.get(context).isIdle()) {
+            return;
+        }
+        executor.schedule(
+                () -> refreshBootstrap(trigger + ":stale_retry"),
+                100L,
+                TimeUnit.MILLISECONDS
+        );
     }
 
     private void reconcileInternal(String trigger) {
@@ -392,6 +430,7 @@ public final class CashRuntimeCoordinator {
     }
 
     private void invalidateRuntimeAvailability(String reason) {
+        runtimeEpoch.incrementAndGet();
         bootstrapKnown = false;
         bootstrapAvailable = false;
         unavailableReason = safe(reason);
