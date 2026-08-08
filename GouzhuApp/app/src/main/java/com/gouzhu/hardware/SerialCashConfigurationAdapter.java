@@ -138,45 +138,23 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
     }
 
     /**
-     * SDK 兼容入口只用于已有配置的运行恢复。旧恢复链不能再产生
-     * CASH_CONFIGURATION_REAPPLY_FAILED；配置损坏或运行条件暂不可用时都保守关闭，
-     * 真正的新配置校验/应用失败只由 applyConfiguration 返回 rejected。
+     * SDK 兼容入口只用于旧代码路径。旧路径不再拥有“打开现金”的权限：无论本地
+     * 配置是否完整，这里都只请求关闭并返回恢复完成。真正的非零掩码只能由
+     * CashRuntimeCoordinator 在拿到最新 bootstrap.available=true 后通过
+     * applyRuntimeMask 下发，从根上消除补珠/订单结束等迟到回调沿用旧 available=true
+     * 直接重开现金的竞态。
      */
     @Override
     public CashConfigurationResult apply(long configVersion, List<CashTier> tiers) {
         CashConfigurationResult validation = validateConfiguration(configVersion, tiers);
         if (validation != null) {
-            disableCashAcceptance();
             Log.w(
                     TAG,
                     "本地已应用现金快照无法用于运行恢复，保持关闭：configVersion="
                             + configVersion + "，message=" + validation.getMessage()
             );
-            return CashConfigurationResult.applied();
-        }
-        int mask = buildMask(tiers);
-        if (!CashRuntimeCoordinator.get(context).isCashAcceptanceAllowed()) {
-            disableCashAcceptance();
-            Log.i(
-                    TAG,
-                    "运行门控暂不允许现金接收，仅保持硬件关闭：configVersion="
-                            + configVersion + "，configuredMask=0x"
-                            + Integer.toHexString(mask)
-            );
-            return CashConfigurationResult.applied();
-        }
-
-        CashConfigurationResult result = applyMask(configVersion, mask);
-        if (result != null && result.isApplied()) {
-            return result;
         }
         disableCashAcceptance();
-        Log.w(
-                TAG,
-                "恢复现金运行状态失败，已保持关闭；不作为配置故障：configVersion="
-                        + configVersion + "，message="
-                        + (result == null ? "null" : result.getMessage())
-        );
         return CashConfigurationResult.applied();
     }
 
