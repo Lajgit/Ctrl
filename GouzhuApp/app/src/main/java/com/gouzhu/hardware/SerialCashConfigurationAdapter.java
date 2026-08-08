@@ -8,6 +8,7 @@ import android.os.Build;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
+import com.gouzhu.mqtt.CashRuntimeCoordinator;
 import com.gouzhu.serial.SerialManager;
 import com.gouzhu.transaction.TransactionOccupancyManager;
 import com.pinball.xiaoda.device.sdk.hardware.CashConfigurationAdapter;
@@ -24,6 +25,9 @@ import java.util.concurrent.TimeUnit;
  * <p>bit0控制纸钞机，bit1通过控制板PB13控制硬币器12V电源。
  * 目标掩码严格按完整cashSaleItems中的介质生成，控制板返回相同版本和
  * 实际掩码后才视为硬件应用成功。</p>
+ *
+ * <p>商家配置和当前运行可用状态是两个事实。任何非零现金掩码在真正发送前都必须
+ * 通过 CashRuntimeCoordinator 的 MQTT、bootstrap、交易占用和控制板运行门控。</p>
  */
 public final class SerialCashConfigurationAdapter implements CashConfigurationAdapter {
 
@@ -36,8 +40,10 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
     private static final int COIN_MASK = 2;
     private static final long APPLY_TIMEOUT_MS = 5_000L;
 
+    /** 所有适配器实例共用一个锁，避免配置应用与运行状态恢复交叉操作同一控制板。 */
+    private static final Object APPLY_LOCK = new Object();
+
     private final Context context;
-    private final Object applyLock = new Object();
 
     private volatile ApplyWaiter waiter;
     private volatile long lastAppliedConfigVersion = 1L;
@@ -131,55 +137,92 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
         Log.i(TAG, "现金配置适配器已停止");
     }
 
+    /**
+     * SDK 兼容入口只用于已有配置的恢复。运行条件不允许时只保持现金关闭，
+     * 不把“交易占用/bootstrap不可用”误报成现金配置应用故障。
+     */
     @Override
     public CashConfigurationResult apply(long configVersion, List<CashTier> tiers) {
-        if (configVersion <= 0L || configVersion > 0x00FFFFFFL) {
-            Log.e(TAG, "现金配置版本无效：configVersion=" + configVersion);
+        CashConfigurationResult validation = validateConfiguration(configVersion, tiers);
+        if (validation != null) {
             disableCashAcceptance();
+            return validation;
+        }
+        int mask = buildMask(tiers);
+        if (!CashRuntimeCoordinator.get(context).isCashAcceptanceAllowed()) {
+            disableCashAcceptance();
+            Log.i(
+                    TAG,
+                    "运行门控暂不允许现金接收，仅保持硬件关闭：configVersion="
+                            + configVersion + "，configuredMask=0x"
+                            + Integer.toHexString(mask)
+            );
+            return CashConfigurationResult.applied();
+        }
+
+        CashConfigurationResult result = applyMask(configVersion, mask);
+        if (result != null && result.isApplied()) {
+            return result;
+        }
+        // 旧恢复链不再上报 CASH_CONFIGURATION_REAPPLY_FAILED；真实硬件故障由组件状态上报。
+        disableCashAcceptance();
+        Log.w(
+                TAG,
+                "恢复现金运行状态失败，已保持关闭；不作为配置故障：configVersion="
+                        + configVersion + "，message="
+                        + (result == null ? "null" : result.getMessage())
+        );
+        return CashConfigurationResult.applied();
+    }
+
+    /**
+     * 新 MQTT 配置的严格应用入口。即使 bootstrap 当前不可用，也会把相同 configVersion
+     * 以 mask=0 写入并等待控制板确认；配置形成 success 后再由运行协调器刷新 bootstrap
+     * 并决定是否真正打开现金输入。
+     */
+    public CashConfigurationResult applyConfiguration(
+            long configVersion,
+            List<CashTier> tiers
+    ) {
+        CashConfigurationResult validation = validateConfiguration(configVersion, tiers);
+        if (validation != null) {
+            disableCashAcceptance();
+            return validation;
+        }
+        int configuredMask = buildMask(tiers);
+        boolean runtimeAllowed = CashRuntimeCoordinator.get(context).isCashAcceptanceAllowed();
+        int targetMask = runtimeAllowed ? configuredMask : 0;
+        Log.i(
+                TAG,
+                "严格应用现金配置：configVersion=" + configVersion
+                        + "，configuredMask=0x" + Integer.toHexString(configuredMask)
+                        + "，runtimeAllowed=" + runtimeAllowed
+                        + "，targetMask=0x" + Integer.toHexString(targetMask)
+        );
+        return applyMask(configVersion, targetMask);
+    }
+
+    public CashConfigurationResult applyConfigurationDisabled(long configVersion) {
+        if (configVersion <= 0L || configVersion > 0x00FFFFFFL) {
             return CashConfigurationResult.rejected("configVersion超出控制板24位范围");
         }
-        if (tiers == null || tiers.isEmpty()) {
-            Log.e(TAG, "cashAcceptanceEnabled=true但现金档位为空");
-            disableCashAcceptance();
-            return CashConfigurationResult.rejected("可用现金配置的档位不能为空");
-        }
+        return applyMask(configVersion, 0);
+    }
 
-        int mask = 0;
-        for (int index = 0; index < tiers.size(); index++) {
-            CashTier tier = tiers.get(index);
-            if (tier == null
-                    || tier.getDenominationAmount() <= 0
-                    || tier.getMarbleQuantity() <= 0
-                    || tier.getTierNo() == null
-                    || tier.getTierNo().trim().isEmpty()) {
-                Log.e(TAG, "现金档位不完整：index=" + index
-                        + "，tier=" + summarizeTier(tier));
-                disableCashAcceptance();
-                return CashConfigurationResult.rejected("现金档位不完整");
-            }
-            if ("banknote".equals(tier.getMediumType())) {
-                mask |= BANKNOTE_MASK;
-            } else if ("coin".equals(tier.getMediumType())) {
-                mask |= COIN_MASK;
-            } else {
-                Log.e(TAG, "现金介质不支持：index=" + index
-                        + "，mediumType=" + tier.getMediumType());
-                disableCashAcceptance();
-                return CashConfigurationResult.rejected("不支持的现金介质");
-            }
-            Log.d(TAG, "现金档位：index=" + index + "，" + summarizeTier(tier));
+    /** 运行协调器专用入口，只改变当前现金输入掩码，不改变本地商家配置事实。 */
+    public CashConfigurationResult applyRuntimeMask(long configVersion, int mask) {
+        if (configVersion <= 0L || configVersion > 0x00FFFFFFL) {
+            return CashConfigurationResult.rejected("configVersion超出控制板24位范围");
         }
-
-        Log.i(TAG, "开始应用现金配置：configVersion=" + configVersion
-                + "，tierCount=" + tiers.size()
-                + "，targetMask=0x" + Integer.toHexString(mask));
+        if ((mask & ~(BANKNOTE_MASK | COIN_MASK)) != 0 || mask < 0) {
+            return CashConfigurationResult.rejected("现金运行掩码无效");
+        }
         return applyMask(configVersion, mask);
     }
 
+    /** 保留旧调用名；新的配置处理器使用 applyConfigurationDisabled。 */
     public CashConfigurationResult applyDisabled(long configVersion) {
-        Log.i(TAG, "平台现金入口不可用，关闭纸钞机和硬币器：configVersion="
-                + configVersion);
-        return applyMask(configVersion, 0);
+        return applyConfigurationDisabled(configVersion);
     }
 
     public void markApplied(long configVersion) {
@@ -212,6 +255,52 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
         }
     }
 
+    private CashConfigurationResult validateConfiguration(
+            long configVersion,
+            List<CashTier> tiers
+    ) {
+        if (configVersion <= 0L || configVersion > 0x00FFFFFFL) {
+            Log.e(TAG, "现金配置版本无效：configVersion=" + configVersion);
+            return CashConfigurationResult.rejected("configVersion超出控制板24位范围");
+        }
+        if (tiers == null || tiers.isEmpty()) {
+            Log.e(TAG, "cashAcceptanceEnabled=true但现金档位为空");
+            return CashConfigurationResult.rejected("可用现金配置的档位不能为空");
+        }
+        for (int index = 0; index < tiers.size(); index++) {
+            CashTier tier = tiers.get(index);
+            if (tier == null
+                    || tier.getDenominationAmount() <= 0
+                    || tier.getMarbleQuantity() <= 0
+                    || tier.getTierNo() == null
+                    || tier.getTierNo().trim().isEmpty()) {
+                Log.e(TAG, "现金档位不完整：index=" + index
+                        + "，tier=" + summarizeTier(tier));
+                return CashConfigurationResult.rejected("现金档位不完整");
+            }
+            if (!"banknote".equals(tier.getMediumType())
+                    && !"coin".equals(tier.getMediumType())) {
+                Log.e(TAG, "现金介质不支持：index=" + index
+                        + "，mediumType=" + tier.getMediumType());
+                return CashConfigurationResult.rejected("不支持的现金介质");
+            }
+            Log.d(TAG, "现金档位：index=" + index + "，" + summarizeTier(tier));
+        }
+        return null;
+    }
+
+    private static int buildMask(List<CashTier> tiers) {
+        int mask = 0;
+        for (CashTier tier : tiers) {
+            if ("banknote".equals(tier.getMediumType())) {
+                mask |= BANKNOTE_MASK;
+            } else if ("coin".equals(tier.getMediumType())) {
+                mask |= COIN_MASK;
+            }
+        }
+        return mask;
+    }
+
     private CashConfigurationResult applyMask(long configVersion, int mask) {
         if (mask != 0 && !protocolV22Ready) {
             disableCashAcceptance();
@@ -221,7 +310,12 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
             disableCashAcceptance();
             return CashConfigurationResult.rejected("设备存在交易占用，禁止启用现金");
         }
-        synchronized (applyLock) {
+        if (mask != 0 && !CashRuntimeCoordinator.get(context).isCashAcceptanceAllowed()) {
+            disableCashAcceptance();
+            return CashConfigurationResult.rejected("当前运行状态不允许现金接收");
+        }
+
+        synchronized (APPLY_LOCK) {
             ApplyWaiter active = new ApplyWaiter();
             active.expectedMask = mask & 0xFF;
             active.expectedVersion = configVersion;
