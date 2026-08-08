@@ -4,7 +4,8 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
 
 import com.gouzhu.AppConfig;
 import com.gouzhu.mqtt.DeviceCommandStore;
@@ -46,6 +47,9 @@ public final class CashTransactionIsolation {
             int configVersion = Math.max(1, store.getCashConfigVersion());
             CountDownLatch latch = new CountDownLatch(1);
             boolean[] matched = new boolean[]{false};
+            HandlerThread receiverThread = new HandlerThread("gouzhu-cash-isolation-rx");
+            receiverThread.start();
+            Handler receiverHandler = new Handler(receiverThread.getLooper());
 
             BroadcastReceiver receiver = new BroadcastReceiver() {
                 @Override
@@ -67,16 +71,17 @@ public final class CashTransactionIsolation {
             };
 
             IntentFilter filter = new IntentFilter(AppConfig.ACTION_BOARD_EVENT);
+            boolean registered = false;
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    context.registerReceiver(
-                            receiver,
-                            filter,
-                            Context.RECEIVER_NOT_EXPORTED
-                    );
-                } else {
-                    context.registerReceiver(receiver, filter);
-                }
+                // minSdk=33，可直接使用带调度Handler和NOT_EXPORTED标志的注册方式。
+                context.registerReceiver(
+                        receiver,
+                        filter,
+                        null,
+                        receiverHandler,
+                        Context.RECEIVER_NOT_EXPORTED
+                );
+                registered = true;
 
                 if (!SerialManager.get(context).sendCommand(
                         CMD_CASH_APPLY_V22,
@@ -97,10 +102,13 @@ public final class CashTransactionIsolation {
             } catch (Throwable error) {
                 return false;
             } finally {
-                try {
-                    context.unregisterReceiver(receiver);
-                } catch (Throwable ignored) {
+                if (registered) {
+                    try {
+                        context.unregisterReceiver(receiver);
+                    } catch (Throwable ignored) {
+                    }
                 }
+                receiverThread.quitSafely();
             }
         }
     }
