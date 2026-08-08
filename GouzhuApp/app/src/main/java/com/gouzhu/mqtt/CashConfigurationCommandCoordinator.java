@@ -91,6 +91,9 @@ final class CashConfigurationCommandCoordinator {
     }
 
     synchronized void handleCommand(String topic, byte[] payload) {
+        if (!started) {
+            start();
+        }
         recoverInterruptedIfNeeded();
 
         final SdkCommandDecoder.DecodedCommand decoded;
@@ -202,15 +205,25 @@ final class CashConfigurationCommandCoordinator {
             }
 
             // 兼容升级前已经成功应用、但尚未写入新版本账本的配置。
-            if (store.getCashConfigVersion() == incomingVersion
-                    && canonical.equals(canonicalAppliedSnapshot())) {
-                replyTerminal(
-                        decoded,
-                        incomingVersion,
-                        true,
-                        "CASH_CONFIGURATION_APPLIED",
-                        "cash configuration already applied"
-                );
+            if (store.getCashConfigVersion() == incomingVersion) {
+                if (canonical.equals(canonicalAppliedSnapshot())) {
+                    replyTerminal(
+                            decoded,
+                            incomingVersion,
+                            true,
+                            "CASH_CONFIGURATION_APPLIED",
+                            "cash configuration already applied"
+                    );
+                } else {
+                    CashRuntimeCoordinator.get(context).onConfigurationPending(incomingVersion);
+                    rejectCurrent(
+                            decoded,
+                            incomingVersion,
+                            "CASH_CONFIGURATION_VERSION_CONFLICT",
+                            "现金配置同版本内容冲突",
+                            false
+                    );
+                }
                 return;
             }
 
@@ -307,6 +320,9 @@ final class CashConfigurationCommandCoordinator {
     }
 
     synchronized void resumeDeferredIfPossible() {
+        if (!started) {
+            return;
+        }
         recoverInterruptedIfNeeded();
         if (TransactionOccupancyManager.get(context).isIdle()) {
             ledger.moveDeferredToQueued();
@@ -494,8 +510,12 @@ final class CashConfigurationCommandCoordinator {
                 "CASH_CONFIGURATION_APPLIED",
                 "cash configuration applied"
         );
-        publishVersionTerminals(configVersion, true,
-                "CASH_CONFIGURATION_APPLIED", "cash configuration applied");
+        publishVersionTerminals(
+                configVersion,
+                true,
+                "CASH_CONFIGURATION_APPLIED",
+                "cash configuration applied"
+        );
         CashRuntimeCoordinator.get(context).onConfigurationTerminal(configVersion, true);
 
         synchronized (this) {
@@ -513,6 +533,7 @@ final class CashConfigurationCommandCoordinator {
         }
         cashAdapter.disableCashAcceptance();
 
+        boolean durablePrimaryTerminal = false;
         MessageRecord primaryMessage = ledger.findMessage(record.primaryMessageId);
         if (primaryMessage != null) {
             try {
@@ -529,7 +550,7 @@ final class CashConfigurationCommandCoordinator {
                         safe(resultMessage),
                         System.currentTimeMillis()
                 );
-                store.failCashConfigurationAndResult(
+                durablePrimaryTerminal = store.failCashConfigurationAndResult(
                         decoded.envelope,
                         terminal.sourceMessageId,
                         terminal.eventNo,
@@ -537,11 +558,33 @@ final class CashConfigurationCommandCoordinator {
                         terminal.payload,
                         true
                 );
+                if (!durablePrimaryTerminal) {
+                    // 即使旧 pending 事务损坏，也至少把终态放入 durable outbox。
+                    if (!store.hasCommand(record.primaryMessageId)) {
+                        store.saveCommand(decoded.envelope);
+                    }
+                    durablePrimaryTerminal = store.saveCommandResult(
+                            terminal.sourceMessageId,
+                            terminal.eventNo,
+                            terminal.resultStatus,
+                            terminal.payload
+                    );
+                    store.clearPendingCashConfiguration(record.primaryMessageId);
+                }
             } catch (Throwable error) {
                 Log.e(TAG, "保存现金配置失败终态异常", error);
             }
         } else {
             store.clearPendingCashConfiguration(record.primaryMessageId);
+        }
+
+        if (!durablePrimaryTerminal) {
+            MqttManager.get(context).reportFault(
+                    "LOCAL_STORAGE_ERROR",
+                    "cash configuration failed terminal could not be saved",
+                    3,
+                    "messageId=" + record.primaryMessageId
+            );
         }
 
         ledger.markVersionTerminal(
@@ -572,11 +615,28 @@ final class CashConfigurationCommandCoordinator {
             String resultCode,
             String resultMessage
     ) {
+        VersionRecord version = ledger.findVersion(configVersion);
+        if (version == null) {
+            return;
+        }
+
         for (MessageRecord message : ledger.listMessages(configVersion)) {
             if (!blank(message.terminalPayload)) {
                 MqttManager.get(context).reportCommandResult(message.terminalPayload);
                 continue;
             }
+
+            DeviceCommandStore.OutboxItem storedTerminal = findStoredTerminal(message.messageId);
+            if (storedTerminal != null) {
+                ledger.saveTerminal(
+                        message.messageId,
+                        storedTerminal.resultStatus,
+                        storedTerminal.payload
+                );
+                MqttManager.get(context).reportCommandResult(storedTerminal.payload);
+                continue;
+            }
+
             try {
                 SdkCommandDecoder.DecodedCommand decoded = decoder.decode(
                         message.topic,
@@ -591,15 +651,17 @@ final class CashConfigurationCommandCoordinator {
                         resultMessage,
                         System.currentTimeMillis()
                 );
-                if (!message.messageId.equals(
-                        ledger.findVersion(configVersion).primaryMessageId)) {
+                if (!store.hasCommand(message.messageId)) {
                     store.saveCommand(decoded.envelope);
-                    store.saveCommandResult(
-                            terminal.sourceMessageId,
-                            terminal.eventNo,
-                            terminal.resultStatus,
-                            terminal.payload
-                    );
+                }
+                if (!store.saveCommandResult(
+                        terminal.sourceMessageId,
+                        terminal.eventNo,
+                        terminal.resultStatus,
+                        terminal.payload
+                )) {
+                    Log.e(TAG, "现金配置终态outbox保存失败：messageId=" + message.messageId);
+                    continue;
                 }
                 ledger.saveTerminal(
                         message.messageId,
@@ -608,9 +670,20 @@ final class CashConfigurationCommandCoordinator {
                 );
                 MqttManager.get(context).reportCommandResult(terminal.payload);
             } catch (Throwable error) {
-                Log.e(TAG, "生成现金配置别名终态失败：messageId=" + message.messageId, error);
+                Log.e(TAG, "生成现金配置终态失败：messageId=" + message.messageId, error);
             }
         }
+    }
+
+    private DeviceCommandStore.OutboxItem findStoredTerminal(String messageId) {
+        String expectedEventNo = safe(messageId) + "-result";
+        for (DeviceCommandStore.OutboxItem item : store.listCommandResults()) {
+            if (safe(messageId).equals(item.sourceMessageId)
+                    && expectedEventNo.equals(item.eventNo)) {
+                return item;
+            }
+        }
+        return null;
     }
 
     private void attachAliasAndAck(
