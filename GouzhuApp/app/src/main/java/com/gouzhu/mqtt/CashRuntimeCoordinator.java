@@ -57,6 +57,8 @@ public final class CashRuntimeCoordinator {
     private volatile String unavailableReason = "bootstrap尚未确认";
     private volatile long lastRequestedVersion = -1L;
     private volatile int lastRequestedMask = -1;
+    private volatile int lastInventoryEventCode = -1;
+    private volatile long lastInventoryStock = Long.MIN_VALUE;
 
     private CashRuntimeCoordinator(Context context) {
         this.context = context.getApplicationContext();
@@ -135,9 +137,16 @@ public final class CashRuntimeCoordinator {
      * 这样旧恢复路径即使在交易结束的窄窗口被调用，也不能使用交易前 bootstrap 重开现金。
      */
     public void onTransactionOccupied(String ownerType, String phase) {
-        invalidateRuntimeAvailability(
-                "设备存在交易占用：" + safe(ownerType) + "/" + safe(phase)
-        );
+        boolean needsHardwareClose = lastRequestedMask != 0;
+        bootstrapKnown = false;
+        bootstrapAvailable = false;
+        unavailableReason = "设备存在交易占用："
+                + safe(ownerType) + "/" + safe(phase);
+        if (!needsHardwareClose) {
+            return;
+        }
+        lastRequestedMask = -1;
+        lastRequestedVersion = -1L;
         reconcile("transaction_occupied");
     }
 
@@ -178,7 +187,12 @@ public final class CashRuntimeCoordinator {
      * 本地库存 0、补珠或库存数变化都可能改变服务端库存门控。先关闭现金并作废缓存，
      * 再刷新 bootstrap；若 Account 域尚未完成更新，周期刷新会继续保持故障关闭直至可用。
      */
-    public void onInventoryChanged(int eventCode, long reportedStock) {
+    public synchronized void onInventoryChanged(int eventCode, long reportedStock) {
+        if (eventCode == lastInventoryEventCode && reportedStock == lastInventoryStock) {
+            return;
+        }
+        lastInventoryEventCode = eventCode;
+        lastInventoryStock = reportedStock;
         invalidateRuntimeAvailability(
                 "库存状态变化：code=0x" + Integer.toHexString(eventCode)
                         + "，stock=" + reportedStock
