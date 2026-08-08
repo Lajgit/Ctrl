@@ -32,6 +32,7 @@ public final class DeviceCommandManager {
 
     private final Context context;
     private final PlatformCommandRuntime runtime;
+    private final CashConfigurationCommandCoordinator cashConfigurationCoordinator;
     private final OperationResolutionManager resolutionManager;
     private final ContinuationDispenseManager continuationManager;
     private final CollectionSessionManager collectionManager;
@@ -45,6 +46,7 @@ public final class DeviceCommandManager {
     private DeviceCommandManager(Context context) {
         this.context = context.getApplicationContext();
         runtime = new PlatformCommandRuntime(this.context);
+        cashConfigurationCoordinator = new CashConfigurationCommandCoordinator(this.context);
         resolutionManager = new OperationResolutionManager(this.context);
         continuationManager = new ContinuationDispenseManager(this.context);
         collectionManager = new CollectionSessionManager(this.context);
@@ -73,13 +75,17 @@ public final class DeviceCommandManager {
         resolutionManager.start();
         collectionManager.start();
         collectionControllerGuard.start();
+        // 先让旧运行时完成控制板版本确认和旧pending收敛，再启动新的现金配置账本。
         runtime.start();
+        cashConfigurationCoordinator.start();
+        CashRuntimeCoordinator.get(context).reconcile("device_command_manager_started");
         // Recovery must not depend on MainActivity being visible. The persisted requestNo
         // remains authoritative and the same QR purchase is queried/recreated idempotently.
         PaymentManager.get(context).resumePendingPayment();
     }
 
     public void stop() {
+        cashConfigurationCoordinator.stop();
         runtime.stop();
         collectionControllerGuard.stop();
         collectionManager.stop();
@@ -142,35 +148,12 @@ public final class DeviceCommandManager {
             return;
         }
         if ("sync_cash_configuration".equals(commandType)) {
-            JSONObject data = envelope.optJSONObject("data");
-            int configVersion = data == null
-                    ? -1
-                    : data.optInt("configVersion", -1);
             /*
-             * 首次硬件应用失败时，旧实现会把未应用版本永久保留为latest，导致服务端
-             * 使用新的messageId重试同一配置版本时一直返回CASH_CONFIGURATION_STALE。
-             * 在进入正式幂等和硬件处理前，只释放“无pending、未应用、且恰好等于本次
-             * incomingVersion”的失败占位，不放宽已应用版本的单调性。
+             * 现金配置不再因为正常交易占用立即回失败，也不再回退失败版本号。
+             * 新处理器负责 messageId 幂等、highestKnownVersion、同版本内容冲突、
+             * durable ACK/终态以及占用释放后的串行真实应用。
              */
-            CashConfigurationRetryState.repairForIncomingVersion(
-                    context,
-                    configVersion
-            );
-
-            boolean enablesCash = data != null
-                    && data.optBoolean("cashAcceptanceEnabled", false);
-            TransactionOccupancyManager.Snapshot occupied = occupancy.current();
-            if (enablesCash && occupied != null) {
-                rejectCommand(
-                        topic,
-                        payload,
-                        "DEVICE_TRANSACTION_OCCUPIED",
-                        "cash cannot be enabled while "
-                                + occupied.ownerType + " is " + occupied.phase
-                );
-                return;
-            }
-            runtime.handleCommand(topic, payload);
+            cashConfigurationCoordinator.handleCommand(topic, payload);
             return;
         }
         if (!"dispense_marbles".equals(commandType)) {
@@ -255,6 +238,10 @@ public final class DeviceCommandManager {
 
     public void flushPending() {
         runtime.flushPending();
+    }
+
+    void resumeDeferredCashConfiguration() {
+        cashConfigurationCoordinator.resumeDeferredIfPossible();
     }
 
     private boolean shouldClaimMarbleResolution(byte[] payload) {
