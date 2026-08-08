@@ -11,6 +11,7 @@ import android.os.Build;
 import android.util.Log;
 
 import com.gouzhu.AppConfig;
+import com.gouzhu.mqtt.CashRuntimeCoordinator;
 import com.gouzhu.mqtt.DeviceCommandStore;
 import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.payment.PaymentManager;
@@ -555,60 +556,18 @@ public final class TransactionOccupancyManager {
             PaymentManager.get(context).onOccupancyReleased(released.clientRequestNo);
         }
         if (restoreCash) {
-            restoreCashAcceptanceIfSafe();
+            // 现金恢复必须先刷新bootstrap并统一协调，禁止直接按本地旧配置重新开硬件。
+            CashRuntimeCoordinator.get(context).onTransactionIdle();
         }
         MqttManager.get(context).reportStatus();
         return true;
     }
 
+    /**
+     * 兼容旧调用点。恢复现金不再直接发送非零掩码，而是统一交给运行协调器。
+     */
     public void restoreCashAcceptanceIfSafe() {
-        if (!isIdle()
-                || store.hasActivePhysicalOrder()
-                || store.isPhysicalBlocked()
-                || store.isCashBlocked()
-                || store.getBoardVersion() < MIN_CONTROLLER_PROTOCOL_VERSION
-                || isLocalResetRequired()) {
-            return;
-        }
-        DeviceCommandStore.CashConfigurationRecord record = store.loadCashConfiguration();
-        if (record == null || !record.enabled || record.changeEnabled
-                || record.configVersion <= 0 || record.configVersion > 0x00FFFFFF) {
-            return;
-        }
-        JSONObject snapshot = parseObject(record.snapshotJson);
-        JSONObject data = snapshot == null ? null : snapshot.optJSONObject("data");
-        JSONArray items = data == null ? null : data.optJSONArray("cashSaleItems");
-        if (items == null || items.length() == 0) {
-            return;
-        }
-        int mask = 0;
-        for (int index = 0; index < items.length(); index++) {
-            JSONObject item = items.optJSONObject(index);
-            if (item == null) {
-                return;
-            }
-            String medium = item.optString("cashMediumType", "");
-            if ("banknote".equals(medium)) {
-                mask |= 0x01;
-            } else if ("coin".equals(medium)) {
-                mask |= 0x02;
-            } else {
-                return;
-            }
-        }
-        if (mask == 0) {
-            return;
-        }
-        long packed = ((long) mask << 24)
-                | (record.configVersion & 0x00FFFFFFL);
-        boolean sent = SerialManager.get(context).sendCommand(
-                CMD_CASH_APPLY_V22,
-                packed,
-                true
-        );
-        Log.i(TAG, "恢复现金配置：sent=" + sent
-                + "，mask=0x" + Integer.toHexString(mask)
-                + "，version=" + record.configVersion);
+        CashRuntimeCoordinator.get(context).onTransactionIdle();
     }
 
     public boolean canStartNewTransaction() {
