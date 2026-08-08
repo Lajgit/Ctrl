@@ -1,6 +1,7 @@
 package com.gouzhu.mqtt;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.util.Log;
 
 import com.gouzhu.hardware.SerialCashConfigurationAdapter;
@@ -32,12 +33,15 @@ public final class CashRuntimeCoordinator {
     private static final String TAG = "GouzhuCashRuntime";
     private static final long MIN_CONTROLLER_PROTOCOL_VERSION = 0x02020000L;
     private static final long PERIODIC_BOOTSTRAP_MS = 30_000L;
+    private static final String PREFS_NAME = "gouzhu_cash_runtime";
+    private static final String KEY_CONFIGURATION_SAFE = "configuration_safe";
 
     private static volatile CashRuntimeCoordinator instance;
 
     private final Context context;
     private final DeviceCommandStore store;
     private final SerialCashConfigurationAdapter hardwareAdapter;
+    private final SharedPreferences preferences;
     private final ScheduledExecutorService executor =
             Executors.newSingleThreadScheduledExecutor(runnable -> {
                 Thread thread = new Thread(runnable, "gouzhu-cash-runtime");
@@ -49,6 +53,7 @@ public final class CashRuntimeCoordinator {
     private volatile boolean mqttOnline;
     private volatile boolean bootstrapKnown;
     private volatile boolean bootstrapAvailable;
+    private volatile boolean configurationSafe;
     private volatile String unavailableReason = "bootstrap尚未确认";
     private volatile long lastRequestedVersion = -1L;
     private volatile int lastRequestedMask = -1;
@@ -56,6 +61,8 @@ public final class CashRuntimeCoordinator {
     private CashRuntimeCoordinator(Context context) {
         this.context = context.getApplicationContext();
         this.store = new DeviceCommandStore(this.context);
+        this.preferences = this.context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        this.configurationSafe = preferences.getBoolean(KEY_CONFIGURATION_SAFE, true);
         this.hardwareAdapter = new SerialCashConfigurationAdapter(this.context);
         this.hardwareAdapter.start();
         this.mqttOnline = MqttManager.get(this.context).isConnected();
@@ -108,6 +115,7 @@ public final class CashRuntimeCoordinator {
 
     /** 新现金配置开始处理时，旧 bootstrap 版本事实立即失效，现金保持关闭。 */
     public void onConfigurationPending(long configVersion) {
+        setConfigurationSafe(false);
         bootstrapKnown = false;
         bootstrapAvailable = false;
         unavailableReason = "现金配置版本正在应用：" + configVersion;
@@ -118,6 +126,7 @@ public final class CashRuntimeCoordinator {
 
     /** 配置形成终态后重新请求 bootstrap，由服务端版本一致性决定能否重新营业。 */
     public void onConfigurationTerminal(long configVersion, boolean success) {
+        setConfigurationSafe(success);
         bootstrapKnown = false;
         bootstrapAvailable = false;
         unavailableReason = success
@@ -166,7 +175,8 @@ public final class CashRuntimeCoordinator {
      * 严格运行门控。该方法只判断“当前是否允许打开现金输入”，不改变商家配置开关。
      */
     public boolean isCashAcceptanceAllowed() {
-        if (!mqttOnline
+        if (!configurationSafe
+                || !mqttOnline
                 || !MqttManager.get(context).isConnected()
                 || !bootstrapKnown
                 || !bootstrapAvailable) {
@@ -253,6 +263,7 @@ public final class CashRuntimeCoordinator {
                     TAG,
                     "更新现金bootstrap运行状态：trigger=" + trigger
                             + "，available=" + available
+                            + "，configurationSafe=" + configurationSafe
                             + "，reason=" + reason
             );
         } catch (Throwable error) {
@@ -301,6 +312,7 @@ public final class CashRuntimeCoordinator {
                         + "，mqttOnline=" + mqttOnline
                         + "，bootstrapKnown=" + bootstrapKnown
                         + "，bootstrapAvailable=" + bootstrapAvailable
+                        + "，configurationSafe=" + configurationSafe
                         + "，transactionOccupied=" + occupied
                         + "，configuredMask=0x" + Integer.toHexString(configuredMask)
                         + "，targetEnabled=" + targetEnabled
@@ -341,6 +353,11 @@ public final class CashRuntimeCoordinator {
             Log.e(TAG, "读取本地现金配置快照失败，保持现金关闭", error);
             return 0;
         }
+    }
+
+    private void setConfigurationSafe(boolean safe) {
+        configurationSafe = safe;
+        preferences.edit().putBoolean(KEY_CONFIGURATION_SAFE, safe).apply();
     }
 
     private static Object invokeOptional(Object target, String... methodNames)
