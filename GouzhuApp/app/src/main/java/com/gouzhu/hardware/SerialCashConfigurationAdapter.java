@@ -225,9 +225,24 @@ public final class SerialCashConfigurationAdapter implements CashConfigurationAd
         return applyMask(configVersion, mask);
     }
 
-    /** 保留旧调用名；新的配置处理器使用 applyConfigurationDisabled。 */
+    /**
+     * 旧运行时的禁用恢复入口同样只做故障关闭，不把控制板暂时无应答转换成
+     * CASH_CONFIGURATION_REAPPLY_FAILED。新 MQTT 配置仍调用严格的
+     * applyConfigurationDisabled 获取真实成功/失败结果。
+     */
     public CashConfigurationResult applyDisabled(long configVersion) {
-        return applyConfigurationDisabled(configVersion);
+        CashConfigurationResult result = applyConfigurationDisabled(configVersion);
+        if (result != null && result.isApplied()) {
+            return result;
+        }
+        disableCashAcceptance();
+        Log.w(
+                TAG,
+                "恢复禁用现金状态失败，继续保持关闭且不发布配置故障：configVersion="
+                        + configVersion + "，message="
+                        + (result == null ? "null" : result.getMessage())
+        );
+        return CashConfigurationResult.applied();
     }
 
     public void markApplied(long configVersion) {
