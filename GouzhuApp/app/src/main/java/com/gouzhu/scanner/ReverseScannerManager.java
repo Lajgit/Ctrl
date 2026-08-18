@@ -7,6 +7,7 @@ import android.util.Log;
 
 import com.gouzhu.AppConfig;
 import com.gouzhu.mqtt.MqttManager;
+import com.gouzhu.payment.AuthCodePaymentManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -18,12 +19,12 @@ import java.nio.charset.StandardCharsets;
 /**
  * ttyS6 反扫模块管理器。
  *
- * <p>串口由本类独占打开，按 CR、LF、ETX 或字节空闲间隔切分扫码帧。业务类型
- * 不再由设备端写死前缀，而是交给 {@link ScannerBusinessRouter}，使用最近一次
- * bootstrap 返回的 redemptionRouting 精确匹配。</p>
+ * <p>串口由本类独占打开，按 CR、LF、ETX 或字节空闲间隔切分扫码帧。付款码只在
+ * 用户已明确进入 AUTH_CODE 支付会话时交给支付管理器；其他业务码仍交给
+ * {@link ScannerBusinessRouter}，按最近一次 bootstrap 的 redemptionRouting 精确匹配。</p>
  *
- * <p>反扫读取和核销接口都不能直接驱动控制板；真实出珠只能执行平台下发并通过
- * SDK 校验的 MQTT dispense_marbles 指令。</p>
+ * <p>反扫读取、付款码支付和核销接口都不能直接驱动控制板；真实出珠只能执行平台
+ * 下发并通过 SDK 校验的 MQTT dispense_marbles 指令。</p>
  */
 public final class ReverseScannerManager {
 
@@ -41,6 +42,7 @@ public final class ReverseScannerManager {
     public static final String TYPE_INTERNAL_REDEMPTION = "internalRedemption";
     public static final String TYPE_MEMBER_WITHDRAWAL = "memberWithdrawal";
     public static final String TYPE_THIRD_PARTY_REDEMPTION = "thirdPartyRedemption";
+    public static final String TYPE_PAYMENT_AUTH_CODE = "paymentAuthCode";
     public static final String TYPE_UNSUPPORTED = "unsupported";
 
     private static final String TAG = "GouzhuReverseScanner";
@@ -290,6 +292,23 @@ public final class ReverseScannerManager {
         }
         lastScanFingerprint = fingerprint;
         lastScanAt = now;
+
+        /*
+         * 付款码仅在明确的 AUTH_CODE 会话内优先消费。完整付款码不进入本类原有的
+         * 脱敏广播/核销元数据路径，避免敏感支付凭证被持久化或传播。
+         */
+        AuthCodePaymentManager.ScanSubmission paymentSubmission =
+                AuthCodePaymentManager.get(context).handleScanIfArmed(content);
+        if (paymentSubmission.handled) {
+            broadcast(
+                    paymentSubmission.accepted
+                            ? EVENT_SCAN_ACCEPTED : EVENT_SCAN_UNSUPPORTED,
+                    paymentSubmission.message,
+                    TYPE_PAYMENT_AUTH_CODE,
+                    ""
+            );
+            return;
+        }
 
         String maskedCode = maskCode(content);
         ScannerBusinessRouter.Submission submission =
