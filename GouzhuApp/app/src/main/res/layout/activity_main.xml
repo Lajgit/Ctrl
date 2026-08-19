@@ -81,18 +81,7 @@
                 android:textColor="@color/text_secondary"
                 android:textSize="17sp" />
 
-            <!--
-                默认仍保持“点击套餐即展示聚合主扫二维码”。只有顾客先明确点击本按钮，
-                下一次套餐选择才切换为付款码被扫，避免改变原扫码支付交互和核销路由。
-            -->
-            <com.gouzhu.payment.AuthCodePaymentEntryButton
-                android:id="@+id/button_auth_code_payment_mode"
-                style="@style/Widget.Gouzhu.ActionButton"
-                android:layout_width="360dp"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="@string/auth_code_payment_mode" />
-
+            <!-- 点击任一套餐直接创建一个统一购珠订单；主扫和付款码反扫共享该订单。 -->
             <GridLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -110,7 +99,7 @@
 
             <!--
                 保留原控件 ID 供现有业务状态代码使用，但不再在顾客主界面显示。
-                点击套餐按钮后由原支付入口直接发起支付。
+                点击套餐按钮后由统一 PaymentManager 直接发起支付。
             -->
             <TextView
                 android:id="@+id/text_selected_package"
@@ -128,7 +117,7 @@
                 android:visibility="gone" />
 
             <!--
-                二维码和取消入口只允许显示在独立的 PaymentQrActivity 弹窗中。
+                支付和取消入口只显示在独立的 PaymentQrActivity 弹窗中。
                 保留零尺寸兼容节点，避免旧 MainActivity 字节码或迟到广播访问空控件。
             -->
             <ImageView
@@ -227,7 +216,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="V2.3.18"
+                android:text="V2.3.19"
                 android:textColor="@color/text_secondary"
                 android:textSize="13sp" />
 
