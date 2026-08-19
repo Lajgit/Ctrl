@@ -25,8 +25,10 @@ import androidx.appcompat.app.AppCompatActivity;
 import com.gouzhu.R;
 
 /**
- * 底部抽屉式二维码支付窗口。
- * 点击关闭按钮或抽屉外的全屏遮罩都会请求取消当前订单；支付终态也会自动关闭。
+ * 底部抽屉式统一支付窗口。
+ *
+ * <p>同一订单同时展示主扫和付款码反扫能力。点击 X 或抽屉外空白区域都调用
+ * cancelPurchase；取消发起后两个支付入口立即同步停止，最终仍以服务端订单状态为准。</p>
  */
 public final class PaymentQrActivity extends AppCompatActivity {
 
@@ -42,27 +44,52 @@ public final class PaymentQrActivity extends AppCompatActivity {
     private TextView countdownText;
     private TextView purchaseText;
     private TextView priceText;
+    private TextView methodTitleText;
+    private TextView methodHintText;
     private TextView statusText;
     private ImageView qrImage;
 
     private CountDownTimer countDownTimer;
     private String requestNo = "";
-    private boolean closeReceiverRegistered;
+    private String fallbackQrContent = "";
+    private long selectionDeadline;
+    private boolean receiverRegistered;
     private boolean timeoutHandled;
     private boolean userCloseInProgress;
     private boolean enterAnimationStarted;
     private boolean finishAnimationStarted;
 
-    private final BroadcastReceiver closeReceiver = new BroadcastReceiver() {
+    private final BroadcastReceiver paymentReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent == null || !ACTION_CLOSE.equals(intent.getAction())) {
+            if (intent == null) {
                 return;
             }
-            String closingRequestNo = safe(intent.getStringExtra(EXTRA_REQUEST_NO));
-            if (closingRequestNo.isEmpty() || closingRequestNo.equals(requestNo)) {
-                finishSafely();
+            if (ACTION_CLOSE.equals(intent.getAction())) {
+                String closingRequestNo = safe(intent.getStringExtra(EXTRA_REQUEST_NO));
+                if (closingRequestNo.isEmpty() || closingRequestNo.equals(requestNo)) {
+                    finishSafely();
+                }
+                return;
             }
+            if (!PaymentManager.ACTION_PAYMENT_EVENT.equals(intent.getAction())) {
+                return;
+            }
+            String eventRequestNo = safe(
+                    intent.getStringExtra(PaymentManager.EXTRA_ORDER_ID)
+            );
+            if (!eventRequestNo.isEmpty() && !eventRequestNo.equals(requestNo)) {
+                return;
+            }
+            String event = safe(intent.getStringExtra(PaymentManager.EXTRA_EVENT));
+            if (PaymentManager.EVENT_CANCELLING.equals(event)
+                    || PaymentManager.EVENT_CLOSED.equals(event)
+                    || PaymentManager.EVENT_SUCCESS.equals(event)
+                    || PaymentManager.EVENT_FAILED.equals(event)) {
+                finishSafely();
+                return;
+            }
+            refreshPaymentState();
         }
     };
 
@@ -74,7 +101,7 @@ public final class PaymentQrActivity extends AppCompatActivity {
         setFinishOnTouchOutside(false);
         bindViews();
         bindActions();
-        registerCloseReceiver();
+        registerPaymentReceiver();
         handleIntent(getIntent());
         if (!isFinishing()) {
             startEnterAnimation();
@@ -119,19 +146,19 @@ public final class PaymentQrActivity extends AppCompatActivity {
         if (drawerView != null) {
             drawerView.animate().cancel();
         }
-        if (closeReceiverRegistered) {
+        if (receiverRegistered) {
             try {
-                unregisterReceiver(closeReceiver);
+                unregisterReceiver(paymentReceiver);
             } catch (Throwable ignored) {
             }
-            closeReceiverRegistered = false;
+            receiverRegistered = false;
         }
         super.onDestroy();
     }
 
     @Override
     public void onBackPressed() {
-        // 避免系统返回键误取消订单；使用可见关闭按钮或点击抽屉外遮罩。
+        // 系统返回键不直接关闭；顾客使用可见 X 或点击抽屉外空白区域，二者都走安全取消。
     }
 
     @Override
@@ -148,14 +175,17 @@ public final class PaymentQrActivity extends AppCompatActivity {
         countdownText = findViewById(R.id.text_payment_dialog_countdown);
         purchaseText = findViewById(R.id.text_payment_dialog_purchase);
         priceText = findViewById(R.id.text_payment_dialog_price);
+        methodTitleText = findViewById(R.id.text_payment_dialog_method_title);
+        methodHintText = findViewById(R.id.text_payment_dialog_method_hint);
         statusText = findViewById(R.id.text_payment_dialog_status);
         qrImage = findViewById(R.id.image_payment_dialog_qr);
     }
 
     private void bindActions() {
+        // 用户要求 X 和空白区域行为一致：都同步关闭主扫/反扫入口并请求服务端取消订单。
         scrimView.setOnClickListener(view -> requestUserClose());
         drawerView.setOnClickListener(view -> {
-            // 抽屉本体消费点击，避免内部空白区域穿透到遮罩并取消订单。
+            // 抽屉本体消费点击，避免内部空白穿透到外层遮罩。
         });
         findViewById(R.id.button_payment_dialog_close).setOnClickListener(
                 view -> requestUserClose()
@@ -168,12 +198,12 @@ public final class PaymentQrActivity extends AppCompatActivity {
             return;
         }
         requestNo = safe(intent.getStringExtra(EXTRA_REQUEST_NO));
-        String qrContent = safe(intent.getStringExtra(EXTRA_QR_CONTENT));
+        fallbackQrContent = safe(intent.getStringExtra(EXTRA_QR_CONTENT));
         int beadCount = Math.max(0, intent.getIntExtra(EXTRA_BEAD_COUNT, 0));
         int priceFen = Math.max(0, intent.getIntExtra(EXTRA_PRICE_FEN, 0));
-        long deadline = intent.getLongExtra(EXTRA_DEADLINE, 0L);
+        selectionDeadline = intent.getLongExtra(EXTRA_DEADLINE, 0L);
 
-        if (requestNo.isEmpty() || qrContent.isEmpty()) {
+        if (requestNo.isEmpty()) {
             finishSafely();
             return;
         }
@@ -183,21 +213,89 @@ public final class PaymentQrActivity extends AppCompatActivity {
                 R.string.payment_dialog_price_format,
                 priceFen / 100.0
         ));
+        if (selectionDeadline <= 0L) {
+            selectionDeadline = PaymentQrPopupReceiver.ensureDeadline(this, requestNo);
+        }
+        refreshPaymentState();
+    }
 
-        Bitmap bitmap = QrCodeUtil.create(qrContent, 620);
-        if (bitmap == null) {
-            statusText.setText(R.string.payment_qr_invalid);
-            PaymentManager.get(this).cancelCurrentPayment();
+    private void refreshPaymentState() {
+        PaymentManager manager = PaymentManager.get(this);
+        String currentRequestNo = manager.getCurrentOrderId();
+        if (currentRequestNo.isEmpty() || !requestNo.equals(currentRequestNo)) {
             finishSafely();
             return;
         }
-        qrImage.setImageBitmap(bitmap);
-        statusText.setText(R.string.payment_dialog_scan_hint);
 
-        long effectiveDeadline = deadline > 0L
-                ? deadline
-                : PaymentQrPopupReceiver.ensureDeadline(this, requestNo);
-        startCountdown(effectiveDeadline);
+        String selectedMode = manager.getCurrentSelectedPaymentMode();
+        String paymentStatus = manager.getCurrentPaymentStatus();
+        String qrContent = manager.getCurrentScanUrl();
+        if (qrContent.isEmpty()) {
+            qrContent = fallbackQrContent;
+        }
+
+        boolean authAvailable = manager.canSubmitAuthCode(PaymentAuthCodePolicy.CHANNEL_WECHAT)
+                || manager.canSubmitAuthCode(PaymentAuthCodePolicy.CHANNEL_ALIPAY);
+        boolean showQr = manager.shouldShowQrCode() && !qrContent.isEmpty();
+
+        if ("AUTH_CODE".equals(selectedMode) || manager.isAuthCodeSubmitted()) {
+            showQr = false;
+            methodTitleText.setText(R.string.payment_dialog_code_pay_title);
+            methodHintText.setText(R.string.payment_dialog_auth_selected);
+        } else if ("SCAN".equals(selectedMode)) {
+            methodTitleText.setText(R.string.payment_dialog_scan_pay_title);
+            methodHintText.setText(R.string.payment_dialog_scan_selected);
+        } else if (showQr && authAvailable) {
+            methodTitleText.setText(R.string.payment_dialog_dual_pay_title);
+            methodHintText.setText(R.string.payment_dialog_dual_pay_hint);
+        } else if (showQr) {
+            methodTitleText.setText(R.string.payment_dialog_scan_pay_title);
+            methodHintText.setText(R.string.payment_dialog_scan_pay_channels);
+        } else if (authAvailable) {
+            methodTitleText.setText(R.string.payment_dialog_code_pay_title);
+            methodHintText.setText(R.string.payment_dialog_code_pay_hint);
+        } else {
+            methodTitleText.setText(R.string.payment_dialog_title);
+            methodHintText.setText(R.string.payment_dialog_no_channel);
+        }
+
+        if (showQr) {
+            Bitmap bitmap = QrCodeUtil.create(qrContent, 620);
+            if (bitmap != null) {
+                qrImage.setImageBitmap(bitmap);
+                qrImage.setVisibility(View.VISIBLE);
+            } else {
+                // 二维码异常不应破坏同一订单的付款码能力；只关闭主扫显示。
+                qrImage.setImageDrawable(null);
+                qrImage.setVisibility(View.GONE);
+                if (authAvailable) {
+                    methodTitleText.setText(R.string.payment_dialog_code_pay_title);
+                    methodHintText.setText(R.string.payment_dialog_code_pay_hint);
+                }
+            }
+        } else {
+            qrImage.setImageDrawable(null);
+            qrImage.setVisibility(View.GONE);
+        }
+
+        if (manager.isCancelPending()) {
+            statusText.setText(R.string.payment_dialog_closing);
+        } else if ("SUCCESS".equals(paymentStatus)
+                || "ORDER_ALREADY_PAID".equals(paymentStatus)) {
+            statusText.setText(R.string.payment_dialog_paid);
+        } else {
+            statusText.setText(manager.getDisplayMessage());
+        }
+
+        if (manager.canAutoCancelForUserTimeout()) {
+            countdownText.setVisibility(View.VISIBLE);
+            startCountdown(selectionDeadline);
+        } else {
+            stopCountdown();
+            countdownText.setVisibility(View.GONE);
+            // 一旦任一入口已被选择/提交，60 秒只是顾客选择窗口，不能再触发本地超时取消。
+            PaymentQrPopupReceiver.clearDeadline(this, requestNo);
+        }
     }
 
     private void requestUserClose() {
@@ -258,10 +356,20 @@ public final class PaymentQrActivity extends AppCompatActivity {
             return;
         }
         timeoutHandled = true;
+        PaymentManager manager = PaymentManager.get(this);
+        if (!manager.canAutoCancelForUserTimeout()) {
+            refreshPaymentState();
+            return;
+        }
         PaymentQrPopupReceiver.clearDeadline(this, requestNo);
-        PaymentManager.get(this).cancelCurrentPayment();
-        Toast.makeText(this, R.string.payment_dialog_timeout, Toast.LENGTH_SHORT).show();
-        finishSafely();
+        boolean accepted = manager.cancelCurrentPayment();
+        if (accepted) {
+            Toast.makeText(this, R.string.payment_dialog_timeout, Toast.LENGTH_SHORT).show();
+            finishSafely();
+        } else {
+            timeoutHandled = false;
+            refreshPaymentState();
+        }
     }
 
     private void startEnterAnimation() {
@@ -326,17 +434,19 @@ public final class PaymentQrActivity extends AppCompatActivity {
         }
     }
 
-    private void registerCloseReceiver() {
-        if (closeReceiverRegistered) {
+    private void registerPaymentReceiver() {
+        if (receiverRegistered) {
             return;
         }
-        IntentFilter filter = new IntentFilter(ACTION_CLOSE);
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_CLOSE);
+        filter.addAction(PaymentManager.ACTION_PAYMENT_EVENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(closeReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(paymentReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            registerReceiver(closeReceiver, filter);
+            registerReceiver(paymentReceiver, filter);
         }
-        closeReceiverRegistered = true;
+        receiverRegistered = true;
     }
 
     private void hideSystemUi() {
