@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="payment_dialog_title">购珠</string>
-    <string name="payment_dialog_close">关闭付款二维码</string>
+    <string name="payment_dialog_close">关闭当前购珠订单</string>
     <string name="payment_dialog_countdown_format">%1$dS</string>
     <string name="payment_dialog_purchase_format">购买%1$d珠</string>
     <string name="payment_dialog_price_format">%1$.2f元</string>
@@ -10,8 +10,14 @@
     <string name="payment_dialog_code_pay_title">付款码支付</string>
     <string name="payment_dialog_code_pay_hint">请将微信或支付宝付款码对准扫码器</string>
     <string name="payment_dialog_scan_pay_title">扫码支付</string>
-    <string name="payment_dialog_scan_pay_channels">微信  ·  支付宝</string>
-    <string name="payment_dialog_scan_hint">请在60秒内完成支付</string>
-    <string name="payment_dialog_closing">正在关闭当前付款订单</string>
-    <string name="payment_dialog_timeout">付款二维码已超时，正在关闭订单</string>
+    <string name="payment_dialog_scan_pay_channels">微信 · 支付宝</string>
+    <string name="payment_dialog_dual_pay_title">扫码支付或出示付款码</string>
+    <string name="payment_dialog_dual_pay_hint">可扫屏幕二维码，也可将微信/支付宝付款码对准扫码器</string>
+    <string name="payment_dialog_scan_hint">请在60秒内选择一种支付方式</string>
+    <string name="payment_dialog_closing">正在同步关闭扫码和付款码入口</string>
+    <string name="payment_dialog_timeout">等待支付超时，正在关闭当前订单</string>
+    <string name="payment_dialog_scan_selected">已选择扫码支付，正在确认结果</string>
+    <string name="payment_dialog_auth_selected">付款码已提交，正在确认结果</string>
+    <string name="payment_dialog_paid">支付成功，等待平台出珠</string>
+    <string name="payment_dialog_no_channel">当前支付渠道暂不可用，可关闭订单后重试</string>
 </resources>
