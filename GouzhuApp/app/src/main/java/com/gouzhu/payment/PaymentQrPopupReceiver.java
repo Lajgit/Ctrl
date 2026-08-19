@@ -9,18 +9,17 @@ import android.util.Log;
 import com.gouzhu.transaction.TransactionOccupancyManager;
 
 /**
- * Opens and closes the dedicated QR payment window from PaymentManager broadcasts.
- * The 60-second display deadline is persisted per request so Activity recreation does not
- * restart the countdown.
+ * 根据统一购珠状态打开/关闭支付窗口。
+ * 60 秒只表示“尚未选定任何支付方式”的顾客操作窗口，截止时间按 requestNo 持久化。
  */
 public final class PaymentQrPopupReceiver extends BroadcastReceiver {
 
-    static final String POPUP_PREF = "payment_qr_popup_v1";
+    static final String POPUP_PREF = "payment_qr_popup_v2";
     static final String KEY_REQUEST_NO = "requestNo";
     static final String KEY_DEADLINE = "deadline";
-    static final long QR_DISPLAY_TIMEOUT_MS = 60_000L;
+    static final long PAYMENT_SELECTION_TIMEOUT_MS = 60_000L;
 
-    private static final String TAG = "GouzhuQrPopup";
+    private static final String TAG = "GouzhuPayPopup";
 
     @Override
     public void onReceive(Context receiverContext, Intent intent) {
@@ -33,19 +32,18 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
         String event = safe(intent.getStringExtra(PaymentManager.EXTRA_EVENT));
         String requestNo = safe(intent.getStringExtra(PaymentManager.EXTRA_ORDER_ID));
 
-        if (PaymentManager.EVENT_QR_READY.equals(event)) {
-            String qrContent = safe(intent.getStringExtra(PaymentManager.EXTRA_QR_CONTENT));
-            if (requestNo.isEmpty() || qrContent.isEmpty()) {
-                Log.w(TAG, "忽略无效二维码弹窗事件：requestNo=" + requestNo);
+        if (PaymentManager.EVENT_PAYMENT_READY.equals(event)) {
+            if (requestNo.isEmpty()) {
+                Log.w(TAG, "忽略无效统一支付窗口事件：requestNo为空");
                 return;
             }
 
             TransactionOccupancyManager.Snapshot snapshot =
                     TransactionOccupancyManager.get(context).current();
-            if (!isDisplayableQrSession(snapshot, requestNo)) {
+            if (!isDisplayablePaymentSession(snapshot, requestNo)) {
                 Log.i(
                         TAG,
-                        "忽略非待支付阶段二维码：requestNo=" + requestNo
+                        "忽略非待支付阶段统一支付窗口：requestNo=" + requestNo
                                 + "，owner=" + (snapshot == null ? "NONE" : snapshot.ownerType)
                                 + "，phase=" + (snapshot == null ? "NONE" : snapshot.phase)
                 );
@@ -59,6 +57,7 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
             );
             int beadCount = Math.max(0, payment.getInt("currentBeadCount", 0));
             int priceFen = Math.max(0, payment.getInt("currentPriceFen", 0));
+            String qrContent = PaymentManager.get(context).getCurrentScanUrl();
 
             Intent popup = new Intent(context, PaymentQrActivity.class);
             popup.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
@@ -72,7 +71,7 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
             try {
                 context.startActivity(popup);
             } catch (Throwable error) {
-                Log.e(TAG, "打开付款二维码窗口失败：requestNo=" + requestNo, error);
+                Log.e(TAG, "打开统一支付窗口失败：requestNo=" + requestNo, error);
             }
             return;
         }
@@ -100,7 +99,7 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
             return storedDeadline;
         }
 
-        long deadline = System.currentTimeMillis() + QR_DISPLAY_TIMEOUT_MS;
+        long deadline = System.currentTimeMillis() + PAYMENT_SELECTION_TIMEOUT_MS;
         preferences.edit()
                 .putString(KEY_REQUEST_NO, requestNo)
                 .putLong(KEY_DEADLINE, deadline)
@@ -120,7 +119,7 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
         preferences.edit().clear().apply();
     }
 
-    private static boolean isDisplayableQrSession(
+    private static boolean isDisplayablePaymentSession(
             TransactionOccupancyManager.Snapshot snapshot,
             String requestNo
     ) {
@@ -128,7 +127,9 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
                 && TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
                 && requestNo.equals(snapshot.clientRequestNo)
                 && (TransactionOccupancyManager.PHASE_PREPARING.equals(snapshot.phase)
-                || TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(snapshot.phase));
+                || TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(snapshot.phase)
+                || TransactionOccupancyManager.PHASE_CANCELLING.equals(snapshot.phase)
+                || TransactionOccupancyManager.PHASE_CONFIRMING_CLOSE.equals(snapshot.phase));
     }
 
     private static String safe(String value) {
