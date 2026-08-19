@@ -64,6 +64,9 @@ public final class AuthCodePaymentManager {
     private static final String KEY_PURCHASE_STATUS = "purchaseStatus";
     private static final String KEY_PAYMENT_STATUS = "paymentStatus";
     private static final String KEY_STAGE = "stage";
+    private static final String KEY_WAITING_CODE_DEADLINE = "waitingCodeDeadline";
+    private static final String KEY_QUERY_DEADLINE = "queryDeadline";
+    private static final String KEY_CANCEL_PENDING = "cancelPending";
 
     private static final String STAGE_PREPARING = "PREPARING";
     private static final String STAGE_CREATING = "CREATING";
@@ -79,8 +82,6 @@ public final class AuthCodePaymentManager {
     private static final long CASH_DISABLE_TIMEOUT_MS = 3500L;
     private static final long CASH_DISABLE_STABILIZE_MS = 350L;
     private static final Object CASH_PREFLIGHT_LOCK = new Object();
-    private static final long QUERY_INTERVAL_SECONDS = 2L;
-    private static final long MAX_QUERY_DURATION_MS = 10L * 60L * 1000L;
 
     private static volatile AuthCodePaymentManager instance;
 
@@ -90,7 +91,8 @@ public final class AuthCodePaymentManager {
     private final ScheduledExecutorService executor =
             Executors.newSingleThreadScheduledExecutor();
     private ScheduledFuture<?> queryTask;
-    private long queryDeadline;
+    private ScheduledFuture<?> waitingCodeTimeoutTask;
+    private int consecutiveQueryFailures;
 
     private final BroadcastReceiver occupancyReceiver = new BroadcastReceiver() {
         @Override
@@ -160,11 +162,13 @@ public final class AuthCodePaymentManager {
                 .putString(KEY_PURCHASE_STATUS, "")
                 .putString(KEY_PAYMENT_STATUS, "")
                 .putString(KEY_STAGE, STAGE_PREPARING)
+                .putLong(KEY_WAITING_CODE_DEADLINE, 0L)
+                .putLong(KEY_QUERY_DEADLINE, 0L)
+                .putBoolean(KEY_CANCEL_PENDING, false)
                 .commit()) {
             throw new IllegalStateException("付款码支付请求持久化失败");
         }
 
-        queryDeadline = System.currentTimeMillis() + MAX_QUERY_DURATION_MS;
         broadcast(EVENT_PREPARING, "正在关闭现金入口并创建付款码订单",
                 requestNo, "", "", "");
         executor.execute(() -> prepareAndCreate(
@@ -210,6 +214,9 @@ public final class AuthCodePaymentManager {
             if (!preferences().edit()
                     .putString(KEY_STAGE, STAGE_SUBMITTING)
                     .putString(KEY_PAYMENT_STATUS, "SUBMITTING")
+                    .putLong(KEY_WAITING_CODE_DEADLINE, 0L)
+                    .putLong(KEY_QUERY_DEADLINE, 0L)
+                    .putBoolean(KEY_CANCEL_PENDING, false)
                     .commit()) {
                 occupancy.markBlocked("AUTH_CODE_SUBMIT_STATE_PERSISTENCE_FAILED");
                 String message = "付款状态无法可靠保存，设备已停止本次交易";
@@ -217,7 +224,9 @@ public final class AuthCodePaymentManager {
                         getPurchaseStatus(), "", channel);
                 return ScanSubmission.handled(false, message, channel);
             }
-            cancelQuery();
+            cancelWaitingCodeTimeoutTask();
+            cancelQueryTask();
+            consecutiveQueryFailures = 0;
             sensitiveCode = scanContent == null ? new char[0] : scanContent.toCharArray();
         }
 
@@ -280,7 +289,10 @@ public final class AuthCodePaymentManager {
         } catch (Throwable error) {
             // 创建结果未知时只能查询相同 requestNo，禁止创建第二笔。
             Log.w(TAG, "付款码订单创建结果未知，将使用原请求号查单");
-            preferences().edit().putString(KEY_STAGE, STAGE_PROCESSING).commit();
+            preferences().edit()
+                    .putString(KEY_STAGE, STAGE_PROCESSING)
+                    .putBoolean(KEY_CANCEL_PENDING, false)
+                    .commit();
             broadcast(EVENT_PROCESSING, "创建结果暂时未知，正在确认原付款码订单",
                     requestNo, getPurchaseStatus(), getPaymentStatus(), "");
             scheduleQuery(requestNo);
@@ -299,6 +311,7 @@ public final class AuthCodePaymentManager {
             preferences().edit()
                     .putString(KEY_STAGE, STAGE_PROCESSING)
                     .putString(KEY_PAYMENT_STATUS, "PROCESSING")
+                    .putBoolean(KEY_CANCEL_PENDING, false)
                     .commit();
             Log.w(TAG, "付款码提交结果未知，将使用原请求号查单");
             broadcast(EVENT_PROCESSING, "付款结果正在确认，请勿重复出示付款码",
@@ -317,6 +330,8 @@ public final class AuthCodePaymentManager {
         if (!requestNo.equals(getCurrentRequestNo()) || result == null) {
             return;
         }
+        String previousStage = getStage();
+        boolean cancelPending = preferences().getBoolean(KEY_CANCEL_PENDING, false);
         String purchaseStatus = TransactionOccupancyPolicy.normalize(result.getPurchaseStatus());
         String paymentStatus = PaymentAuthCodePolicy.normalize(
                 readString(result, "getPaymentStatus")
@@ -337,14 +352,14 @@ public final class AuthCodePaymentManager {
         switch (purchaseStatus) {
             case "CANCELED":
             case "CLOSED":
-                cancelQuery();
                 clearState();
                 broadcast(EVENT_CLOSED,
                         message.isEmpty() ? "付款码订单已关闭" : message,
                         requestNo, purchaseStatus, paymentStatus, "");
                 return;
             case "COMPLETED":
-                cancelQuery();
+                cancelWaitingCodeTimeoutTask();
+                cancelQueryTask();
                 if (!occupancy.isQrOwned(requestNo)) {
                     clearState();
                 }
@@ -353,6 +368,7 @@ public final class AuthCodePaymentManager {
                         requestNo, purchaseStatus, paymentStatus, "");
                 return;
             case "REFUNDING":
+                clearWaitingCodeWindow();
                 setStage(STAGE_PROCESSING);
                 broadcast(EVENT_PROCESSING,
                         message.isEmpty() ? "退款处理中" : message,
@@ -360,7 +376,8 @@ public final class AuthCodePaymentManager {
                 scheduleQuery(requestNo);
                 return;
             case "REFUNDED":
-                cancelQuery();
+                cancelWaitingCodeTimeoutTask();
+                cancelQueryTask();
                 if (!occupancy.isQrOwned(requestNo)) {
                     clearState();
                 }
@@ -369,13 +386,15 @@ public final class AuthCodePaymentManager {
                         requestNo, purchaseStatus, paymentStatus, "");
                 return;
             case "DISPENSING":
+                clearWaitingCodeWindow();
                 setStage(STAGE_PAID);
-                cancelQuery();
+                cancelQueryTask();
                 broadcast(EVENT_SUCCESS,
                         message.isEmpty() ? "支付成功，等待平台出珠指令" : message,
                         requestNo, purchaseStatus, paymentStatus, "");
                 return;
             case "EXPIRED":
+                clearWaitingCodeWindow();
                 setStage(STAGE_PROCESSING);
                 broadcast(EVENT_PROCESSING, "付款码订单已过期，正在确认最终支付结果",
                         requestNo, purchaseStatus, paymentStatus, "");
@@ -385,17 +404,21 @@ public final class AuthCodePaymentManager {
                 break;
         }
 
-        if (paymentStatus.isEmpty() || "FAILED".equals(paymentStatus)) {
-            setStage(STAGE_WAITING_CODE);
-            broadcast(EVENT_READY,
-                    "FAILED".equals(paymentStatus)
-                            ? "本次付款未成功，请刷新付款码后重新出示"
-                            : "请出示微信或支付宝付款码",
+        if (cancelPending && (paymentStatus.isEmpty() || "FAILED".equals(paymentStatus))) {
+            clearWaitingCodeWindow();
+            setStage(STAGE_PROCESSING);
+            broadcast(EVENT_PROCESSING, "正在确认付款码订单关闭结果",
                     requestNo, purchaseStatus, paymentStatus, "");
             scheduleQuery(requestNo);
             return;
         }
+
+        if (paymentStatus.isEmpty() || "FAILED".equals(paymentStatus)) {
+            enterWaitingCode(requestNo, previousStage, purchaseStatus, paymentStatus);
+            return;
+        }
         if ("PROCESSING".equals(paymentStatus)) {
+            clearWaitingCodeWindow();
             setStage(STAGE_PROCESSING);
             broadcast(EVENT_PROCESSING,
                     message.isEmpty() ? "付款结果正在确认，请勿重复出示付款码" : message,
@@ -404,6 +427,8 @@ public final class AuthCodePaymentManager {
             return;
         }
         if ("SUCCESS".equals(paymentStatus)) {
+            clearWaitingCodeWindow();
+            preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();
             setStage(STAGE_PAID);
             broadcast(EVENT_SUCCESS,
                     message.isEmpty() ? "支付成功，等待平台出珠指令" : message,
@@ -411,20 +436,53 @@ public final class AuthCodePaymentManager {
             scheduleQuery(requestNo);
             return;
         }
+        clearWaitingCodeWindow();
         setStage(STAGE_PROCESSING);
         broadcast(EVENT_PROCESSING, "正在确认付款结果，请勿重复出示付款码",
                 requestNo, purchaseStatus, paymentStatus, "");
         scheduleQuery(requestNo);
     }
 
-    /** 进程重建只恢复原 clientRequestNo，不生成替代订单。 */
+    /**
+     * 明确等待顾客付款码时不轮询服务器，只运行持久化的 60 秒顾客操作窗口。
+     */
+    private synchronized void enterWaitingCode(
+            String requestNo,
+            String previousStage,
+            String purchaseStatus,
+            String paymentStatus
+    ) {
+        cancelQueryTask();
+        consecutiveQueryFailures = 0;
+        SharedPreferences.Editor editor = preferences().edit()
+                .putString(KEY_STAGE, STAGE_WAITING_CODE)
+                .putBoolean(KEY_CANCEL_PENDING, false)
+                .putLong(KEY_QUERY_DEADLINE, 0L);
+        if (!STAGE_WAITING_CODE.equals(previousStage)) {
+            editor.putLong(KEY_WAITING_CODE_DEADLINE, 0L);
+        }
+        if (!editor.commit()) {
+            occupancy.markBlocked("AUTH_CODE_WAITING_STATE_PERSISTENCE_FAILED");
+            broadcast(EVENT_FAILED, "付款等待状态无法可靠保存，设备已停止本次交易",
+                    requestNo, purchaseStatus, paymentStatus, "");
+            return;
+        }
+        broadcast(EVENT_READY,
+                "FAILED".equals(paymentStatus)
+                        ? "本次付款未成功，请刷新付款码后重新出示"
+                        : "请出示微信或支付宝付款码",
+                requestNo, purchaseStatus, paymentStatus, "");
+        scheduleWaitingCodeTimeout(requestNo);
+    }
+
+    /** 进程重建只恢复原 clientRequestNo，不生成替代订单，也不重置已有超时截止时间。 */
     public synchronized void resumePendingPayment() {
         String requestNo = getCurrentRequestNo();
         if (requestNo.isEmpty()) {
             return;
         }
-        queryDeadline = System.currentTimeMillis() + MAX_QUERY_DURATION_MS;
-        cancelQuery();
+        cancelQueryTask();
+        cancelWaitingCodeTimeoutTask();
         String stage = getStage();
         TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
         if (snapshot == null) {
@@ -491,16 +549,41 @@ public final class AuthCodePaymentManager {
             }
             return;
         }
+        if (STAGE_WAITING_CODE.equals(stage)
+                && PaymentAuthCodePolicy.canSubmit(getPaymentStatus())) {
+            // 旧版本遗留会话没有 deadline 时从升级后的首次恢复起给 60 秒，不进行空轮询。
+            broadcast(EVENT_READY,
+                    "FAILED".equals(getPaymentStatus())
+                            ? "本次付款未成功，请刷新付款码后重新出示"
+                            : "请出示微信或支付宝付款码",
+                    requestNo, getPurchaseStatus(), getPaymentStatus(), "");
+            scheduleWaitingCodeTimeout(requestNo);
+            return;
+        }
+        if (STAGE_BLOCKED.equals(stage)) {
+            broadcast(EVENT_FAILED, "付款状态长时间无法确认，请联系工作人员",
+                    requestNo, getPurchaseStatus(), getPaymentStatus(), "");
+            return;
+        }
+        long storedQueryDeadline = preferences().getLong(KEY_QUERY_DEADLINE, 0L);
+        if (storedQueryDeadline > 0L && System.currentTimeMillis() >= storedQueryDeadline) {
+            onQueryTimeout(requestNo);
+            return;
+        }
         try {
+            consecutiveQueryFailures = 0;
             handleResult(requestNo, invokePurchaseMethod("queryAuthCodePurchase", requestNo));
         } catch (Throwable error) {
-            Log.w(TAG, "恢复付款码订单查询失败，将继续使用原请求号重试");
-            scheduleQuery(requestNo);
+            scheduleQueryAfterFailure(requestNo);
         }
     }
 
     /** 仅等待付款码/明确 FAILED 时允许顾客主动取消。 */
     public synchronized boolean cancelCurrentPayment() {
+        return cancelCurrentPayment(false);
+    }
+
+    private synchronized boolean cancelCurrentPayment(boolean timedOut) {
         String requestNo = getCurrentRequestNo();
         if (requestNo.isEmpty() || !canCancelCurrentPayment()) {
             return false;
@@ -512,12 +595,20 @@ public final class AuthCodePaymentManager {
                 || !occupancy.markQrCancelling(requestNo)) {
             return false;
         }
-        if (!setStage(STAGE_CANCELLING)) {
+        if (!preferences().edit()
+                .putString(KEY_STAGE, STAGE_CANCELLING)
+                .putBoolean(KEY_CANCEL_PENDING, true)
+                .putLong(KEY_WAITING_CODE_DEADLINE, 0L)
+                .putLong(KEY_QUERY_DEADLINE, 0L)
+                .commit()) {
             occupancy.markBlocked("AUTH_CODE_CANCEL_STATE_PERSISTENCE_FAILED");
             return false;
         }
-        cancelQuery();
-        broadcast(EVENT_CANCELLING, "正在确认并关闭付款码订单",
+        cancelWaitingCodeTimeoutTask();
+        cancelQueryTask();
+        consecutiveQueryFailures = 0;
+        broadcast(EVENT_CANCELLING,
+                timedOut ? "等待付款码超时，正在关闭付款码订单" : "正在确认并关闭付款码订单",
                 requestNo, getPurchaseStatus(), getPaymentStatus(), "");
         executor.execute(() -> {
             try {
@@ -554,12 +645,12 @@ public final class AuthCodePaymentManager {
             return;
         }
         if (snapshot == null) {
-            cancelQuery();
             clearState();
             return;
         }
 
-        cancelQuery();
+        cancelQueryTask();
+        cancelWaitingCodeTimeoutTask();
         String stage = getStage();
         if (STAGE_PREPARING.equals(stage)
                 || STAGE_CREATING.equals(stage)
@@ -591,47 +682,159 @@ public final class AuthCodePaymentManager {
         }
     }
 
+    /**
+     * WAITING_CODE 不允许进入查单循环；只有创建/支付/取消结果未知或 PROCESSING 等状态查原单。
+     */
     private synchronized void scheduleQuery(String requestNo) {
-        if (!requestNo.equals(getCurrentRequestNo())) {
+        scheduleQuery(requestNo, AuthCodePaymentTimingPolicy.NORMAL_QUERY_INTERVAL_SECONDS);
+    }
+
+    private synchronized void scheduleQuery(String requestNo, long delaySeconds) {
+        if (!requestNo.equals(getCurrentRequestNo()) || STAGE_WAITING_CODE.equals(getStage())) {
             return;
         }
-        if (queryDeadline <= 0L) {
-            queryDeadline = System.currentTimeMillis() + MAX_QUERY_DURATION_MS;
+        long deadline = ensureQueryDeadline(requestNo);
+        if (deadline <= 0L) {
+            return;
         }
         if (queryTask != null && !queryTask.isDone()) {
             return;
         }
+        long now = System.currentTimeMillis();
+        if (now >= deadline) {
+            onQueryTimeout(requestNo);
+            return;
+        }
+        long requestedDelayMs = Math.max(0L, delaySeconds) * 1000L;
+        long delayMs = Math.min(requestedDelayMs, Math.max(0L, deadline - now));
         queryTask = executor.schedule(() -> {
             synchronized (AuthCodePaymentManager.this) {
                 queryTask = null;
             }
-            if (!requestNo.equals(getCurrentRequestNo())) {
+            if (!requestNo.equals(getCurrentRequestNo())
+                    || STAGE_WAITING_CODE.equals(getStage())) {
                 return;
             }
-            if (System.currentTimeMillis() >= queryDeadline) {
-                setStage(STAGE_BLOCKED);
-                occupancy.markBlocked("AUTH_CODE_QUERY_TIMEOUT");
-                broadcast(EVENT_FAILED, "付款状态长时间无法确认，请联系工作人员",
-                        requestNo, getPurchaseStatus(), getPaymentStatus(), "");
+            long storedDeadline = preferences().getLong(KEY_QUERY_DEADLINE, 0L);
+            if (storedDeadline <= 0L || System.currentTimeMillis() >= storedDeadline) {
+                onQueryTimeout(requestNo);
                 return;
             }
             try {
-                handleResult(requestNo,
-                        invokePurchaseMethod("queryAuthCodePurchase", requestNo));
+                DeviceAppNativePurchaseResult result =
+                        invokePurchaseMethod("queryAuthCodePurchase", requestNo);
+                synchronized (AuthCodePaymentManager.this) {
+                    consecutiveQueryFailures = 0;
+                }
+                handleResult(requestNo, result);
             } catch (Throwable error) {
-                Log.w(TAG, "付款码订单查询失败，将继续使用原请求号重试");
                 broadcast(EVENT_PROCESSING, "网络波动，正在继续确认原付款码订单",
                         requestNo, getPurchaseStatus(), getPaymentStatus(), "");
-                scheduleQuery(requestNo);
+                scheduleQueryAfterFailure(requestNo);
             }
-        }, QUERY_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        }, delayMs, TimeUnit.MILLISECONDS);
     }
 
-    private synchronized void cancelQuery() {
+    private synchronized void scheduleQueryAfterFailure(String requestNo) {
+        if (!requestNo.equals(getCurrentRequestNo()) || STAGE_WAITING_CODE.equals(getStage())) {
+            return;
+        }
+        consecutiveQueryFailures++;
+        long delay = AuthCodePaymentTimingPolicy.queryRetryDelaySeconds(consecutiveQueryFailures);
+        Log.w(TAG, "付款码查单连续失败=" + consecutiveQueryFailures
+                + "，" + delay + "秒后继续查询原请求号");
+        scheduleQuery(requestNo, delay);
+    }
+
+    private synchronized long ensureQueryDeadline(String requestNo) {
+        if (!requestNo.equals(getCurrentRequestNo())) {
+            return 0L;
+        }
+        long deadline = preferences().getLong(KEY_QUERY_DEADLINE, 0L);
+        if (deadline > 0L) {
+            return deadline;
+        }
+        deadline = System.currentTimeMillis() + AuthCodePaymentTimingPolicy.MAX_QUERY_DURATION_MS;
+        if (!preferences().edit().putLong(KEY_QUERY_DEADLINE, deadline).commit()) {
+            setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("AUTH_CODE_QUERY_DEADLINE_PERSISTENCE_FAILED");
+            broadcast(EVENT_FAILED, "付款查单超时状态无法可靠保存，请联系工作人员",
+                    requestNo, getPurchaseStatus(), getPaymentStatus(), "");
+            return 0L;
+        }
+        return deadline;
+    }
+
+    private synchronized void onQueryTimeout(String requestNo) {
+        if (!requestNo.equals(getCurrentRequestNo())) {
+            return;
+        }
+        cancelQueryTask();
+        setStage(STAGE_BLOCKED);
+        occupancy.markBlocked("AUTH_CODE_QUERY_TIMEOUT");
+        broadcast(EVENT_FAILED, "付款状态长时间无法确认，请联系工作人员",
+                requestNo, getPurchaseStatus(), getPaymentStatus(), "");
+    }
+
+    /** 等待顾客出示付款码最多 60 秒，Activity/进程恢复不会重新开始计时。 */
+    private synchronized void scheduleWaitingCodeTimeout(String requestNo) {
+        if (!requestNo.equals(getCurrentRequestNo())
+                || !STAGE_WAITING_CODE.equals(getStage())
+                || !PaymentAuthCodePolicy.canSubmit(getPaymentStatus())) {
+            return;
+        }
+        cancelWaitingCodeTimeoutTask();
+        long deadline = preferences().getLong(KEY_WAITING_CODE_DEADLINE, 0L);
+        if (deadline <= 0L) {
+            deadline = System.currentTimeMillis()
+                    + AuthCodePaymentTimingPolicy.WAITING_CODE_TIMEOUT_MS;
+            if (!preferences().edit().putLong(KEY_WAITING_CODE_DEADLINE, deadline).commit()) {
+                setStage(STAGE_BLOCKED);
+                occupancy.markBlocked("AUTH_CODE_WAITING_DEADLINE_PERSISTENCE_FAILED");
+                broadcast(EVENT_FAILED, "付款码等待超时状态无法可靠保存，请联系工作人员",
+                        requestNo, getPurchaseStatus(), getPaymentStatus(), "");
+                return;
+            }
+        }
+        long delayMs = Math.max(0L, deadline - System.currentTimeMillis());
+        waitingCodeTimeoutTask = executor.schedule(() -> {
+            synchronized (AuthCodePaymentManager.this) {
+                waitingCodeTimeoutTask = null;
+            }
+            if (!requestNo.equals(getCurrentRequestNo())
+                    || !STAGE_WAITING_CODE.equals(getStage())
+                    || !PaymentAuthCodePolicy.canSubmit(getPaymentStatus())) {
+                return;
+            }
+            Log.i(TAG, "等待付款码60秒超时，开始关闭原付款码订单");
+            if (!cancelCurrentPayment(true)
+                    && requestNo.equals(getCurrentRequestNo())
+                    && STAGE_WAITING_CODE.equals(getStage())) {
+                setStage(STAGE_BLOCKED);
+                occupancy.markBlocked("AUTH_CODE_WAITING_TIMEOUT_CANCEL_FAILED");
+                broadcast(EVENT_FAILED, "付款码等待超时但订单无法安全关闭，请联系工作人员",
+                        requestNo, getPurchaseStatus(), getPaymentStatus(), "");
+            }
+        }, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    private synchronized void cancelQueryTask() {
         if (queryTask != null) {
             queryTask.cancel(false);
             queryTask = null;
         }
+    }
+
+    private synchronized void cancelWaitingCodeTimeoutTask() {
+        if (waitingCodeTimeoutTask != null) {
+            waitingCodeTimeoutTask.cancel(false);
+            waitingCodeTimeoutTask = null;
+        }
+    }
+
+    private synchronized void clearWaitingCodeWindow() {
+        cancelWaitingCodeTimeoutTask();
+        preferences().edit().putLong(KEY_WAITING_CODE_DEADLINE, 0L).commit();
     }
 
     private void failPreparation(String requestNo, String message) {
@@ -802,7 +1005,10 @@ public final class AuthCodePaymentManager {
         return safe(preferences().getString(KEY_STAGE, ""));
     }
 
-    private void clearState() {
+    private synchronized void clearState() {
+        cancelQueryTask();
+        cancelWaitingCodeTimeoutTask();
+        consecutiveQueryFailures = 0;
         preferences().edit().clear().commit();
     }
 
