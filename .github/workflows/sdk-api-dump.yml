@@ -1,4 +1,4 @@
-name: Unified Purchase SDK Check
+name: Unified Purchase State Audit
 on:
   push:
     paths:
@@ -19,347 +19,168 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Apply unified purchase SDK/state fixes
+      - name: Apply second-pass state fixes
         shell: bash
         run: |
           python3 <<'PY'
           from pathlib import Path
+          path = Path('GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java')
+          text = path.read_text(encoding='utf-8')
 
-          def replace_one(path, old, new):
-              p = Path(path)
-              text = p.read_text(encoding='utf-8')
+          def one(old, new):
+              global text
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'{path}: expected exactly one match, got {count}: {old[:100]!r}')
-              p.write_text(text.replace(old, new), encoding='utf-8')
+                  raise SystemExit(f'expected one match, got {count}: {old[:120]!r}')
+              text = text.replace(old, new)
 
-          def replace_all(path, old, new, expected_min=1):
-              p = Path(path)
-              text = p.read_text(encoding='utf-8')
-              count = text.count(old)
-              if count < expected_min:
-                  raise SystemExit(f'{path}: expected at least {expected_min} matches, got {count}: {old!r}')
-              p.write_text(text.replace(old, new), encoding='utf-8')
+          one(
+              '''        if (!requestNo.equals(getCurrentOrderId()) || result == null) {
+            return;
+        }
 
-          sdk = 'GouzhuApp/app/src/main/java/com/gouzhu/sdk/DeviceSdkManager.java'
-          replace_one(
-              sdk,
-              'import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;\n',
-              'import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;\n'
-              'import com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult;\n'
-          )
-          replace_all(sdk, 'public Object createPurchase(', 'public DeviceAppPurchaseResult createPurchase(')
-          replace_all(sdk, 'public Object queryPurchase(', 'public DeviceAppPurchaseResult queryPurchase(')
-          replace_all(sdk, 'public Object cancelPurchase(', 'public DeviceAppPurchaseResult cancelPurchase(')
-          replace_all(sdk, 'public Object payByAuthCode(', 'public DeviceAppPurchaseResult payByAuthCode(')
-          replace_one(
-              sdk,
-              '     * 返回值保持 Object，业务层通过只读反射读取字段，避免设备工程绑死 SDK 模型实现细节。\n',
-              '     * 使用 SDK 的 DeviceAppPurchaseResult 强类型结果，避免字段名变化被反射静默吞掉。\n'
-          )
+        String purchaseStatus = normalize(result.getPurchaseStatus());
+''',
+              '''        if (!requestNo.equals(getCurrentOrderId()) || result == null) {
+            return;
+        }
+        String resultRequestNo = safe(result.getClientRequestNo());
+        if (!resultRequestNo.isEmpty() && !requestNo.equals(resultRequestNo)) {
+            // SDK 响应必须属于当前持久化请求；身份错配时禁止用错误订单推进本机状态。
+            cancelPurchaseQuery();
+            setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_RESPONSE_REQUEST_MISMATCH");
+            broadcast(
+                    EVENT_FAILED,
+                    "支付响应与当前订单不一致，设备已停止新交易",
+                    requestNo,
+                    null,
+                    "REQUEST_MISMATCH"
+            );
+            return;
+        }
 
-          policy = 'GouzhuApp/app/src/main/java/com/gouzhu/payment/UnifiedPurchasePolicy.java'
-          replace_one(
-              policy,
-              '    static boolean blocksNewPayment(String paymentStatus, String selectedPaymentMode) {\n'
-              '        if (!normalize(selectedPaymentMode).isEmpty()) {\n'
-              '            return true;\n'
-              '        }\n'
-              '        String payment = normalize(paymentStatus);\n'
-              '        return "SUBMITTING".equals(payment)\n'
-              '                || "PROCESSING".equals(payment)\n'
-              '                || "SUCCESS".equals(payment)\n'
-              '                || "PAYMENT_METHOD_ALREADY_SELECTED".equals(payment)\n'
-              '                || "ORDER_ALREADY_PAID".equals(payment)\n'
-              '                || "ORDER_CLOSED".equals(payment);\n'
-              '    }\n',
-              '    static boolean blocksNewPayment(String paymentStatus, String selectedPaymentMode) {\n'
-              '        if (!normalize(selectedPaymentMode).isEmpty()) {\n'
-              '            return true;\n'
-              '        }\n'
-              '        String payment = normalize(paymentStatus);\n'
-              '        return "SUBMITTING".equals(payment)\n'
-              '                || "PROCESSING".equals(payment)\n'
-              '                || "SUCCESS".equals(payment)\n'
-              '                || "PAYMENT_METHOD_ALREADY_SELECTED".equals(payment)\n'
-              '                || "ORDER_ALREADY_PAID".equals(payment)\n'
-              '                || "ORDER_CLOSED".equals(payment);\n'
-              '    }\n\n'
-              '    /** 服务端明确回到未选支付方式的待支付态时，允许下一次新付款尝试。 */\n'
-              '    static boolean canRearmAfterExplicitFailure(\n'
-              '            String purchaseStatus,\n'
-              '            String paymentStatus,\n'
-              '            String selectedPaymentMode,\n'
-              '            String payChannel\n'
-              '    ) {\n'
-              '        return "WAITING_PAYMENT".equals(normalize(purchaseStatus))\n'
-              '                && "FAILED".equals(normalize(paymentStatus))\n'
-              '                && normalize(selectedPaymentMode).isEmpty()\n'
-              '                && (normalize(payChannel).isEmpty()\n'
-              '                || "DEVICE_PURCHASE".equals(normalize(payChannel)));\n'
-              '    }\n'
+        String purchaseStatus = normalize(result.getPurchaseStatus());
+'''
           )
 
-          test = 'GouzhuApp/app/src/test/java/com/gouzhu/payment/UnifiedPurchasePolicyTest.java'
-          replace_one(
-              test,
-              '    @Test\n'
-              '    public void networkBackoffMatchesServerGuide() {\n',
-              '    @Test\n'
-              '    public void selectedOrProcessingPaymentBlocksNewPaymentEntry() {\n'
-              '        assertTrue(UnifiedPurchasePolicy.blocksNewPayment("", "SCAN"));\n'
-              '        assertTrue(UnifiedPurchasePolicy.blocksNewPayment("", "AUTH_CODE"));\n'
-              '        assertTrue(UnifiedPurchasePolicy.blocksNewPayment("PROCESSING", ""));\n'
-              '        assertTrue(UnifiedPurchasePolicy.blocksNewPayment("ORDER_ALREADY_PAID", ""));\n'
-              '        assertFalse(UnifiedPurchasePolicy.blocksNewPayment("FAILED", ""));\n'
-              '    }\n\n'
-              '    @Test\n'
-              '    public void onlyExplicitUnselectedFailureRearmsPayment() {\n'
-              '        assertTrue(UnifiedPurchasePolicy.canRearmAfterExplicitFailure(\n'
-              '                "WAITING_PAYMENT", "FAILED", "", "DEVICE_PURCHASE"));\n'
-              '        assertFalse(UnifiedPurchasePolicy.canRearmAfterExplicitFailure(\n'
-              '                "WAITING_PAYMENT", "FAILED", "AUTH_CODE", "WECHAT_MICROPAY"));\n'
-              '        assertFalse(UnifiedPurchasePolicy.canRearmAfterExplicitFailure(\n'
-              '                "WAITING_PAYMENT", "PROCESSING", "", "DEVICE_PURCHASE"));\n'
-              '        assertFalse(UnifiedPurchasePolicy.canRearmAfterExplicitFailure(\n'
-              '                "DISPENSING", "FAILED", "", "DEVICE_PURCHASE"));\n'
-              '    }\n\n'
-              '    @Test\n'
-              '    public void networkBackoffMatchesServerGuide() {\n'
+          one(
+              '''        String paymentStatus = normalize(result.getPaymentStatus());
+        String selectedMode = normalize(result.getSelectedPaymentMode());
+        if (selectedMode.isEmpty()) {
+            selectedMode = getCurrentSelectedPaymentMode();
+        }
+        String payChannel = normalize(result.getPayChannel());
+        if (payChannel.isEmpty()) {
+            payChannel = getCurrentPayChannel();
+        }
+''',
+              '''        String paymentStatus = normalize(result.getPaymentStatus());
+        String rawSelectedMode = normalize(result.getSelectedPaymentMode());
+        String rawPayChannel = normalize(result.getPayChannel());
+        String selectedMode = rawSelectedMode;
+        String payChannel = rawPayChannel;
+        if (!"FAILED".equals(paymentStatus)) {
+            // 普通部分响应可沿用上一快照；明确 FAILED 必须接受服务端“已清空支付入口”的最新状态。
+            if (selectedMode.isEmpty()) {
+                selectedMode = getCurrentSelectedPaymentMode();
+            }
+            if (payChannel.isEmpty()) {
+                payChannel = getCurrentPayChannel();
+            }
+        }
+'''
           )
 
-          occupancy = 'GouzhuApp/app/src/main/java/com/gouzhu/transaction/TransactionOccupancyManager.java'
-          replace_one(
-              occupancy,
-              '    public boolean markQrCancelling(String clientRequestNo) {\n'
-              '        Snapshot snapshot = current();\n'
-              '        if (snapshot == null\n'
-              '                || !OWNER_QR_PURCHASE.equals(snapshot.ownerType)\n'
-              '                || !clientRequestNo.equals(snapshot.clientRequestNo)) {\n'
-              '            return false;\n'
-              '        }\n'
-              '        return transitionAnyPhase(snapshot.sessionId, PHASE_CANCELLING, "");\n'
-              '    }\n',
-              '    public boolean markQrCancelling(String clientRequestNo) {\n'
-              '        if (blank(clientRequestNo)) {\n'
-              '            return false;\n'
-              '        }\n'
-              '        ensureSchema();\n'
-              '        Snapshot changed;\n'
-              '        synchronized (DB_LOCK) {\n'
-              '            SQLiteDatabase db = store.getWritableDatabase();\n'
-              '            db.beginTransaction();\n'
-              '            try {\n'
-              '                Snapshot current = load(db);\n'
-              '                if (current == null\n'
-              '                        || !OWNER_QR_PURCHASE.equals(current.ownerType)\n'
-              '                        || !clientRequestNo.equals(current.clientRequestNo)\n'
-              '                        || !(PHASE_PREPARING.equals(current.phase)\n'
-              '                        || PHASE_WAITING_PAYMENT.equals(current.phase)\n'
-              '                        || PHASE_CONFIRMING_CLOSE.equals(current.phase))) {\n'
-              '                    return false;\n'
-              '                }\n'
-              '                changed = current.copy();\n'
-              '                changed.phase = PHASE_CANCELLING;\n'
-              '                changed.blockedReason = "";\n'
-              '                changed.updatedAt = System.currentTimeMillis();\n'
-              '                if (!update(db, changed)) {\n'
-              '                    return false;\n'
-              '                }\n'
-              '                db.setTransactionSuccessful();\n'
-              '            } finally {\n'
-              '                db.endTransaction();\n'
-              '            }\n'
-              '        }\n'
-              '        broadcast(changed);\n'
-              '        return true;\n'
-              '    }\n'
+          one(
+              '''        if (explicitAttemptFailed
+                && isAuthCodeSubmitted()
+                && !preferences().edit().putBoolean(KEY_AUTH_CODE_SUBMITTED, false).commit()) {
+            setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_REARM_STATE_PERSISTENCE_FAILED");
+            broadcast(
+                    EVENT_FAILED,
+                    "支付重试状态无法可靠保存，设备已停止本次交易",
+                    requestNo,
+                    null,
+                    purchaseStatus
+            );
+            return;
+        }
+
+        // ORDER_CLOSED 可以先于 purchaseStatus=CLOSED 返回，必须权威关闭本地统一会话。
+        if (paymentSaysClosed) {
+            finishClosedByPaymentStatus(requestNo, message, purchaseStatus);
+            return;
+        }
+''',
+              '''        if (explicitAttemptFailed
+                && !preferences().edit()
+                .putBoolean(KEY_AUTH_CODE_SUBMITTED, false)
+                .putLong(KEY_QUERY_DEADLINE, 0L)
+                .commit()) {
+            setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_REARM_STATE_PERSISTENCE_FAILED");
+            broadcast(
+                    EVENT_FAILED,
+                    "支付重试状态无法可靠保存，设备已停止本次交易",
+                    requestNo,
+                    null,
+                    purchaseStatus
+            );
+            return;
+        }
+'''
           )
 
-          activity = 'GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentQrActivity.java'
-          replace_one(
-              activity,
-              '        if (manager.canAutoCancelForUserTimeout()) {\n'
-              '            countdownText.setVisibility(View.VISIBLE);\n'
-              '            startCountdown(selectionDeadline);\n',
-              '        if (manager.canAutoCancelForUserTimeout()) {\n'
-              '            countdownText.setVisibility(View.VISIBLE);\n'
-              '            // 明确 FAILED 后若服务端回到未选支付方式状态，重新给顾客完整 60 秒。\n'
-              '            selectionDeadline = PaymentQrPopupReceiver.ensureDeadline(this, requestNo);\n'
-              '            startCountdown(selectionDeadline);\n'
+          one(
+              '''        // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。
+        if (terminal) {
+''',
+              '''        /*
+         * ORDER_CLOSED 只有在 purchaseStatus 没有给出更强的出珠/退款/已完成语义时才结束
+         * 会话。取消与支付竞态中，DISPENSING/COMPLETED 必须保持支付胜出结果。
+         */
+        if (paymentSaysClosed) {
+            finishClosedByPaymentStatus(requestNo, message, purchaseStatus);
+            return;
+        }
+
+        // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。
+        if (terminal) {
+'''
           )
 
-          manager = 'GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java'
-          replace_one(
-              manager,
-              'import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;\n',
-              'import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;\n'
-              'import com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult;\n'
-          )
-          replace_one(manager, 'import java.lang.reflect.Array;\n', '')
-          replace_one(manager, 'import java.lang.reflect.Method;\n', '')
-          replace_one(manager, 'import java.util.Locale;\n', 'import java.util.List;\nimport java.util.Locale;\n')
-          replace_one(manager, '    private static final String KEY_CURRENT_EXPIRE_TIME = "currentExpireTime";\n', '')
-          replace_one(manager, '                .putLong(KEY_CURRENT_EXPIRE_TIME, 0L)\n', '')
-          replace_one(manager, '                .remove(KEY_CURRENT_EXPIRE_TIME)\n', '')
-          replace_all(manager, 'Object result = sdkManager.', 'DeviceAppPurchaseResult result = sdkManager.', expected_min=6)
-          replace_one(
-              manager,
-              '    private synchronized void handlePurchaseResult(String requestNo, Object result) {\n',
-              '    private synchronized void handlePurchaseResult(\n'
-              '            String requestNo,\n'
-              '            DeviceAppPurchaseResult result\n'
-              '    ) {\n'
-          )
-          replace_one(
-              manager,
-              '        String purchaseStatus = normalize(readString(result, "getPurchaseStatus"));\n'
-              '        if (purchaseStatus.isEmpty()) {\n'
-              '            purchaseStatus = getCurrentPurchaseStatus();\n'
-              '        }\n'
-              '        String paymentStatus = normalize(readString(result, "getPaymentStatus"));\n'
-              '        String selectedMode = normalize(readString(result, "getSelectedPaymentMode"));\n'
-              '        if (selectedMode.isEmpty()) {\n'
-              '            selectedMode = getCurrentSelectedPaymentMode();\n'
-              '        }\n'
-              '        String payChannel = normalize(readString(result, "getPayChannel"));\n'
-              '        if (payChannel.isEmpty()) {\n'
-              '            payChannel = getCurrentPayChannel();\n'
-              '        }\n'
-              '        String supportedChannels = readSupportedChannels(result);\n'
-              '        if (supportedChannels.isEmpty()) {\n'
-              '            supportedChannels = safe(\n'
-              '                    preferences().getString(KEY_CURRENT_SUPPORTED_CHANNELS, "")\n'
-              '            );\n'
-              '        }\n'
-              '        String qrContent = safe(readString(result, "getScanUrl"));\n'
-              '        long expireTime = readLong(result, "getExpireTime", "getExpireAt");\n'
-              '        boolean terminal = readBoolean(result, "isTerminal", "getTerminal");\n'
-              '        String message = firstNonBlank(\n'
-              '                readString(result, "getPaymentMessage"),\n'
-              '                readString(result, "getMessage"),\n'
-              '                paymentStatus,\n'
-              '                purchaseStatus\n'
-              '        );\n',
-              '        String purchaseStatus = normalize(result.getPurchaseStatus());\n'
-              '        if (purchaseStatus.isEmpty()) {\n'
-              '            purchaseStatus = getCurrentPurchaseStatus();\n'
-              '        }\n'
-              '        String paymentStatus = normalize(result.getPaymentStatus());\n'
-              '        String selectedMode = normalize(result.getSelectedPaymentMode());\n'
-              '        if (selectedMode.isEmpty()) {\n'
-              '            selectedMode = getCurrentSelectedPaymentMode();\n'
-              '        }\n'
-              '        String payChannel = normalize(result.getPayChannel());\n'
-              '        if (payChannel.isEmpty()) {\n'
-              '            payChannel = getCurrentPayChannel();\n'
-              '        }\n'
-              '        String supportedChannels = readSupportedChannels(result.getSupportedChannels());\n'
-              '        if (supportedChannels.isEmpty()) {\n'
-              '            supportedChannels = safe(\n'
-              '                    preferences().getString(KEY_CURRENT_SUPPORTED_CHANNELS, "")\n'
-              '            );\n'
-              '        }\n'
-              '        String qrContent = safe(result.getScanUrl());\n'
-              '        boolean terminal = result.isTerminal();\n'
-              '        String message = firstNonBlank(\n'
-              '                result.getPaymentMessage(),\n'
-              '                result.getMessage(),\n'
-              '                paymentStatus,\n'
-              '                purchaseStatus\n'
-              '        );\n'
-          )
-          replace_one(
-              manager,
-              '        if (expireTime > 0L) {\n'
-              '            editor.putLong(KEY_CURRENT_EXPIRE_TIME, expireTime);\n'
-              '        }\n',
-              ''
-          )
-          replace_one(
-              manager,
-              '        boolean paymentMethodAlreadySelected =\n'
-              '                "PAYMENT_METHOD_ALREADY_SELECTED".equals(paymentStatus);\n\n'
-              '        // ORDER_CLOSED 可以先于 purchaseStatus=CLOSED 返回，必须权威关闭本地统一会话。\n',
-              '        boolean paymentMethodAlreadySelected =\n'
-              '                "PAYMENT_METHOD_ALREADY_SELECTED".equals(paymentStatus);\n'
-              '        boolean explicitAttemptFailed =\n'
-              '                UnifiedPurchasePolicy.canRearmAfterExplicitFailure(\n'
-              '                        purchaseStatus,\n'
-              '                        paymentStatus,\n'
-              '                        selectedMode,\n'
-              '                        payChannel\n'
-              '                );\n'
-              '        if (explicitAttemptFailed\n'
-              '                && isAuthCodeSubmitted()\n'
-              '                && !preferences().edit().putBoolean(KEY_AUTH_CODE_SUBMITTED, false).commit()) {\n'
-              '            setStage(STAGE_BLOCKED);\n'
-              '            occupancy.markBlocked("PAYMENT_REARM_STATE_PERSISTENCE_FAILED");\n'
-              '            broadcast(\n'
-              '                    EVENT_FAILED,\n'
-              '                    "支付重试状态无法可靠保存，设备已停止本次交易",\n'
-              '                    requestNo,\n'
-              '                    null,\n'
-              '                    purchaseStatus\n'
-              '            );\n'
-              '            return;\n'
-              '        }\n\n'
-              '        // ORDER_CLOSED 可以先于 purchaseStatus=CLOSED 返回，必须权威关闭本地统一会话。\n'
+          one(
+              '''            if (requestNo.isEmpty()) {
+                return ScanSubmission.handled(
+                        false,
+                        "请先选择购珠套餐，再出示微信或支付宝付款码",
+                        channel
+                );
+            }
+''',
+              '''            if (requestNo.isEmpty()) {
+                // 没有购珠会话时保持原扫码业务路由；仅活动购珠订单消费付款码格式数据。
+                return ScanSubmission.notHandled();
+            }
+'''
           )
 
-          old_state = '''        // 非终态才允许 occupancy 改阶段；不会在这里同步清空 payment prefs。\n        occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);\n\n        switch (purchaseStatus) {\n            case "DISPENSING":\n                cancelPurchaseQuery();\n                preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();\n                setStage(STAGE_PAID);\n                broadcast(\n                        EVENT_SUCCESS,\n                        message.isEmpty() ? "支付成功，等待平台出珠指令" : message,\n                        requestNo,\n                        null,\n                        purchaseStatus\n                );\n                return;\n            case "REFUNDING":\n                setStage(STAGE_CONFIRMING);\n                broadcast(\n                        EVENT_WAITING,\n                        message.isEmpty() ? "退款处理中" : message,\n                        requestNo,\n                        null,\n                        purchaseStatus\n                );\n                schedulePurchaseQuery(requestNo);\n                return;\n            case "EXPIRED":\n                setStage(STAGE_CONFIRMING);\n                broadcast(\n                        EVENT_WAITING,\n                        "订单已过期，正在确认最终支付/关单结果",\n                        requestNo,\n                        null,\n                        purchaseStatus\n                );\n                schedulePurchaseQuery(requestNo);\n                return;\n            default:\n                break;\n        }\n\n        // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。\n        if (terminal) {\n            cancelPurchaseQuery();\n            setStage(STAGE_BLOCKED);\n            occupancy.markBlocked("PAYMENT_UNKNOWN_TERMINAL_" + safe(purchaseStatus));\n            broadcast(\n                    EVENT_FAILED,\n                    message.isEmpty() ? "支付订单进入未知终态，请联系工作人员" : message,\n                    requestNo,\n                    null,\n                    purchaseStatus\n            );\n            return;\n        }\n\n        // 取消已经发起时，任何非终态响应都只能继续查询原订单。\n        if (isCancelPending()) {\n            setStage(STAGE_CONFIRMING);\n            broadcast(\n                    EVENT_WAITING,\n                    "正在确认当前订单关闭结果",\n                    requestNo,\n                    null,\n                    purchaseStatus\n            );\n            schedulePurchaseQuery(requestNo);\n            return;\n        }\n\n        if (paymentSaysPaid || "SUCCESS".equals(paymentStatus)) {\n            setStage(STAGE_PAID);\n            broadcast(\n                    EVENT_SUCCESS,\n                    message.isEmpty() ? "订单已支付，等待平台出珠指令" : message,\n                    requestNo,\n                    null,\n                    purchaseStatus\n            );\n            // purchaseStatus 尚未进入 DISPENSING/COMPLETED 时继续收敛，但不再开放付款入口。\n            schedulePurchaseQuery(requestNo);\n            return;\n        }\n\n'''
-          new_state = '''        // 先处理服务端 purchaseStatus 的物理/退款阶段；这些状态可以覆盖本地取消等待。\n        switch (purchaseStatus) {\n            case "DISPENSING":\n                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);\n                cancelPurchaseQuery();\n                preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();\n                setStage(STAGE_PAID);\n                broadcast(\n                        EVENT_SUCCESS,\n                        message.isEmpty() ? "支付成功，等待平台出珠指令" : message,\n                        requestNo,\n                        null,\n                        purchaseStatus\n                );\n                return;\n            case "REFUNDING":\n                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);\n                setStage(STAGE_CONFIRMING);\n                broadcast(\n                        EVENT_WAITING,\n                        message.isEmpty() ? "退款处理中" : message,\n                        requestNo,\n                        null,\n                        purchaseStatus\n                );\n                schedulePurchaseQuery(requestNo);\n                return;\n            case "EXPIRED":\n                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);\n                setStage(STAGE_CONFIRMING);\n                broadcast(\n                        EVENT_WAITING,\n                        "订单已过期，正在确认最终支付/关单结果",\n                        requestNo,\n                        null,\n                        purchaseStatus\n                );\n                schedulePurchaseQuery(requestNo);\n                return;\n            default:\n                break;\n        }\n\n        // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。\n        if (terminal) {\n            cancelPurchaseQuery();\n            setStage(STAGE_BLOCKED);\n            occupancy.markBlocked("PAYMENT_UNKNOWN_TERMINAL_" + safe(purchaseStatus));\n            broadcast(\n                    EVENT_FAILED,\n                    message.isEmpty() ? "支付订单进入未知终态，请联系工作人员" : message,\n                    requestNo,\n                    null,\n                    purchaseStatus\n            );\n            return;\n        }\n\n        /*\n         * ORDER_ALREADY_PAID / SUCCESS 表示支付已经赢得服务端订单锁。即使本地此前刚点了\n         * 取消，也必须停止“等待关闭”语义并等待 DISPENSING/COMPLETED，不能回到套餐页。\n         */\n        if (paymentSaysPaid || "SUCCESS".equals(paymentStatus)) {\n            if (!preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit()) {\n                setStage(STAGE_BLOCKED);\n                occupancy.markBlocked("PAYMENT_WIN_STATE_PERSISTENCE_FAILED");\n                broadcast(\n                        EVENT_FAILED,\n                        "支付成功状态无法可靠保存，设备已停止新交易",\n                        requestNo,\n                        null,\n                        purchaseStatus\n                );\n                return;\n            }\n            occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);\n            setStage(STAGE_PAID);\n            broadcast(\n                    EVENT_SUCCESS,\n                    message.isEmpty() ? "订单已支付，等待平台出珠指令" : message,\n                    requestNo,\n                    null,\n                    purchaseStatus\n            );\n            // HTTP SUCCESS 只停止继续收款；真实出珠仍等待验签通过的 MQTT 指令。\n            schedulePurchaseQuery(requestNo);\n            return;\n        }\n\n        // 取消已经发起时，非终态 WAITING_PAYMENT/PROCESSING 不得把 occupancy 改回待收款。\n        if (isCancelPending()) {\n            setStage(STAGE_CONFIRMING);\n            broadcast(\n                    EVENT_WAITING,\n                    "正在确认当前订单关闭结果",\n                    requestNo,\n                    null,\n                    purchaseStatus\n            );\n            schedulePurchaseQuery(requestNo);\n            return;\n        }\n\n        // 普通非终态现在才能按服务端 purchaseStatus 推进本地占用阶段。\n        occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);\n\n'''
-          replace_one(manager, old_state, new_state)
-
-          replace_one(
-              manager,
-              '                String status = normalize(readString(result, "getPurchaseStatus"));\n'
-              '                String paymentStatus = normalize(readString(result, "getPaymentStatus"));\n',
-              '                String status = normalize(result.getPurchaseStatus());\n'
-              '                String paymentStatus = normalize(result.getPaymentStatus());\n'
-          )
-          replace_one(
-              manager,
-              '        if ("WAITING_PAYMENT".equals(getCurrentPurchaseStatus()) && !isCancelPending()) {\n',
-              '        if ("WAITING_PAYMENT".equals(getCurrentPurchaseStatus())\n'
-              '                && !isCancelPending()\n'
-              '                && !isAuthCodeSubmitted()\n'
-              '                && !UnifiedPurchasePolicy.blocksNewPayment(\n'
-              '                        getCurrentPaymentStatus(),\n'
-              '                        getCurrentSelectedPaymentMode())) {\n'
-          )
-          replace_one(
-              manager,
-              '                && !getCurrentScanUrl().isEmpty()\n'
-              '                && !isCancelPending()\n'
-              '                && !isAuthCodeSubmitted()\n'
-              '                && !"AUTH_CODE".equals(selectedMode)\n'
-              '                && !"SUCCESS".equals(getCurrentPaymentStatus())\n'
-              '                && !"ORDER_ALREADY_PAID".equals(getCurrentPaymentStatus())\n'
-              '                && !"ORDER_CLOSED".equals(getCurrentPaymentStatus());\n',
-              '                && !getCurrentScanUrl().isEmpty()\n'
-              '                && !isCancelPending()\n'
-              '                && !isAuthCodeSubmitted()\n'
-              '                && selectedMode.isEmpty()\n'
-              '                && !UnifiedPurchasePolicy.blocksNewPayment(\n'
-              '                        getCurrentPaymentStatus(),\n'
-              '                        selectedMode);\n'
-          )
-          replace_one(
-              manager,
-              '''    private static String readSupportedChannels(Object target) {\n        Object value = invokeOptional(target, "getSupportedChannels");\n        if (value == null) {\n            return "";\n        }\n        StringBuilder builder = new StringBuilder();\n        if (value instanceof Iterable) {\n            for (Object item : (Iterable<?>) value) {\n                appendChannel(builder, item);\n            }\n            return builder.toString();\n        }\n        if (value.getClass().isArray()) {\n            int length = Array.getLength(value);\n            for (int index = 0; index < length; index++) {\n                appendChannel(builder, Array.get(value, index));\n            }\n            return builder.toString();\n        }\n        appendChannel(builder, value);\n        return builder.toString();\n    }\n\n    private static void appendChannel(StringBuilder builder, Object value) {\n        String channel = normalize(value == null ? "" : String.valueOf(value));\n        if (channel.isEmpty()) {\n            return;\n        }\n        if (builder.length() > 0) {\n            builder.append(',');\n        }\n        builder.append(channel);\n    }\n\n    private static Object invokeOptional(Object target, String... methodNames) {\n        if (target == null || methodNames == null) {\n            return null;\n        }\n        for (String name : methodNames) {\n            try {\n                Method method = target.getClass().getMethod(name);\n                return method.invoke(target);\n            } catch (Throwable ignored) {\n            }\n        }\n        return null;\n    }\n\n    private static String readString(Object target, String... methodNames) {\n        Object value = invokeOptional(target, methodNames);\n        return value == null ? "" : String.valueOf(value).trim();\n    }\n\n    private static long readLong(Object target, String... methodNames) {\n        Object value = invokeOptional(target, methodNames);\n        if (value instanceof Number) {\n            return ((Number) value).longValue();\n        }\n        if (value != null) {\n            try {\n                return Long.parseLong(String.valueOf(value));\n            } catch (Throwable ignored) {\n            }\n        }\n        return 0L;\n    }\n\n    private static boolean readBoolean(Object target, String... methodNames) {\n        Object value = invokeOptional(target, methodNames);\n        if (value instanceof Boolean) {\n            return (Boolean) value;\n        }\n        return value != null && Boolean.parseBoolean(String.valueOf(value));\n    }\n\n''',
-              '''    private static String readSupportedChannels(List<String> values) {\n        if (values == null || values.isEmpty()) {\n            return "";\n        }\n        StringBuilder builder = new StringBuilder();\n        for (String value : values) {\n            String channel = normalize(value);\n            if (channel.isEmpty()) {\n                continue;\n            }\n            if (builder.length() > 0) {\n                builder.append(',');\n            }\n            builder.append(channel);\n        }\n        return builder.toString();\n    }\n\n'''
-          )
-
-          text = Path(manager).read_text(encoding='utf-8')
-          forbidden = ['readString(', 'readLong(', 'readBoolean(', 'invokeOptional(', 'KEY_CURRENT_EXPIRE_TIME']
-          leftovers = [name for name in forbidden if name in text]
-          if leftovers:
-              raise SystemExit(f'PaymentManager reflection/obsolete leftovers: {leftovers}')
-          if text.count('DeviceAppPurchaseResult result = sdkManager.') < 6:
-              raise SystemExit('PaymentManager did not convert all purchase SDK calls to strong type')
+          path.write_text(text, encoding='utf-8')
           PY
+
+      - name: Static state assertions
+        shell: bash
+        run: |
+          set -e
+          FILE=GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java
+          grep -q 'PAYMENT_RESPONSE_REQUEST_MISMATCH' "$FILE"
+          grep -q 'rawSelectedMode' "$FILE"
+          grep -q 'KEY_QUERY_DEADLINE, 0L' "$FILE"
+          grep -q '没有购珠会话时保持原扫码业务路由' "$FILE"
+          ! grep -q 'Object result = sdkManager' "$FILE"
+          ! grep -q 'readString(result' "$FILE"
 
       - name: Build and unit test
         shell: bash
@@ -367,7 +188,7 @@ jobs:
           set +e
           cd GouzhuApp
           chmod +x gradlew
-          ./gradlew --no-daemon clean :app:testDebugUnitTest :app:assembleDebug > ../unified-payment-build.log 2>&1
+          ./gradlew --no-daemon clean :app:testDebugUnitTest :app:assembleDebug > ../unified-payment-build-2.log 2>&1
           rc=$?
           cd ..
           mkdir -p docs
@@ -376,7 +197,7 @@ jobs:
             echo "source_commit=$(git rev-parse HEAD)"
             echo "auth_log_scan=$(grep -R -n -E 'Log\.[a-zA-Z]+\([^\n]*authCode|authCode[^\n]*Log\.' GouzhuApp/app/src/main/java/com/gouzhu 2>/dev/null | wc -l)"
             echo '--- build tail ---'
-            tail -n 400 unified-payment-build.log
+            tail -n 350 unified-payment-build-2.log
           } > docs/unified-payment-build-status.txt
           exit 0
 
@@ -385,13 +206,6 @@ jobs:
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add \
-            GouzhuApp/app/src/main/java/com/gouzhu/sdk/DeviceSdkManager.java \
-            GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java \
-            GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentQrActivity.java \
-            GouzhuApp/app/src/main/java/com/gouzhu/payment/UnifiedPurchasePolicy.java \
-            GouzhuApp/app/src/main/java/com/gouzhu/transaction/TransactionOccupancyManager.java \
-            GouzhuApp/app/src/test/java/com/gouzhu/payment/UnifiedPurchasePolicyTest.java \
-            docs/unified-payment-build-status.txt
-          git commit -m '统一购珠双入口适配新版SDK并修正状态竞态' || exit 0
+          git add GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java docs/unified-payment-build-status.txt
+          git commit -m '收紧统一支付订单身份和失败恢复边界' || exit 0
           git push
