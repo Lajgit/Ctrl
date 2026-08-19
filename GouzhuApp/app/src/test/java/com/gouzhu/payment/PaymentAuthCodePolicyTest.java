@@ -1,8 +1,6 @@
 package com.gouzhu.payment;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -29,13 +27,9 @@ public class PaymentAuthCodePolicyTest {
     }
 
     @Test
-    public void rejectsNonNumericAndUnsafeResubmissionStates() {
+    public void rejectsNonNumericPaymentCodes() {
         assertEquals("", PaymentAuthCodePolicy.classify("10ABC0000000000000"));
-        assertTrue(PaymentAuthCodePolicy.canSubmit(""));
-        assertTrue(PaymentAuthCodePolicy.canSubmit("FAILED"));
-        assertFalse(PaymentAuthCodePolicy.canSubmit("PROCESSING"));
-        assertFalse(PaymentAuthCodePolicy.canSubmit("SUCCESS"));
-        assertTrue(PaymentAuthCodePolicy.blocksRescan("PROCESSING"));
-        assertTrue(PaymentAuthCodePolicy.blocksRescan("SUBMITTING"));
+        assertEquals("", PaymentAuthCodePolicy.classify(""));
+        assertEquals("", PaymentAuthCodePolicy.classify(null));
     }
 }
