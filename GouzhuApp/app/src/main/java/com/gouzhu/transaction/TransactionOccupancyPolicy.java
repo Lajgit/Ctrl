@@ -85,6 +85,26 @@ public final class TransactionOccupancyPolicy {
         return "CANCELED".equals(status) || "CLOSED".equals(status);
     }
 
+    /**
+     * MQTT 物理授权可能先于 HTTP 查单到达。已进入物理阶段后，迟到的普通非终态
+     * WAITING_PAYMENT / EXPIRED / DISPENSING / 未识别状态都不能把占用阶段回退。
+     * 终态和 REFUNDING 由上层显式处理，不在这里静默忽略。
+     */
+    public static boolean shouldPreservePhysicalPhase(
+            String currentPhase,
+            String purchaseStatus
+    ) {
+        if (!isPhysicalPhase(currentPhase)) {
+            return false;
+        }
+        String status = normalize(purchaseStatus);
+        return !("CANCELED".equals(status)
+                || "CLOSED".equals(status)
+                || "COMPLETED".equals(status)
+                || "REFUNDING".equals(status)
+                || "REFUNDED".equals(status));
+    }
+
     public static String normalize(String value) {
         return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
     }

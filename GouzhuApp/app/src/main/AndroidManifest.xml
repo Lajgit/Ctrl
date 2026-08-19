@@ -136,22 +136,7 @@
             </intent-filter>
         </receiver>
 
-        <!--
-            仅在本地扫码会话处于物理执行前阶段时工作。
-            平台连续确认订单不存在后释放幽灵扫码占用，避免界面永久不可点击。
-        -->
-        <receiver
-            android:name=".payment.NativePurchaseExistenceGuard"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.gouzhu.action.PAYMENT_EVENT" />
-            </intent-filter>
-        </receiver>
-
-        <!--
-            接收本应用付款状态广播，打开独立二维码弹窗；支付终态、取消或失败时关闭。
-        -->
+        <!-- 接收统一购珠状态广播，打开双支付入口窗口；取消、关闭、支付确认或异常时同步关闭。 -->
         <receiver
             android:name=".payment.PaymentQrPopupReceiver"
             android:enabled="true"

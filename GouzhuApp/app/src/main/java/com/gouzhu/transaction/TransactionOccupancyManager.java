@@ -265,13 +265,38 @@ public final class TransactionOccupancyManager {
     }
 
     public boolean markQrCancelling(String clientRequestNo) {
-        Snapshot snapshot = current();
-        if (snapshot == null
-                || !OWNER_QR_PURCHASE.equals(snapshot.ownerType)
-                || !clientRequestNo.equals(snapshot.clientRequestNo)) {
+        if (blank(clientRequestNo)) {
             return false;
         }
-        return transitionAnyPhase(snapshot.sessionId, PHASE_CANCELLING, "");
+        ensureSchema();
+        Snapshot changed;
+        synchronized (DB_LOCK) {
+            SQLiteDatabase db = store.getWritableDatabase();
+            db.beginTransaction();
+            try {
+                Snapshot current = load(db);
+                if (current == null
+                        || !OWNER_QR_PURCHASE.equals(current.ownerType)
+                        || !clientRequestNo.equals(current.clientRequestNo)
+                        || !(PHASE_PREPARING.equals(current.phase)
+                        || PHASE_WAITING_PAYMENT.equals(current.phase)
+                        || PHASE_CONFIRMING_CLOSE.equals(current.phase))) {
+                    return false;
+                }
+                changed = current.copy();
+                changed.phase = PHASE_CANCELLING;
+                changed.blockedReason = "";
+                changed.updatedAt = System.currentTimeMillis();
+                if (!update(db, changed)) {
+                    return false;
+                }
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
+        }
+        broadcast(changed);
+        return true;
     }
 
     public void onQrPurchaseStatus(String clientRequestNo, String purchaseStatus) {
@@ -312,6 +337,23 @@ public final class TransactionOccupancyManager {
             } else {
                 release(snapshot.sessionId, "qr refunded", true);
             }
+            return;
+        }
+        if ("REFUNDING".equals(normalized)
+                && TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)) {
+            // 物理出珠已经开始后再进入退款属于高风险冲突，保持占用并转人工处理。
+            transitionAnyPhase(
+                    snapshot.sessionId,
+                    PHASE_BLOCKED,
+                    "PAYMENT_REFUNDING_WITH_ACTIVE_DISPENSE"
+            );
+            return;
+        }
+        if (TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                snapshot.phase,
+                normalized
+        )) {
+            // 忽略迟到的 HTTP 非终态，绝不把 DISPENSING/FINISHING 等物理阶段向后回退。
             return;
         }
         String next = TransactionOccupancyPolicy.paymentPhase(normalized);
@@ -884,7 +926,16 @@ public final class TransactionOccupancyManager {
                 );
                 break;
             case "finished":
-                if (!OWNER_MEMBER_DEPOSIT.equals(snapshot.ownerType)) {
+                if (OWNER_QR_PURCHASE.equals(snapshot.ownerType)) {
+                    String purchaseStatus = PaymentManager.get(context).getCurrentPurchaseStatus();
+                    if ("COMPLETED".equals(purchaseStatus)) {
+                        // 统一购珠只有服务端 COMPLETED 后才允许释放并生成下一笔 clientRequestNo。
+                        release(snapshot.sessionId, "qr dispense completed and server terminal", false);
+                    } else if (!PHASE_BLOCKED.equals(snapshot.phase)) {
+                        // 控制板完成只代表物理动作结束，继续保持订单占用等待服务端终态。
+                        transitionAnyPhase(snapshot.sessionId, PHASE_FINISHING, "");
+                    }
+                } else if (!OWNER_MEMBER_DEPOSIT.equals(snapshot.ownerType)) {
                     release(snapshot.sessionId, "dispense completed", false);
                 }
                 break;

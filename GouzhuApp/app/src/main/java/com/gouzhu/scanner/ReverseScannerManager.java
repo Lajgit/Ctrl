@@ -7,7 +7,7 @@ import android.util.Log;
 
 import com.gouzhu.AppConfig;
 import com.gouzhu.mqtt.MqttManager;
-import com.gouzhu.payment.AuthCodePaymentManager;
+import com.gouzhu.payment.PaymentManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -19,9 +19,9 @@ import java.nio.charset.StandardCharsets;
 /**
  * ttyS6 反扫模块管理器。
  *
- * <p>串口由本类独占打开，按 CR、LF、ETX 或字节空闲间隔切分扫码帧。付款码只在
- * 用户已明确进入 AUTH_CODE 支付会话时交给支付管理器；其他业务码仍交给
- * {@link ScannerBusinessRouter}，按最近一次 bootstrap 的 redemptionRouting 精确匹配。</p>
+ * <p>串口由本类独占打开，按 CR、LF、ETX 或字节空闲间隔切分扫码帧。付款码在统一购珠
+ * 会话中优先交给 {@link PaymentManager}；主扫和反扫共用同一个 clientRequestNo。
+ * 其他业务码仍交给 {@link ScannerBusinessRouter}，按 bootstrap 的 redemptionRouting 匹配。</p>
  *
  * <p>反扫读取、付款码支付和核销接口都不能直接驱动控制板；真实出珠只能执行平台
  * 下发并通过 SDK 校验的 MQTT dispense_marbles 指令。</p>
@@ -286,7 +286,6 @@ public final class ReverseScannerManager {
         long now = SystemClock.elapsedRealtime();
         if (fingerprint.equals(lastScanFingerprint)
                 && now - lastScanAt < DUPLICATE_WINDOW_MS) {
-            // 只对完整二维码做短时间幂等，不再为模块空闲单字节持续打印 Info 日志。
             Log.d(TAG, "忽略短时间重复二维码，长度=" + content.length());
             return;
         }
@@ -294,11 +293,11 @@ public final class ReverseScannerManager {
         lastScanAt = now;
 
         /*
-         * 付款码仅在明确的 AUTH_CODE 会话内优先消费。完整付款码不进入本类原有的
-         * 脱敏广播/核销元数据路径，避免敏感支付凭证被持久化或传播。
+         * 付款码在统一购珠订单中优先消费。只要识别出微信/支付宝付款码，即使订单当前
+         * 已选主扫/正在取消，也在支付层明确拒绝，不再把敏感付款码送入核销路由。
          */
-        AuthCodePaymentManager.ScanSubmission paymentSubmission =
-                AuthCodePaymentManager.get(context).handleScanIfArmed(content);
+        PaymentManager.ScanSubmission paymentSubmission =
+                PaymentManager.get(context).handleAuthCodeScan(content);
         if (paymentSubmission.handled) {
             broadcast(
                     paymentSubmission.accepted

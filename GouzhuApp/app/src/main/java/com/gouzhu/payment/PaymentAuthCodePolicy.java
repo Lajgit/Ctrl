@@ -1,8 +1,11 @@
 package com.gouzhu.payment;
 
-import java.util.Locale;
-
-/** 付款码格式和本地提交门禁；不保存、不输出完整付款码。 */
+/**
+ * 微信/支付宝付款码格式识别。
+ *
+ * <p>是否允许提交由统一购珠状态机 {@link UnifiedPurchasePolicy} 决定；本类只识别格式，
+ * 不保存、不输出完整付款码。</p>
+ */
 public final class PaymentAuthCodePolicy {
 
     public static final String CHANNEL_WECHAT = "WECHAT_MICROPAY";
@@ -29,22 +32,6 @@ public final class PaymentAuthCodePolicy {
             }
         }
         return "";
-    }
-
-    public static boolean canSubmit(String paymentStatus) {
-        String status = normalize(paymentStatus);
-        return status.isEmpty() || "FAILED".equals(status);
-    }
-
-    public static boolean blocksRescan(String paymentStatus) {
-        String status = normalize(paymentStatus);
-        return "PROCESSING".equals(status)
-                || "SUCCESS".equals(status)
-                || "SUBMITTING".equals(status);
-    }
-
-    public static String normalize(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
     }
 
     private static boolean isDigits(String value) {

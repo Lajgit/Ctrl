@@ -55,7 +55,7 @@
 
             <TextView
                 android:id="@+id/text_payment_dialog_countdown"
-                android:layout_width="88dp"
+                android:layout_width="96dp"
                 android:layout_height="match_parent"
                 android:layout_gravity="end|center_vertical"
                 android:gravity="center"
@@ -115,21 +115,23 @@
                     android:scaleType="fitCenter" />
 
                 <TextView
+                    android:id="@+id/text_payment_dialog_method_title"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="14dp"
                     android:gravity="center"
-                    android:text="@string/payment_dialog_scan_pay_title"
+                    android:text="@string/payment_dialog_dual_pay_title"
                     android:textColor="@color/text_primary"
                     android:textSize="24sp"
                     android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/text_payment_dialog_method_hint"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="7dp"
                     android:gravity="center"
-                    android:text="@string/payment_dialog_scan_pay_channels"
+                    android:text="@string/payment_dialog_dual_pay_hint"
                     android:textColor="@color/text_secondary"
                     android:textSize="17sp" />
             </LinearLayout>

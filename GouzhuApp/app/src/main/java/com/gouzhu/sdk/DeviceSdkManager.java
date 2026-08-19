@@ -14,7 +14,7 @@ import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppClient;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;
-import com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceCredentialManager;
 import com.pinball.xiaoda.device.sdk.client.DeviceLifecycleClient;
 import com.pinball.xiaoda.device.sdk.client.DeviceSdkConfig;
@@ -175,13 +175,17 @@ public final class DeviceSdkManager {
         }
     }
 
-    public DeviceAppNativePurchaseResult createNativePurchase(
+    /**
+     * 统一购珠：主扫和付款码反扫共用一个 clientRequestNo / orderId。
+     * 使用 SDK 的 DeviceAppPurchaseResult 强类型结果，避免字段名变化被反射静默吞掉。
+     */
+    public DeviceAppPurchaseResult createPurchase(
             String clientRequestNo,
             long purchaseRuleId,
             Long priceTierId,
             Integer purchaseQuantity
     ) {
-        return newAppClient().createNativePurchase(
+        return newAppClient().createPurchase(
                 clientRequestNo,
                 purchaseRuleId,
                 priceTierId,
@@ -189,8 +193,16 @@ public final class DeviceSdkManager {
         );
     }
 
-    public DeviceAppNativePurchaseResult queryNativePurchase(String clientRequestNo) {
-        return newAppClient().queryNativePurchase(clientRequestNo);
+    public DeviceAppPurchaseResult queryPurchase(String clientRequestNo) {
+        return newAppClient().queryPurchase(clientRequestNo);
+    }
+
+    public DeviceAppPurchaseResult cancelPurchase(String clientRequestNo) {
+        return newAppClient().cancelPurchase(clientRequestNo);
+    }
+
+    public DeviceAppPurchaseResult payByAuthCode(String clientRequestNo, String authCode) {
+        return newAppClient().payByAuthCode(clientRequestNo, authCode);
     }
 
     public DeviceAppMemberWithdrawalResult createMemberWithdrawal(
