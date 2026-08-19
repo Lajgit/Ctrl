@@ -153,7 +153,7 @@ public final class PaymentManager {
 
         cancelPurchaseQuery();
         consecutiveNetworkFailures = 0;
-        String requestNo = newRequestNo();
+        String requestNo = newPurchaseRequestNo();
         TransactionOccupancyManager.AcquireResult acquired = occupancy.tryAcquireQr(requestNo);
         if (!acquired.success || acquired.snapshot == null) {
             String reason = acquired.snapshot == null
@@ -216,9 +216,9 @@ public final class PaymentManager {
                 STAGE_PREPARING
         );
 
-        final String occupancySessionId = acquired.snapshot.sessionId;
+        String sessionId = acquired.snapshot.sessionId;
         executor.execute(() -> createPaymentAfterCashIsolation(
-                occupancySessionId,
+                sessionId,
                 requestNo,
                 purchaseRuleId,
                 hasTier ? priceTierId : null,
@@ -237,7 +237,7 @@ public final class PaymentManager {
     }
 
     private void createPaymentAfterCashIsolation(
-            String occupancySessionId,
+            String sessionId,
             String requestNo,
             long purchaseRuleId,
             Long priceTierId,
@@ -246,8 +246,8 @@ public final class PaymentManager {
         boolean hasTier = priceTierId != null && priceTierId > 0L;
         boolean hasQuantity = purchaseQuantity != null && purchaseQuantity > 0;
         if (purchaseRuleId <= 0L || hasTier == hasQuantity) {
-            occupancy.markBlocked("PAYMENT_RECOVERY_METADATA_INVALID");
             setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_RECOVERY_METADATA_INVALID");
             broadcast(
                     EVENT_FAILED,
                     "统一购珠订单恢复资料不完整，请联系工作人员",
@@ -257,17 +257,15 @@ public final class PaymentManager {
             );
             return;
         }
-        if (!occupancy.prepareQrCashIsolation(occupancySessionId)) {
-            synchronized (this) {
-                if (requestNo.equals(getCurrentOrderId())) {
-                    clearCurrentPaymentState();
-                }
+        if (!requestNo.equals(getCurrentOrderId())) {
+            return;
+        }
+        if (!occupancy.prepareQrCashIsolation(sessionId)) {
+            // 现金隔离失败时尚未创建线上订单，可以安全释放当前本地会话。
+            if (requestNo.equals(getCurrentOrderId())) {
+                clearCurrentPaymentState();
             }
-            occupancy.release(
-                    occupancySessionId,
-                    "cash devices did not confirm disabled",
-                    true
-            );
+            occupancy.release(sessionId, "cash devices did not confirm disabled", true);
             broadcast(
                     EVENT_FAILED,
                     "现金入口未确认关闭，未创建统一购珠订单",
@@ -287,13 +285,17 @@ public final class PaymentManager {
                     priceTierId,
                     purchaseQuantity
             );
-            synchronized (this) {
-                consecutiveNetworkFailures = 0;
-            }
+            consecutiveNetworkFailures = 0;
             handlePurchaseResult(requestNo, result);
         } catch (Throwable error) {
-            // createPurchase 按 clientRequestNo 幂等，结果未知时只允许重试同一个请求号。
+            /*
+             * createPurchase 按 clientRequestNo 幂等。响应丢失后只能复用原请求号重试创建，
+             * 不能生成第二笔订单；这也覆盖“服务端已创建但响应丢失”的场景。
+             */
             Log.w(TAG, "统一购珠创建结果未知，将使用原请求号重试创建", error);
+            if (!requestNo.equals(getCurrentOrderId())) {
+                return;
+            }
             setStage(STAGE_CREATE_UNKNOWN);
             preferences().edit().putString(KEY_CURRENT_STATUS, STAGE_CREATE_UNKNOWN).commit();
             broadcast(
@@ -312,16 +314,11 @@ public final class PaymentManager {
             return;
         }
         long deadline = ensureQueryDeadline(requestNo);
-        if (deadline <= 0L) {
-            return;
-        }
-        if (purchaseQueryTask != null && !purchaseQueryTask.isDone()) {
+        if (deadline <= 0L || hasScheduledTask()) {
             return;
         }
         consecutiveNetworkFailures++;
-        long delaySeconds = UnifiedPurchasePolicy.queryRetryDelaySeconds(
-                consecutiveNetworkFailures
-        );
+        long delay = UnifiedPurchasePolicy.queryRetryDelaySeconds(consecutiveNetworkFailures);
         purchaseQueryTask = executor.schedule(() -> {
             synchronized (PaymentManager.this) {
                 purchaseQueryTask = null;
@@ -333,17 +330,15 @@ public final class PaymentManager {
                 onQueryTimeout(requestNo);
                 return;
             }
+            TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+            if (!isSameQrSession(snapshot, requestNo)) {
+                setStage(STAGE_BLOCKED);
+                occupancy.markBlocked("PAYMENT_CREATE_RECOVERY_OWNERSHIP_LOST");
+                return;
+            }
             long ruleId = preferences().getLong(KEY_CURRENT_RULE_ID, 0L);
             long tierId = preferences().getLong(KEY_CURRENT_TIER_ID, 0L);
             int quantity = preferences().getInt(KEY_CURRENT_PURCHASE_QUANTITY, 0);
-            TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
-            if (snapshot == null
-                    || !TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
-                    || !requestNo.equals(snapshot.clientRequestNo)) {
-                occupancy.markBlocked("PAYMENT_CREATE_RECOVERY_OWNERSHIP_LOST");
-                setStage(STAGE_BLOCKED);
-                return;
-            }
             createPaymentAfterCashIsolation(
                     snapshot.sessionId,
                     requestNo,
@@ -351,21 +346,23 @@ public final class PaymentManager {
                     tierId > 0L ? tierId : null,
                     quantity > 0 ? quantity : null
             );
-        }, delaySeconds, TimeUnit.SECONDS);
+        }, delay, TimeUnit.SECONDS);
     }
 
     /**
-     * 统一处理 create/query/pay/cancel 返回。处理优先级与服务端联调手册一致。
+     * 统一处理 create/query/pay/cancel 返回。
+     *
+     * <p>本地动作顺序遵循联调手册：先应用 paymentStatus 的“停止新付款”语义，再处理
+     * purchaseStatus 的出珠/终态，最后处理普通 WAITING_PAYMENT / PROCESSING。</p>
      */
     private synchronized void handlePurchaseResult(String requestNo, Object result) {
         if (!requestNo.equals(getCurrentOrderId()) || result == null) {
             return;
         }
 
-        String previousStatus = getCurrentPurchaseStatus();
         String purchaseStatus = normalize(readString(result, "getPurchaseStatus"));
         if (purchaseStatus.isEmpty()) {
-            purchaseStatus = normalize(previousStatus);
+            purchaseStatus = getCurrentPurchaseStatus();
         }
         String paymentStatus = normalize(readString(result, "getPaymentStatus"));
         String selectedMode = normalize(readString(result, "getSelectedPaymentMode"));
@@ -378,7 +375,9 @@ public final class PaymentManager {
         }
         String supportedChannels = readSupportedChannels(result);
         if (supportedChannels.isEmpty()) {
-            supportedChannels = preferences().getString(KEY_CURRENT_SUPPORTED_CHANNELS, "");
+            supportedChannels = safe(
+                    preferences().getString(KEY_CURRENT_SUPPORTED_CHANNELS, "")
+            );
         }
         String qrContent = safe(readString(result, "getScanUrl"));
         long expireTime = readLong(result, "getExpireTime", "getExpireAt");
@@ -403,8 +402,8 @@ public final class PaymentManager {
             editor.putLong(KEY_CURRENT_EXPIRE_TIME, expireTime);
         }
         if (!editor.commit()) {
-            occupancy.markBlocked("PAYMENT_STATE_PERSISTENCE_FAILED");
             setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_STATE_PERSISTENCE_FAILED");
             broadcast(
                     EVENT_FAILED,
                     "支付状态无法可靠保存，设备已停止新交易",
@@ -415,48 +414,33 @@ public final class PaymentManager {
             return;
         }
 
-        occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
+        boolean paymentSaysClosed = "ORDER_CLOSED".equals(paymentStatus);
+        boolean paymentSaysPaid = "ORDER_ALREADY_PAID".equals(paymentStatus);
+        boolean paymentMethodAlreadySelected =
+                "PAYMENT_METHOD_ALREADY_SELECTED".equals(paymentStatus);
 
-        // 1/2. 业务支付状态优先于普通 purchaseStatus。
-        if ("ORDER_CLOSED".equals(paymentStatus)) {
+        // ORDER_CLOSED 可以先于 purchaseStatus=CLOSED 返回，必须权威关闭本地统一会话。
+        if (paymentSaysClosed) {
             finishClosedByPaymentStatus(requestNo, message, purchaseStatus);
             return;
         }
-        if ("ORDER_ALREADY_PAID".equals(paymentStatus)) {
-            preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();
-            setStage(STAGE_PAID);
-            broadcast(
-                    EVENT_SUCCESS,
-                    message.isEmpty() ? "订单已支付，等待平台出珠指令" : message,
-                    requestNo,
-                    null,
-                    purchaseStatus
-            );
-            schedulePurchaseQuery(requestNo);
-            return;
-        }
-        if ("PAYMENT_METHOD_ALREADY_SELECTED".equals(paymentStatus)) {
-            setStage(STAGE_CONFIRMING);
-            broadcast(
-                    EVENT_WAITING,
-                    message.isEmpty() ? "订单已选择其他支付方式，正在确认结果" : message,
-                    requestNo,
-                    null,
-                    purchaseStatus
-            );
-            schedulePurchaseQuery(requestNo);
-            return;
+
+        // 先把“禁止继续收款”门禁落盘；后面仍继续处理 purchaseStatus 的物理/终态语义。
+        if (paymentSaysPaid || paymentMethodAlreadySelected) {
+            preferences().edit()
+                    .putBoolean(KEY_AUTH_CODE_SUBMITTED,
+                            isAuthCodeSubmitted() || "AUTH_CODE".equals(selectedMode))
+                    .commit();
         }
 
-        // 3. purchaseStatus 负责订单和物理占用推进。
+        /*
+         * 终态先广播再让 occupancy 释放。release() 会同步回调 onOccupancyReleased() 清空
+         * payment prefs，因此终态之后绝不再 setStage，避免清空后重新写入孤立状态。
+         */
         switch (purchaseStatus) {
             case "CANCELED":
             case "CLOSED":
                 cancelPurchaseQuery();
-                setStage(STAGE_CANCELLING);
-                if (!occupancy.isQrOwned(requestNo)) {
-                    clearCurrentPaymentState();
-                }
                 broadcast(
                         EVENT_CLOSED,
                         message.isEmpty() ? "当前购珠订单已关闭" : message,
@@ -464,16 +448,45 @@ public final class PaymentManager {
                         null,
                         purchaseStatus
                 );
+                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
                 return;
             case "COMPLETED":
                 cancelPurchaseQuery();
-                setStage(STAGE_PAID);
-                if (!occupancy.isQrOwned(requestNo)) {
-                    clearCurrentPaymentState();
-                }
                 broadcast(
                         EVENT_SUCCESS,
                         message.isEmpty() ? "购珠订单已完成" : message,
+                        requestNo,
+                        null,
+                        purchaseStatus
+                );
+                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
+                return;
+            case "REFUNDED":
+                cancelPurchaseQuery();
+                broadcast(
+                        EVENT_FAILED,
+                        message.isEmpty() ? "订单已退款" : message,
+                        requestNo,
+                        null,
+                        purchaseStatus
+                );
+                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
+                return;
+            default:
+                break;
+        }
+
+        // 非终态才允许 occupancy 改阶段；不会在这里同步清空 payment prefs。
+        occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
+
+        switch (purchaseStatus) {
+            case "DISPENSING":
+                cancelPurchaseQuery();
+                preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();
+                setStage(STAGE_PAID);
+                broadcast(
+                        EVENT_SUCCESS,
+                        message.isEmpty() ? "支付成功，等待平台出珠指令" : message,
                         requestNo,
                         null,
                         purchaseStatus
@@ -490,31 +503,6 @@ public final class PaymentManager {
                 );
                 schedulePurchaseQuery(requestNo);
                 return;
-            case "REFUNDED":
-                cancelPurchaseQuery();
-                if (!occupancy.isQrOwned(requestNo)) {
-                    clearCurrentPaymentState();
-                }
-                broadcast(
-                        EVENT_FAILED,
-                        message.isEmpty() ? "订单已退款" : message,
-                        requestNo,
-                        null,
-                        purchaseStatus
-                );
-                return;
-            case "DISPENSING":
-                cancelPurchaseQuery();
-                preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();
-                setStage(STAGE_PAID);
-                broadcast(
-                        EVENT_SUCCESS,
-                        message.isEmpty() ? "支付成功，等待平台出珠指令" : message,
-                        requestNo,
-                        null,
-                        purchaseStatus
-                );
-                return;
             case "EXPIRED":
                 setStage(STAGE_CONFIRMING);
                 broadcast(
@@ -530,7 +518,7 @@ public final class PaymentManager {
                 break;
         }
 
-        // 4. 未识别终态必须 fail-closed，不能开放下一笔。
+        // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。
         if (terminal) {
             cancelPurchaseQuery();
             setStage(STAGE_BLOCKED);
@@ -545,7 +533,7 @@ public final class PaymentManager {
             return;
         }
 
-        // 5. WAITING_PAYMENT / PROCESSING 保持同一订单并继续 queryPurchase。
+        // 取消已经发起时，任何非终态响应都只能继续查询原订单。
         if (isCancelPending()) {
             setStage(STAGE_CONFIRMING);
             broadcast(
@@ -558,11 +546,26 @@ public final class PaymentManager {
             schedulePurchaseQuery(requestNo);
             return;
         }
-        if ("SUCCESS".equals(paymentStatus)) {
+
+        if (paymentSaysPaid || "SUCCESS".equals(paymentStatus)) {
             setStage(STAGE_PAID);
             broadcast(
                     EVENT_SUCCESS,
-                    message.isEmpty() ? "支付成功，等待订单进入出珠" : message,
+                    message.isEmpty() ? "订单已支付，等待平台出珠指令" : message,
+                    requestNo,
+                    null,
+                    purchaseStatus
+            );
+            // purchaseStatus 尚未进入 DISPENSING/COMPLETED 时继续收敛，但不再开放付款入口。
+            schedulePurchaseQuery(requestNo);
+            return;
+        }
+
+        if (paymentMethodAlreadySelected) {
+            setStage(STAGE_CONFIRMING);
+            broadcast(
+                    EVENT_WAITING,
+                    message.isEmpty() ? "订单已选择其他支付方式，正在确认结果" : message,
                     requestNo,
                     null,
                     purchaseStatus
@@ -570,6 +573,7 @@ public final class PaymentManager {
             schedulePurchaseQuery(requestNo);
             return;
         }
+
         if ("PROCESSING".equals(paymentStatus)
                 || UnifiedPurchasePolicy.blocksNewPayment(paymentStatus, selectedMode)) {
             setStage(STAGE_CONFIRMING);
@@ -623,7 +627,7 @@ public final class PaymentManager {
         }
         if (!qrBroadcasted && !qrContent.isEmpty()) {
             qrBroadcasted = true;
-            // 保留旧事件供 MainActivity 的兼容显示代码使用；主支付窗口由 PAYMENT_READY 打开。
+            // 兼容 MainActivity 旧二维码显示逻辑；真正顾客窗口由 PAYMENT_READY 打开。
             broadcast(
                     EVENT_QR_READY,
                     "请扫码支付，也可直接出示付款码",
@@ -634,7 +638,7 @@ public final class PaymentManager {
         }
     }
 
-    /** ttyS6 扫到付款码时调用；无付款码特征的业务码继续走原核销路由。 */
+    /** ttyS6 扫到付款码时调用；非付款码继续走原核销路由。 */
     public ScanSubmission handleAuthCodeScan(String scanContent) {
         String channel = PaymentAuthCodePolicy.classify(scanContent);
         if (channel.isEmpty()) {
@@ -660,21 +664,17 @@ public final class PaymentManager {
                 );
             }
             if (!canSubmitAuthCode(channel)) {
-                return ScanSubmission.handled(
-                        false,
-                        authCodeBlockedMessage(),
-                        channel
-                );
+                return ScanSubmission.handled(false, authCodeBlockedMessage(), channel);
             }
 
-            // 在任何网络调用之前先持久化一次性门禁。接口超时后绝不再次提交付款码。
+            // 网络调用前先持久化“一次付款码已提交”门禁；HTTP 超时也绝不重复 pay。
             if (!preferences().edit()
                     .putBoolean(KEY_AUTH_CODE_SUBMITTED, true)
                     .putString(KEY_CURRENT_STAGE, STAGE_AUTH_SUBMITTING)
                     .putString(KEY_CURRENT_PAYMENT_STATUS, "SUBMITTING")
                     .commit()) {
-                occupancy.markBlocked("AUTH_CODE_SUBMIT_STATE_PERSISTENCE_FAILED");
                 setStage(STAGE_BLOCKED);
+                occupancy.markBlocked("AUTH_CODE_SUBMIT_STATE_PERSISTENCE_FAILED");
                 return ScanSubmission.handled(
                         false,
                         "付款状态无法可靠保存，设备已停止本次交易",
@@ -707,12 +707,13 @@ public final class PaymentManager {
             }
             authCode = new String(sensitiveCode);
             Object result = sdkManager.payByAuthCode(requestNo, authCode);
-            synchronized (this) {
-                consecutiveNetworkFailures = 0;
-            }
+            consecutiveNetworkFailures = 0;
             handlePurchaseResult(requestNo, result);
         } catch (Throwable error) {
-            // 付款码可能已经到达服务端，结果未知时只查原订单，绝不重发 payByAuthCode。
+            // 服务端可能已经收到付款码：结果未知后只 queryPurchase，禁止再次提交付款码。
+            if (!requestNo.equals(getCurrentOrderId())) {
+                return;
+            }
             preferences().edit()
                     .putString(KEY_CURRENT_STAGE, STAGE_CONFIRMING)
                     .putString(KEY_CURRENT_PAYMENT_STATUS, "PROCESSING")
@@ -734,29 +735,30 @@ public final class PaymentManager {
         }
     }
 
-    /** X、空白遮罩或首页取消均走同一个 cancelPurchase；两个支付入口立即同步停止。 */
+    /** X、空白遮罩或首页取消均走同一个 cancelPurchase；两个支付入口同步停止。 */
     public synchronized boolean cancelCurrentPayment() {
         String requestNo = getCurrentOrderId();
         TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
-        if (requestNo.isEmpty()
-                || snapshot == null
-                || !TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
-                || !requestNo.equals(snapshot.clientRequestNo)
-                || TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)
-                || TransactionOccupancyManager.PHASE_REFUNDING.equals(snapshot.phase)
-                || TransactionOccupancyManager.PHASE_BLOCKED.equals(snapshot.phase)
-                || isCancelPending()
-                || !occupancy.markQrCancelling(requestNo)) {
+        if (!canRequestCancel(snapshot, requestNo)) {
+            return false;
+        }
+
+        /*
+         * 先把 occupancy 从 WAITING_PAYMENT 切到 CANCELLING。付款码提交门禁会检查 phase，
+         * 因此这一原子数据库变更成功后，ttyS6 就立即不能再发起 payByAuthCode。
+         */
+        if (!occupancy.markQrCancelling(requestNo)) {
             return false;
         }
         if (!preferences().edit()
                 .putBoolean(KEY_CANCEL_PENDING, true)
                 .putString(KEY_CURRENT_STAGE, STAGE_CANCELLING)
                 .commit()) {
-            occupancy.markBlocked("PAYMENT_CANCEL_STATE_PERSISTENCE_FAILED");
             setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_CANCEL_STATE_PERSISTENCE_FAILED");
             return false;
         }
+
         cancelPurchaseQuery();
         broadcast(
                 EVENT_CANCELLING,
@@ -768,12 +770,13 @@ public final class PaymentManager {
         executor.execute(() -> {
             try {
                 Object result = sdkManager.cancelPurchase(requestNo);
-                synchronized (PaymentManager.this) {
-                    consecutiveNetworkFailures = 0;
-                }
+                consecutiveNetworkFailures = 0;
                 handlePurchaseResult(requestNo, result);
             } catch (Throwable error) {
-                // 取消与支付可能并发，结果未知时必须查询原订单，不能本地直接释放占用。
+                // 支付/取消由服务端订单锁裁决；取消响应丢失后只能查询原订单。
+                if (!requestNo.equals(getCurrentOrderId())) {
+                    return;
+                }
                 Log.w(TAG, "取消统一购珠订单结果未知，将继续查询原订单", error);
                 setStage(STAGE_CONFIRMING);
                 broadcast(
@@ -789,9 +792,34 @@ public final class PaymentManager {
         return true;
     }
 
+    private boolean canRequestCancel(
+            TransactionOccupancyManager.Snapshot snapshot,
+            String requestNo
+    ) {
+        if (!isSameQrSession(snapshot, requestNo) || isCancelPending()) {
+            return false;
+        }
+        String purchaseStatus = getCurrentPurchaseStatus();
+        String paymentStatus = getCurrentPaymentStatus();
+        if ("DISPENSING".equals(purchaseStatus)
+                || "COMPLETED".equals(purchaseStatus)
+                || "REFUNDING".equals(purchaseStatus)
+                || "REFUNDED".equals(purchaseStatus)
+                || "CANCELED".equals(purchaseStatus)
+                || "CLOSED".equals(purchaseStatus)
+                || "SUCCESS".equals(paymentStatus)
+                || "ORDER_ALREADY_PAID".equals(paymentStatus)
+                || "ORDER_CLOSED".equals(paymentStatus)) {
+            return false;
+        }
+        return TransactionOccupancyManager.PHASE_PREPARING.equals(snapshot.phase)
+                || TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(snapshot.phase)
+                || TransactionOccupancyManager.PHASE_CONFIRMING_CLOSE.equals(snapshot.phase);
+    }
+
     /**
-     * 现金在关闭窗口内已经被控制板接收时，尝试关闭被抢占的统一购珠订单。
-     * 此时新的现金 owner 已接管占用，因此本方法绝不能释放现金 owner。
+     * 现金在关闭窗口内已被控制板接收时关闭被抢占的统一购珠订单。
+     * 此时现金 owner 已替换 QR owner，本方法绝不能释放新的现金占用。
      */
     public void cancelDisplacedPayment(String requestNo) {
         if (safe(requestNo).isEmpty()) {
@@ -819,6 +847,10 @@ public final class PaymentManager {
                     return;
                 }
 
+                /*
+                 * QR 已经被现金替换，若服务端没有权威确认旧订单关闭，就必须阻断当前现金
+                 * 交易，避免同一台机器同时存在现金购买和线上支付结果。
+                 */
                 occupancy.markBlocked(
                         "UNIFIED_PURCHASE_CASH_CONFLICT_"
                                 + firstNonBlank(paymentStatus, status, "UNKNOWN")
@@ -844,7 +876,7 @@ public final class PaymentManager {
         });
     }
 
-    /** APP/Activity 重建后只恢复原 clientRequestNo，先恢复占用再查询，不生成新订单。 */
+    /** APP/Activity 重建后只恢复原 clientRequestNo；不产生替代订单。 */
     public synchronized void resumePendingPayment() {
         String requestNo = getCurrentOrderId();
         if (requestNo.isEmpty()) {
@@ -855,28 +887,27 @@ public final class PaymentManager {
             Log.w(TAG, "统一购珠会话无法恢复占用，保留原请求等待人工处理：" + requestNo);
             return;
         }
+
         cancelPurchaseQuery();
         consecutiveNetworkFailures = 0;
-
         String stage = getCurrentStage();
         if (STAGE_PREPARING.equals(stage)
                 || STAGE_CREATING.equals(stage)
                 || STAGE_CREATE_UNKNOWN.equals(stage)) {
             long ruleId = preferences().getLong(KEY_CURRENT_RULE_ID, 0L);
             long tierId = preferences().getLong(KEY_CURRENT_TIER_ID, 0L);
-            int purchaseQuantity = preferences().getInt(KEY_CURRENT_PURCHASE_QUANTITY, 0);
+            int quantity = preferences().getInt(KEY_CURRENT_PURCHASE_QUANTITY, 0);
             executor.execute(() -> createPaymentAfterCashIsolation(
                     recovered.snapshot.sessionId,
                     requestNo,
                     ruleId,
                     tierId > 0L ? tierId : null,
-                    purchaseQuantity > 0 ? purchaseQuantity : null
+                    quantity > 0 ? quantity : null
             ));
             return;
         }
 
-        String status = normalize(getCurrentPurchaseStatus());
-        if ("WAITING_PAYMENT".equals(status) && !isCancelPending()) {
+        if ("WAITING_PAYMENT".equals(getCurrentPurchaseStatus()) && !isCancelPending()) {
             paymentReadyBroadcasted = true;
             qrBroadcasted = !getCurrentScanUrl().isEmpty();
             broadcast(
@@ -884,16 +915,14 @@ public final class PaymentManager {
                     getDisplayMessage(),
                     requestNo,
                     getCurrentScanUrl(),
-                    status
+                    getCurrentPurchaseStatus()
             );
         }
 
         executor.execute(() -> {
             try {
                 Object result = sdkManager.queryPurchase(requestNo);
-                synchronized (PaymentManager.this) {
-                    consecutiveNetworkFailures = 0;
-                }
+                consecutiveNetworkFailures = 0;
                 handlePurchaseResult(requestNo, result);
             } catch (Throwable error) {
                 Log.w(TAG, "恢复统一购珠订单查询失败，将按退避继续查询", error);
@@ -902,7 +931,7 @@ public final class PaymentManager {
         });
     }
 
-    /** Called by occupancy manager after physical completion or authoritative release. */
+    /** occupancy 权威释放或物理完成后清理同一请求的本地购珠状态。 */
     public synchronized void onOccupancyReleased(String requestNo) {
         if (requestNo != null && requestNo.equals(getCurrentOrderId())) {
             cancelPurchaseQuery();
@@ -922,10 +951,7 @@ public final class PaymentManager {
             return;
         }
         long deadline = ensureQueryDeadline(requestNo);
-        if (deadline <= 0L) {
-            return;
-        }
-        if (purchaseQueryTask != null && !purchaseQueryTask.isDone()) {
+        if (deadline <= 0L || hasScheduledTask()) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -977,6 +1003,10 @@ public final class PaymentManager {
         Log.w(TAG, "统一购珠查单连续失败=" + consecutiveNetworkFailures
                 + "，" + delay + "秒后继续查询原请求号");
         schedulePurchaseQuery(requestNo, delay);
+    }
+
+    private synchronized boolean hasScheduledTask() {
+        return purchaseQueryTask != null && !purchaseQueryTask.isDone();
     }
 
     private synchronized long ensureQueryDeadline(String requestNo) {
@@ -1037,20 +1067,7 @@ public final class PaymentManager {
             String purchaseStatus
     ) {
         cancelPurchaseQuery();
-        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
-        if (snapshot != null
-                && TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
-                && requestNo.equals(snapshot.clientRequestNo)
-                && !TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)) {
-            occupancy.release(snapshot.sessionId, "paymentStatus ORDER_CLOSED", true);
-        } else if (snapshot != null
-                && TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
-                && requestNo.equals(snapshot.clientRequestNo)) {
-            occupancy.markBlocked("ORDER_CLOSED_WITH_PHYSICAL_PHASE");
-        }
-        if (requestNo.equals(getCurrentOrderId()) && !occupancy.isQrOwned(requestNo)) {
-            clearCurrentPaymentState();
-        }
+        // 先广播关闭，保证两个顾客入口立刻消失，再权威释放同一 QR 占用。
         broadcast(
                 EVENT_CLOSED,
                 message.isEmpty() ? "当前购珠订单已关闭" : message,
@@ -1058,6 +1075,16 @@ public final class PaymentManager {
                 null,
                 firstNonBlank(purchaseStatus, "CLOSED")
         );
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+        if (isSameQrSession(snapshot, requestNo)
+                && !TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)) {
+            occupancy.release(snapshot.sessionId, "paymentStatus ORDER_CLOSED", true);
+        } else if (isSameQrSession(snapshot, requestNo)) {
+            occupancy.markBlocked("ORDER_CLOSED_WITH_PHYSICAL_PHASE");
+        }
+        if (requestNo.equals(getCurrentOrderId()) && !occupancy.isQrOwned(requestNo)) {
+            clearCurrentPaymentState();
+        }
     }
 
     /** Staff-entered internal pickup code; hardware still only follows signed MQTT dispense. */
@@ -1078,7 +1105,7 @@ public final class PaymentManager {
             return "";
         }
 
-        String requestNo = newRequestNo("redeem");
+        String requestNo = newBusinessRequestNo("redeem");
         if (!saveScannerRequestMetadata(requestNo, "internal", pickupCode)) {
             broadcast(EVENT_FAILED, "保存核销请求元数据失败", getCurrentOrderId(), null, "");
             return "";
@@ -1120,7 +1147,7 @@ public final class PaymentManager {
             broadcast(EVENT_FAILED, "会员取珠码不能为空", getCurrentOrderId(), null, "");
             return "";
         }
-        String requestNo = newRequestNo("withdraw");
+        String requestNo = newBusinessRequestNo("withdraw");
         if (!saveScannerRequestMetadata(requestNo, "member", code)) {
             broadcast(EVENT_FAILED, "保存会员取珠请求元数据失败", requestNo, null, "");
             return "";
@@ -1202,30 +1229,44 @@ public final class PaymentManager {
         return preferences().getBoolean(KEY_CANCEL_PENDING, false);
     }
 
+    /** 付款码只有在同一 QR owner 的 WAITING_PAYMENT phase 才能提交。 */
     public boolean canSubmitAuthCode(String channel) {
-        return UnifiedPurchasePolicy.canSubmitAuthCode(
+        String requestNo = getCurrentOrderId();
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+        return isSameWaitingPaymentSession(snapshot, requestNo)
+                && UnifiedPurchasePolicy.canSubmitAuthCode(
                 getCurrentPurchaseStatus(),
                 getCurrentPaymentStatus(),
                 getCurrentSelectedPaymentMode(),
                 isCancelPending(),
                 isAuthCodeSubmitted(),
                 supportsAuthCodeChannel(channel)
-        ) && occupancy.isQrOwned(getCurrentOrderId());
+        );
     }
 
+    /** 60 秒只允许取消“尚未选中任何支付方式”的 WAITING_PAYMENT 会话。 */
     public boolean canAutoCancelForUserTimeout() {
-        return UnifiedPurchasePolicy.canAutoCancelForUserTimeout(
+        String requestNo = getCurrentOrderId();
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+        return isSameWaitingPaymentSession(snapshot, requestNo)
+                && UnifiedPurchasePolicy.canAutoCancelForUserTimeout(
                 getCurrentPurchaseStatus(),
                 getCurrentPaymentStatus(),
                 getCurrentSelectedPaymentMode(),
                 isCancelPending(),
                 isAuthCodeSubmitted()
-        ) && occupancy.isQrOwned(getCurrentOrderId());
+        );
     }
 
+    /** 本地取消或反扫提交后立即隐藏主扫二维码，避免顾客继续从本机进入另一入口。 */
     public boolean shouldShowQrCode() {
+        String requestNo = getCurrentOrderId();
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
         String selectedMode = getCurrentSelectedPaymentMode();
-        return !getCurrentScanUrl().isEmpty()
+        return isSameQrSession(snapshot, requestNo)
+                && (TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(snapshot.phase)
+                || TransactionOccupancyManager.PHASE_CONFIRMING_CLOSE.equals(snapshot.phase))
+                && !getCurrentScanUrl().isEmpty()
                 && !isCancelPending()
                 && !isAuthCodeSubmitted()
                 && !"AUTH_CODE".equals(selectedMode)
@@ -1296,6 +1337,11 @@ public final class PaymentManager {
         if ("ORDER_CLOSED".equals(paymentStatus)) {
             return "订单已关闭，请重新选择套餐";
         }
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+        if (snapshot != null
+                && TransactionOccupancyManager.PHASE_CANCELLING.equals(snapshot.phase)) {
+            return "当前订单正在关闭，请勿继续付款";
+        }
         return "当前订单暂不能接收新的付款码";
     }
 
@@ -1304,12 +1350,13 @@ public final class PaymentManager {
         if (target.isEmpty()) {
             return false;
         }
-        String channels = preferences().getString(KEY_CURRENT_SUPPORTED_CHANNELS, "");
-        if (channels == null || channels.trim().isEmpty()) {
+        String channels = safe(
+                preferences().getString(KEY_CURRENT_SUPPORTED_CHANNELS, "")
+        );
+        if (channels.isEmpty()) {
             return false;
         }
-        String[] parts = channels.split(",");
-        for (String part : parts) {
+        for (String part : channels.split(",")) {
             if (target.equals(normalize(part))) {
                 return true;
             }
@@ -1322,6 +1369,10 @@ public final class PaymentManager {
     }
 
     private boolean setStage(String stage) {
+        // 请求已被终态释放时不要重新产生孤立 stage 键。
+        if (getCurrentOrderId().isEmpty()) {
+            return false;
+        }
         return preferences().edit()
                 .putString(KEY_CURRENT_STAGE, safe(stage))
                 .commit();
@@ -1376,6 +1427,24 @@ public final class PaymentManager {
             intent.putExtra(EXTRA_QR_CONTENT, qrContent);
         }
         context.sendBroadcast(intent);
+    }
+
+    private static boolean isSameQrSession(
+            TransactionOccupancyManager.Snapshot snapshot,
+            String requestNo
+    ) {
+        return snapshot != null
+                && !safe(requestNo).isEmpty()
+                && TransactionOccupancyManager.OWNER_QR_PURCHASE.equals(snapshot.ownerType)
+                && requestNo.equals(snapshot.clientRequestNo);
+    }
+
+    private static boolean isSameWaitingPaymentSession(
+            TransactionOccupancyManager.Snapshot snapshot,
+            String requestNo
+    ) {
+        return isSameQrSession(snapshot, requestNo)
+                && TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(snapshot.phase);
     }
 
     private static String displayProcessingMessage(String selectedMode, String message) {
@@ -1466,12 +1535,12 @@ public final class PaymentManager {
         return value != null && Boolean.parseBoolean(String.valueOf(value));
     }
 
-    private static String newRequestNo() {
+    private static String newPurchaseRequestNo() {
         String uuid = UUID.randomUUID().toString().replace("-", "");
         return "APPREQ-" + System.currentTimeMillis() + "-" + uuid.substring(0, 12);
     }
 
-    private static String newRequestNo(String prefix) {
+    private static String newBusinessRequestNo(String prefix) {
         String uuid = UUID.randomUUID().toString().replace("-", "");
         return prefix + "-" + System.currentTimeMillis() + "-" + uuid.substring(0, 12);
     }
