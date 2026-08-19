@@ -289,6 +289,8 @@ public final class PaymentQrActivity extends AppCompatActivity {
 
         if (manager.canAutoCancelForUserTimeout()) {
             countdownText.setVisibility(View.VISIBLE);
+            // 明确 FAILED 后若服务端回到未选支付方式状态，重新给顾客完整 60 秒。
+            selectionDeadline = PaymentQrPopupReceiver.ensureDeadline(this, requestNo);
             startCountdown(selectionDeadline);
         } else {
             stopCountdown();

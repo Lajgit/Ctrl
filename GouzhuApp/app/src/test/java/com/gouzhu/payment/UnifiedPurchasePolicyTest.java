@@ -43,6 +43,27 @@ public class UnifiedPurchasePolicyTest {
     }
 
     @Test
+    public void selectedOrProcessingPaymentBlocksNewPaymentEntry() {
+        assertTrue(UnifiedPurchasePolicy.blocksNewPayment("", "SCAN"));
+        assertTrue(UnifiedPurchasePolicy.blocksNewPayment("", "AUTH_CODE"));
+        assertTrue(UnifiedPurchasePolicy.blocksNewPayment("PROCESSING", ""));
+        assertTrue(UnifiedPurchasePolicy.blocksNewPayment("ORDER_ALREADY_PAID", ""));
+        assertFalse(UnifiedPurchasePolicy.blocksNewPayment("FAILED", ""));
+    }
+
+    @Test
+    public void onlyExplicitUnselectedFailureRearmsPayment() {
+        assertTrue(UnifiedPurchasePolicy.canRearmAfterExplicitFailure(
+                "WAITING_PAYMENT", "FAILED", "", "DEVICE_PURCHASE"));
+        assertFalse(UnifiedPurchasePolicy.canRearmAfterExplicitFailure(
+                "WAITING_PAYMENT", "FAILED", "AUTH_CODE", "WECHAT_MICROPAY"));
+        assertFalse(UnifiedPurchasePolicy.canRearmAfterExplicitFailure(
+                "WAITING_PAYMENT", "PROCESSING", "", "DEVICE_PURCHASE"));
+        assertFalse(UnifiedPurchasePolicy.canRearmAfterExplicitFailure(
+                "DISPENSING", "FAILED", "", "DEVICE_PURCHASE"));
+    }
+
+    @Test
     public void networkBackoffMatchesServerGuide() {
         assertEquals(1L, UnifiedPurchasePolicy.queryRetryDelaySeconds(1));
         assertEquals(2L, UnifiedPurchasePolicy.queryRetryDelaySeconds(2));

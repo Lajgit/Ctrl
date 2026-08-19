@@ -10,11 +10,11 @@ import com.gouzhu.transaction.TransactionOccupancyManager;
 import com.gouzhu.transaction.TransactionOccupancyPolicy;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult;
 
 import org.json.JSONObject;
 
-import java.lang.reflect.Array;
-import java.lang.reflect.Method;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -65,7 +65,6 @@ public final class PaymentManager {
     private static final String KEY_CURRENT_PAY_CHANNEL = "currentPayChannel";
     private static final String KEY_CURRENT_SUPPORTED_CHANNELS = "currentSupportedChannels";
     private static final String KEY_CURRENT_SCAN_URL = "currentScanUrl";
-    private static final String KEY_CURRENT_EXPIRE_TIME = "currentExpireTime";
     private static final String KEY_CURRENT_STAGE = "currentStage";
     private static final String KEY_AUTH_CODE_SUBMITTED = "authCodeSubmitted";
     private static final String KEY_CANCEL_PENDING = "cancelPending";
@@ -195,7 +194,6 @@ public final class PaymentManager {
                 .putString(KEY_CURRENT_PAY_CHANNEL, "DEVICE_PURCHASE")
                 .putString(KEY_CURRENT_SUPPORTED_CHANNELS, "")
                 .putString(KEY_CURRENT_SCAN_URL, "")
-                .putLong(KEY_CURRENT_EXPIRE_TIME, 0L)
                 .putString(KEY_CURRENT_STAGE, STAGE_PREPARING)
                 .putBoolean(KEY_AUTH_CODE_SUBMITTED, false)
                 .putBoolean(KEY_CANCEL_PENDING, false)
@@ -279,7 +277,7 @@ public final class PaymentManager {
         setStage(STAGE_CREATING);
         preferences().edit().putString(KEY_CURRENT_STATUS, STAGE_CREATING).commit();
         try {
-            Object result = sdkManager.createPurchase(
+            DeviceAppPurchaseResult result = sdkManager.createPurchase(
                     requestNo,
                     purchaseRuleId,
                     priceTierId,
@@ -355,36 +353,38 @@ public final class PaymentManager {
      * <p>本地动作顺序遵循联调手册：先应用 paymentStatus 的“停止新付款”语义，再处理
      * purchaseStatus 的出珠/终态，最后处理普通 WAITING_PAYMENT / PROCESSING。</p>
      */
-    private synchronized void handlePurchaseResult(String requestNo, Object result) {
+    private synchronized void handlePurchaseResult(
+            String requestNo,
+            DeviceAppPurchaseResult result
+    ) {
         if (!requestNo.equals(getCurrentOrderId()) || result == null) {
             return;
         }
 
-        String purchaseStatus = normalize(readString(result, "getPurchaseStatus"));
+        String purchaseStatus = normalize(result.getPurchaseStatus());
         if (purchaseStatus.isEmpty()) {
             purchaseStatus = getCurrentPurchaseStatus();
         }
-        String paymentStatus = normalize(readString(result, "getPaymentStatus"));
-        String selectedMode = normalize(readString(result, "getSelectedPaymentMode"));
+        String paymentStatus = normalize(result.getPaymentStatus());
+        String selectedMode = normalize(result.getSelectedPaymentMode());
         if (selectedMode.isEmpty()) {
             selectedMode = getCurrentSelectedPaymentMode();
         }
-        String payChannel = normalize(readString(result, "getPayChannel"));
+        String payChannel = normalize(result.getPayChannel());
         if (payChannel.isEmpty()) {
             payChannel = getCurrentPayChannel();
         }
-        String supportedChannels = readSupportedChannels(result);
+        String supportedChannels = readSupportedChannels(result.getSupportedChannels());
         if (supportedChannels.isEmpty()) {
             supportedChannels = safe(
                     preferences().getString(KEY_CURRENT_SUPPORTED_CHANNELS, "")
             );
         }
-        String qrContent = safe(readString(result, "getScanUrl"));
-        long expireTime = readLong(result, "getExpireTime", "getExpireAt");
-        boolean terminal = readBoolean(result, "isTerminal", "getTerminal");
+        String qrContent = safe(result.getScanUrl());
+        boolean terminal = result.isTerminal();
         String message = firstNonBlank(
-                readString(result, "getPaymentMessage"),
-                readString(result, "getMessage"),
+                result.getPaymentMessage(),
+                result.getMessage(),
                 paymentStatus,
                 purchaseStatus
         );
@@ -397,9 +397,6 @@ public final class PaymentManager {
                 .putString(KEY_CURRENT_SUPPORTED_CHANNELS, supportedChannels);
         if (!qrContent.isEmpty()) {
             editor.putString(KEY_CURRENT_SCAN_URL, qrContent);
-        }
-        if (expireTime > 0L) {
-            editor.putLong(KEY_CURRENT_EXPIRE_TIME, expireTime);
         }
         if (!editor.commit()) {
             setStage(STAGE_BLOCKED);
@@ -418,6 +415,27 @@ public final class PaymentManager {
         boolean paymentSaysPaid = "ORDER_ALREADY_PAID".equals(paymentStatus);
         boolean paymentMethodAlreadySelected =
                 "PAYMENT_METHOD_ALREADY_SELECTED".equals(paymentStatus);
+        boolean explicitAttemptFailed =
+                UnifiedPurchasePolicy.canRearmAfterExplicitFailure(
+                        purchaseStatus,
+                        paymentStatus,
+                        selectedMode,
+                        payChannel
+                );
+        if (explicitAttemptFailed
+                && isAuthCodeSubmitted()
+                && !preferences().edit().putBoolean(KEY_AUTH_CODE_SUBMITTED, false).commit()) {
+            setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_REARM_STATE_PERSISTENCE_FAILED");
+            broadcast(
+                    EVENT_FAILED,
+                    "支付重试状态无法可靠保存，设备已停止本次交易",
+                    requestNo,
+                    null,
+                    purchaseStatus
+            );
+            return;
+        }
 
         // ORDER_CLOSED 可以先于 purchaseStatus=CLOSED 返回，必须权威关闭本地统一会话。
         if (paymentSaysClosed) {
@@ -476,11 +494,10 @@ public final class PaymentManager {
                 break;
         }
 
-        // 非终态才允许 occupancy 改阶段；不会在这里同步清空 payment prefs。
-        occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
-
+        // 先处理服务端 purchaseStatus 的物理/退款阶段；这些状态可以覆盖本地取消等待。
         switch (purchaseStatus) {
             case "DISPENSING":
+                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
                 cancelPurchaseQuery();
                 preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();
                 setStage(STAGE_PAID);
@@ -493,6 +510,7 @@ public final class PaymentManager {
                 );
                 return;
             case "REFUNDING":
+                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
                 setStage(STAGE_CONFIRMING);
                 broadcast(
                         EVENT_WAITING,
@@ -504,6 +522,7 @@ public final class PaymentManager {
                 schedulePurchaseQuery(requestNo);
                 return;
             case "EXPIRED":
+                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
                 setStage(STAGE_CONFIRMING);
                 broadcast(
                         EVENT_WAITING,
@@ -533,7 +552,38 @@ public final class PaymentManager {
             return;
         }
 
-        // 取消已经发起时，任何非终态响应都只能继续查询原订单。
+        /*
+         * ORDER_ALREADY_PAID / SUCCESS 表示支付已经赢得服务端订单锁。即使本地此前刚点了
+         * 取消，也必须停止“等待关闭”语义并等待 DISPENSING/COMPLETED，不能回到套餐页。
+         */
+        if (paymentSaysPaid || "SUCCESS".equals(paymentStatus)) {
+            if (!preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit()) {
+                setStage(STAGE_BLOCKED);
+                occupancy.markBlocked("PAYMENT_WIN_STATE_PERSISTENCE_FAILED");
+                broadcast(
+                        EVENT_FAILED,
+                        "支付成功状态无法可靠保存，设备已停止新交易",
+                        requestNo,
+                        null,
+                        purchaseStatus
+                );
+                return;
+            }
+            occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
+            setStage(STAGE_PAID);
+            broadcast(
+                    EVENT_SUCCESS,
+                    message.isEmpty() ? "订单已支付，等待平台出珠指令" : message,
+                    requestNo,
+                    null,
+                    purchaseStatus
+            );
+            // HTTP SUCCESS 只停止继续收款；真实出珠仍等待验签通过的 MQTT 指令。
+            schedulePurchaseQuery(requestNo);
+            return;
+        }
+
+        // 取消已经发起时，非终态 WAITING_PAYMENT/PROCESSING 不得把 occupancy 改回待收款。
         if (isCancelPending()) {
             setStage(STAGE_CONFIRMING);
             broadcast(
@@ -547,19 +597,8 @@ public final class PaymentManager {
             return;
         }
 
-        if (paymentSaysPaid || "SUCCESS".equals(paymentStatus)) {
-            setStage(STAGE_PAID);
-            broadcast(
-                    EVENT_SUCCESS,
-                    message.isEmpty() ? "订单已支付，等待平台出珠指令" : message,
-                    requestNo,
-                    null,
-                    purchaseStatus
-            );
-            // purchaseStatus 尚未进入 DISPENSING/COMPLETED 时继续收敛，但不再开放付款入口。
-            schedulePurchaseQuery(requestNo);
-            return;
-        }
+        // 普通非终态现在才能按服务端 purchaseStatus 推进本地占用阶段。
+        occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
 
         if (paymentMethodAlreadySelected) {
             setStage(STAGE_CONFIRMING);
@@ -706,7 +745,7 @@ public final class PaymentManager {
                 return;
             }
             authCode = new String(sensitiveCode);
-            Object result = sdkManager.payByAuthCode(requestNo, authCode);
+            DeviceAppPurchaseResult result = sdkManager.payByAuthCode(requestNo, authCode);
             consecutiveNetworkFailures = 0;
             handlePurchaseResult(requestNo, result);
         } catch (Throwable error) {
@@ -769,7 +808,7 @@ public final class PaymentManager {
         );
         executor.execute(() -> {
             try {
-                Object result = sdkManager.cancelPurchase(requestNo);
+                DeviceAppPurchaseResult result = sdkManager.cancelPurchase(requestNo);
                 consecutiveNetworkFailures = 0;
                 handlePurchaseResult(requestNo, result);
             } catch (Throwable error) {
@@ -827,9 +866,9 @@ public final class PaymentManager {
         }
         executor.execute(() -> {
             try {
-                Object result = sdkManager.cancelPurchase(requestNo);
-                String status = normalize(readString(result, "getPurchaseStatus"));
-                String paymentStatus = normalize(readString(result, "getPaymentStatus"));
+                DeviceAppPurchaseResult result = sdkManager.cancelPurchase(requestNo);
+                String status = normalize(result.getPurchaseStatus());
+                String paymentStatus = normalize(result.getPaymentStatus());
                 if (TransactionOccupancyPolicy.isCancellationSuccess(status)
                         || "ORDER_CLOSED".equals(paymentStatus)) {
                     synchronized (PaymentManager.this) {
@@ -907,7 +946,12 @@ public final class PaymentManager {
             return;
         }
 
-        if ("WAITING_PAYMENT".equals(getCurrentPurchaseStatus()) && !isCancelPending()) {
+        if ("WAITING_PAYMENT".equals(getCurrentPurchaseStatus())
+                && !isCancelPending()
+                && !isAuthCodeSubmitted()
+                && !UnifiedPurchasePolicy.blocksNewPayment(
+                        getCurrentPaymentStatus(),
+                        getCurrentSelectedPaymentMode())) {
             paymentReadyBroadcasted = true;
             qrBroadcasted = !getCurrentScanUrl().isEmpty();
             broadcast(
@@ -921,7 +965,7 @@ public final class PaymentManager {
 
         executor.execute(() -> {
             try {
-                Object result = sdkManager.queryPurchase(requestNo);
+                DeviceAppPurchaseResult result = sdkManager.queryPurchase(requestNo);
                 consecutiveNetworkFailures = 0;
                 handlePurchaseResult(requestNo, result);
             } catch (Throwable error) {
@@ -975,7 +1019,7 @@ public final class PaymentManager {
                 return;
             }
             try {
-                Object result = sdkManager.queryPurchase(requestNo);
+                DeviceAppPurchaseResult result = sdkManager.queryPurchase(requestNo);
                 synchronized (PaymentManager.this) {
                     consecutiveNetworkFailures = 0;
                 }
@@ -1269,10 +1313,10 @@ public final class PaymentManager {
                 && !getCurrentScanUrl().isEmpty()
                 && !isCancelPending()
                 && !isAuthCodeSubmitted()
-                && !"AUTH_CODE".equals(selectedMode)
-                && !"SUCCESS".equals(getCurrentPaymentStatus())
-                && !"ORDER_ALREADY_PAID".equals(getCurrentPaymentStatus())
-                && !"ORDER_CLOSED".equals(getCurrentPaymentStatus());
+                && selectedMode.isEmpty()
+                && !UnifiedPurchasePolicy.blocksNewPayment(
+                        getCurrentPaymentStatus(),
+                        selectedMode);
     }
 
     public boolean hasAnyAuthCodeChannel() {
@@ -1392,7 +1436,6 @@ public final class PaymentManager {
                 .remove(KEY_CURRENT_PAY_CHANNEL)
                 .remove(KEY_CURRENT_SUPPORTED_CHANNELS)
                 .remove(KEY_CURRENT_SCAN_URL)
-                .remove(KEY_CURRENT_EXPIRE_TIME)
                 .remove(KEY_CURRENT_STAGE)
                 .remove(KEY_AUTH_CODE_SUBMITTED)
                 .remove(KEY_CANCEL_PENDING)
@@ -1460,79 +1503,22 @@ public final class PaymentManager {
         return "支付结果正在确认，请勿重复付款";
     }
 
-    private static String readSupportedChannels(Object target) {
-        Object value = invokeOptional(target, "getSupportedChannels");
-        if (value == null) {
+    private static String readSupportedChannels(List<String> values) {
+        if (values == null || values.isEmpty()) {
             return "";
         }
         StringBuilder builder = new StringBuilder();
-        if (value instanceof Iterable) {
-            for (Object item : (Iterable<?>) value) {
-                appendChannel(builder, item);
+        for (String value : values) {
+            String channel = normalize(value);
+            if (channel.isEmpty()) {
+                continue;
             }
-            return builder.toString();
-        }
-        if (value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            for (int index = 0; index < length; index++) {
-                appendChannel(builder, Array.get(value, index));
+            if (builder.length() > 0) {
+                builder.append(',');
             }
-            return builder.toString();
+            builder.append(channel);
         }
-        appendChannel(builder, value);
         return builder.toString();
-    }
-
-    private static void appendChannel(StringBuilder builder, Object value) {
-        String channel = normalize(value == null ? "" : String.valueOf(value));
-        if (channel.isEmpty()) {
-            return;
-        }
-        if (builder.length() > 0) {
-            builder.append(',');
-        }
-        builder.append(channel);
-    }
-
-    private static Object invokeOptional(Object target, String... methodNames) {
-        if (target == null || methodNames == null) {
-            return null;
-        }
-        for (String name : methodNames) {
-            try {
-                Method method = target.getClass().getMethod(name);
-                return method.invoke(target);
-            } catch (Throwable ignored) {
-            }
-        }
-        return null;
-    }
-
-    private static String readString(Object target, String... methodNames) {
-        Object value = invokeOptional(target, methodNames);
-        return value == null ? "" : String.valueOf(value).trim();
-    }
-
-    private static long readLong(Object target, String... methodNames) {
-        Object value = invokeOptional(target, methodNames);
-        if (value instanceof Number) {
-            return ((Number) value).longValue();
-        }
-        if (value != null) {
-            try {
-                return Long.parseLong(String.valueOf(value));
-            } catch (Throwable ignored) {
-            }
-        }
-        return 0L;
-    }
-
-    private static boolean readBoolean(Object target, String... methodNames) {
-        Object value = invokeOptional(target, methodNames);
-        if (value instanceof Boolean) {
-            return (Boolean) value;
-        }
-        return value != null && Boolean.parseBoolean(String.valueOf(value));
     }
 
     private static String newPurchaseRequestNo() {

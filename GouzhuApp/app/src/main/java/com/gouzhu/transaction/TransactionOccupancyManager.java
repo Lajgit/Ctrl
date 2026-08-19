@@ -265,13 +265,38 @@ public final class TransactionOccupancyManager {
     }
 
     public boolean markQrCancelling(String clientRequestNo) {
-        Snapshot snapshot = current();
-        if (snapshot == null
-                || !OWNER_QR_PURCHASE.equals(snapshot.ownerType)
-                || !clientRequestNo.equals(snapshot.clientRequestNo)) {
+        if (blank(clientRequestNo)) {
             return false;
         }
-        return transitionAnyPhase(snapshot.sessionId, PHASE_CANCELLING, "");
+        ensureSchema();
+        Snapshot changed;
+        synchronized (DB_LOCK) {
+            SQLiteDatabase db = store.getWritableDatabase();
+            db.beginTransaction();
+            try {
+                Snapshot current = load(db);
+                if (current == null
+                        || !OWNER_QR_PURCHASE.equals(current.ownerType)
+                        || !clientRequestNo.equals(current.clientRequestNo)
+                        || !(PHASE_PREPARING.equals(current.phase)
+                        || PHASE_WAITING_PAYMENT.equals(current.phase)
+                        || PHASE_CONFIRMING_CLOSE.equals(current.phase))) {
+                    return false;
+                }
+                changed = current.copy();
+                changed.phase = PHASE_CANCELLING;
+                changed.blockedReason = "";
+                changed.updatedAt = System.currentTimeMillis();
+                if (!update(db, changed)) {
+                    return false;
+                }
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
+        }
+        broadcast(changed);
+        return true;
     }
 
     public void onQrPurchaseStatus(String clientRequestNo, String purchaseStatus) {

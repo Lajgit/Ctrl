@@ -14,6 +14,7 @@ import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppClient;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceCredentialManager;
 import com.pinball.xiaoda.device.sdk.client.DeviceLifecycleClient;
 import com.pinball.xiaoda.device.sdk.client.DeviceSdkConfig;
@@ -176,9 +177,9 @@ public final class DeviceSdkManager {
 
     /**
      * 统一购珠：主扫和付款码反扫共用一个 clientRequestNo / orderId。
-     * 返回值保持 Object，业务层通过只读反射读取字段，避免设备工程绑死 SDK 模型实现细节。
+     * 使用 SDK 的 DeviceAppPurchaseResult 强类型结果，避免字段名变化被反射静默吞掉。
      */
-    public Object createPurchase(
+    public DeviceAppPurchaseResult createPurchase(
             String clientRequestNo,
             long purchaseRuleId,
             Long priceTierId,
@@ -192,15 +193,15 @@ public final class DeviceSdkManager {
         );
     }
 
-    public Object queryPurchase(String clientRequestNo) {
+    public DeviceAppPurchaseResult queryPurchase(String clientRequestNo) {
         return newAppClient().queryPurchase(clientRequestNo);
     }
 
-    public Object cancelPurchase(String clientRequestNo) {
+    public DeviceAppPurchaseResult cancelPurchase(String clientRequestNo) {
         return newAppClient().cancelPurchase(clientRequestNo);
     }
 
-    public Object payByAuthCode(String clientRequestNo, String authCode) {
+    public DeviceAppPurchaseResult payByAuthCode(String clientRequestNo, String authCode) {
         return newAppClient().payByAuthCode(clientRequestNo, authCode);
     }
 

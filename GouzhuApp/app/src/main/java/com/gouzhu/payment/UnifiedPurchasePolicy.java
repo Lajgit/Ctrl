@@ -76,6 +76,20 @@ final class UnifiedPurchasePolicy {
                 || "ORDER_CLOSED".equals(payment);
     }
 
+    /** 服务端明确回到未选支付方式的待支付态时，允许下一次新付款尝试。 */
+    static boolean canRearmAfterExplicitFailure(
+            String purchaseStatus,
+            String paymentStatus,
+            String selectedPaymentMode,
+            String payChannel
+    ) {
+        return "WAITING_PAYMENT".equals(normalize(purchaseStatus))
+                && "FAILED".equals(normalize(paymentStatus))
+                && normalize(selectedPaymentMode).isEmpty()
+                && (normalize(payChannel).isEmpty()
+                || "DEVICE_PURCHASE".equals(normalize(payChannel)));
+    }
+
     /** 连续网络失败退避：1s、2s、4s、8s，之后最大 10s。 */
     static long queryRetryDelaySeconds(int consecutiveFailures) {
         if (consecutiveFailures <= 1) {
