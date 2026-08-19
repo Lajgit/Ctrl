@@ -54,6 +54,22 @@ public class TransactionOccupancyPolicyTest {
     }
 
     @Test
+    public void lateHttpStatusDoesNotRegressPhysicalPhase() {
+        assertTrue(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "DISPENSING", "WAITING_PAYMENT"));
+        assertTrue(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "FINISHING", "DISPENSING"));
+        assertTrue(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "DISPENSE_RESERVED", "EXPIRED"));
+        assertFalse(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "WAITING_PAYMENT", "WAITING_PAYMENT"));
+        assertFalse(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "DISPENSING", "COMPLETED"));
+        assertFalse(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "DISPENSING", "REFUNDING"));
+    }
+
+    @Test
     public void paymentStatusMapsToExpectedPhase() {
         assertEquals("WAITING_PAYMENT",
                 TransactionOccupancyPolicy.paymentPhase("WAITING_PAYMENT"));

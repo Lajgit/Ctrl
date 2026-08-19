@@ -514,7 +514,6 @@ public final class PaymentManager {
         switch (purchaseStatus) {
             case "DISPENSING":
                 occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
-                cancelPurchaseQuery();
                 preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();
                 setStage(STAGE_PAID);
                 broadcast(
@@ -524,6 +523,8 @@ public final class PaymentManager {
                         null,
                         purchaseStatus
                 );
+                // DISPENSING 仍是服务端非终态；继续查原订单，直到物理完成且服务端收敛终态。
+                schedulePurchaseQuery(requestNo);
                 return;
             case "REFUNDING":
                 occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
@@ -714,8 +715,12 @@ public final class PaymentManager {
         synchronized (this) {
             requestNo = getCurrentOrderId();
             if (requestNo.isEmpty()) {
-                // 没有购珠会话时保持原扫码业务路由；仅活动购珠订单消费付款码格式数据。
-                return ScanSubmission.notHandled();
+                // 已识别为付款码的数据即使没有购珠订单也不进入核销/日志路径，避免支付凭证外泄。
+                return ScanSubmission.handled(
+                        false,
+                        "请先选择购珠套餐，再出示微信或支付宝付款码",
+                        channel
+                );
             }
             if (!supportsAuthCodeChannel(channel)) {
                 return ScanSubmission.handled(

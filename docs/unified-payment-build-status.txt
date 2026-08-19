@@ -1,12 +1,13 @@
 status=0
-source_commit=24ae537fd98d84da4b719268e54234113fc8a8b4
+source_commit=b3a38c9e74e8e7dcafcfe2c8b9b2c2101845f9cc
 auth_log_scan=0
 --- patch ---
-request identity: matches=1
-explicit failed raw state: matches=1
-failed rearm persistence: matches=1
-closed ordering: matches=1
-no purchase scanner routing: matches=1
+keep polling DISPENSING: matches=1
+payment code without purchase remains sensitive: matches=1
+physical phase regression policy: matches=1
+do not regress physical occupancy: matches=1
+server terminal gates QR release after physical finish: matches=1
+physical regression tests: matches=1
 PATCH_OK
 --- build tail ---
 Downloading https://services.gradle.org/distributions/gradle-9.4.1-bin.zip
@@ -30,13 +31,12 @@ Daemon will be stopped at the end of the build
 > Task :app:packageDebugResources
 > Task :app:processDebugNavigationResources
 > Task :app:javaPreCompileDebug
+> Task :app:parseDebugLocalResources
 > Task :app:checkDebugAarMetadata
 > Task :app:mapDebugSourceSetPaths
-> Task :app:parseDebugLocalResources
-> Task :app:compileDebugNavigationResources
 > Task :app:generateDebugRFile
+> Task :app:compileDebugNavigationResources
 > Task :app:compileDebugKotlin NO-SOURCE
-> Task :app:mergeDebugResources
 
 > Task :app:compileDebugJavaWithJavac
 Note: Some input files use or override a deprecated API.
@@ -49,31 +49,32 @@ Note: Recompile with -Xlint:deprecation for details.
 > Task :app:preDebugUnitTestBuild UP-TO-DATE
 > Task :app:javaPreCompileDebugUnitTest
 > Task :app:processDebugJavaRes NO-SOURCE
-> Task :app:processDebugManifestForPackage
 > Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
 > Task :app:generateDebugAssets UP-TO-DATE
+> Task :app:mergeDebugResources
 > Task :app:mergeDebugAssets
 > Task :app:compressDebugAssets
-> Task :app:processDebugResources
 > Task :app:generateDebugGlobalSynthetics
-> Task :app:bundleDebugClassesToCompileJar
-> Task :app:bundleDebugClassesToRuntimeJar
-> Task :app:compileDebugUnitTestKotlin NO-SOURCE
+> Task :app:checkDebugDuplicateClasses
+> Task :app:processDebugManifestForPackage
 > Task :app:mergeDebugJavaResource
+> Task :app:mergeLibDexDebug
+> Task :app:mergeDebugJniLibFolders
+> Task :app:mergeDebugNativeLibs NO-SOURCE
+> Task :app:stripDebugDebugSymbols NO-SOURCE
+> Task :app:processDebugResources
+> Task :app:validateSigningDebug
+> Task :app:bundleDebugClassesToRuntimeJar
+> Task :app:bundleDebugClassesToCompileJar
+> Task :app:desugarDebugFileDependencies
+> Task :app:dexBuilderDebug
+> Task :app:compileDebugUnitTestKotlin NO-SOURCE
 > Task :app:compileDebugUnitTestJavaWithJavac
 > Task :app:processDebugUnitTestJavaRes NO-SOURCE
 > Task :app:testDebugUnitTest
-> Task :app:checkDebugDuplicateClasses
-> Task :app:desugarDebugFileDependencies
-> Task :app:dexBuilderDebug
-> Task :app:mergeDebugJniLibFolders
-> Task :app:mergeLibDexDebug
-> Task :app:mergeDebugNativeLibs NO-SOURCE
-> Task :app:stripDebugDebugSymbols NO-SOURCE
-> Task :app:mergeProjectDexDebug
-> Task :app:validateSigningDebug
 > Task :app:writeDebugAppMetadata
 > Task :app:writeDebugSigningConfigVersions
+> Task :app:mergeProjectDexDebug
 > Task :app:mergeExtDexDebug
 > Task :app:packageDebug
 > Task :app:createDebugApkListingFileRedirect
@@ -87,6 +88,6 @@ You can use '--warning-mode all' to show the individual deprecation warnings and
 
 For more on this, please refer to https://docs.gradle.org/9.4.1/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
 
-BUILD SUCCESSFUL in 1m 43s
+BUILD SUCCESSFUL in 1m 46s
 39 actionable tasks: 38 executed, 1 up-to-date
 Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.4.1/userguide/configuration_cache_enabling.html
