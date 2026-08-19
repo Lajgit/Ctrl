@@ -29,6 +29,9 @@ jobs:
           done
           CP='GouzhuApp/app/libs/xiaoda-device-sdk-0.1.0.jar:GouzhuApp/app/libs/xiaoda-device-mqtt-0.1.0.jar:GouzhuApp/app/libs/xiaoda-device-hardware-0.1.0.jar'
           classes=(
+            com.pinball.xiaoda.device.sdk.client.DeviceAppClient
+            com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult
+            com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult
             com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter
             com.pinball.xiaoda.device.sdk.hardware.CashConfigurationAdapter
             com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandMapper
@@ -64,5 +67,5 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git add docs/sdk-api-dump.txt
-          git commit -m '生成新版SDK接口清单' || exit 0
+          git commit -m '生成统一支付SDK接口清单' || exit 0
           git push
