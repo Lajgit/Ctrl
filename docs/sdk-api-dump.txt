@@ -450,48 +450,6 @@ com/pinball/xiaoda/device/sdk/protocol/MarbleDispenseResultCodes.class
 com/pinball/xiaoda/device/sdk/protocol/RawCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/RedemptionResponseCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/ResolveMarbleOperationCommandData.class
-=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppClient ===
-Compiled from "DeviceAppClient.java"
-public final class com.pinball.xiaoda.device.sdk.client.DeviceAppClient {
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppClient(com.pinball.xiaoda.device.sdk.client.DeviceSdkConfig, com.pinball.xiaoda.device.sdk.client.DeviceSecretProvider, com.pinball.xiaoda.device.sdk.client.HttpTransport);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult bootstrap(java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult createNativePurchase(java.lang.String, long, java.lang.Long, java.lang.Integer);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult queryNativePurchase(java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult cancelNativePurchase(java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult createMemberWithdrawal(java.lang.String, java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult createMemberWithdrawalFromRoutedCode(java.lang.String, com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting, java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult queryMemberWithdrawal(java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult createInternalRedemption(java.lang.String, java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult createInternalRedemptionFromRoutedCode(java.lang.String, com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting, java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult queryInternalRedemption(java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionResult createThirdPartyRedemption(java.lang.String, java.lang.String, java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionResult createThirdPartyRedemptionFromRoutedCode(java.lang.String, com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting, java.lang.String);
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionResult queryThirdPartyRedemption(java.lang.String);
-}
-=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult ===
-Error: class not found: com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult
-=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult ===
-Compiled from "DeviceAppNativePurchaseResult.java"
-public final class com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult {
-  public com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult();
-  public java.lang.String getClientRequestNo();
-  public java.lang.Long getOrderId();
-  public java.lang.String getOrderNo();
-  public java.lang.String getPayNo();
-  public java.lang.String getPayChannel();
-  public java.lang.String getPaymentMode();
-  public java.lang.String getScanUrl();
-  public java.util.List<java.lang.String> getSupportedChannels();
-  public java.lang.String getCodeUrl();
-  public java.lang.Long getPayAmount();
-  public java.lang.Integer getMarbleCount();
-  public java.lang.Integer getOrderStatus();
-  public java.lang.String getPurchaseStatus();
-  public boolean isTerminal();
-  public java.lang.String getExpireTime();
-  public java.lang.String getMessage();
-  public java.lang.String toString();
-}
 === JAVAP com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter ===
 Compiled from "MarbleHardwareAdapter.java"
 public interface com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter {
