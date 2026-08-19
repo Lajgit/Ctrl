@@ -1,142 +1,60 @@
 from pathlib import Path
 
-path = Path("GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java")
-text = path.read_text(encoding="utf-8")
 
-
-def one(label: str, old: str, new: str) -> None:
-    global text
+def replace_one(path: str, label: str, old: str, new: str) -> None:
+    p = Path(path)
+    text = p.read_text(encoding="utf-8")
     count = text.count(old)
     print(f"{label}: matches={count}")
     if count != 1:
         raise SystemExit(f"{label}: expected one match, got {count}")
-    text = text.replace(old, new)
+    p.write_text(text.replace(old, new), encoding="utf-8")
 
 
-one(
-    "request identity",
-    """        if (!requestNo.equals(getCurrentOrderId()) || result == null) {
-            return;
-        }
-
-        String purchaseStatus = normalize(result.getPurchaseStatus());
+manager = "GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java"
+replace_one(
+    manager,
+    "keep polling DISPENSING",
+    """            case "DISPENSING":
+                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
+                cancelPurchaseQuery();
+                preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();
+                setStage(STAGE_PAID);
+                broadcast(
+                        EVENT_SUCCESS,
+                        message.isEmpty() ? "支付成功，等待平台出珠指令" : message,
+                        requestNo,
+                        null,
+                        purchaseStatus
+                );
+                return;
 """,
-    """        if (!requestNo.equals(getCurrentOrderId()) || result == null) {
-            return;
-        }
-        String resultRequestNo = safe(result.getClientRequestNo());
-        if (!resultRequestNo.isEmpty() && !requestNo.equals(resultRequestNo)) {
-            // SDK 响应必须属于当前持久化请求；身份错配时禁止用错误订单推进本机状态。
-            cancelPurchaseQuery();
-            setStage(STAGE_BLOCKED);
-            occupancy.markBlocked("PAYMENT_RESPONSE_REQUEST_MISMATCH");
-            broadcast(
-                    EVENT_FAILED,
-                    "支付响应与当前订单不一致，设备已停止新交易",
-                    requestNo,
-                    null,
-                    "REQUEST_MISMATCH"
-            );
-            return;
-        }
-
-        String purchaseStatus = normalize(result.getPurchaseStatus());
-""",
-)
-
-one(
-    "explicit failed raw state",
-    """        String paymentStatus = normalize(result.getPaymentStatus());
-        String selectedMode = normalize(result.getSelectedPaymentMode());
-        if (selectedMode.isEmpty()) {
-            selectedMode = getCurrentSelectedPaymentMode();
-        }
-        String payChannel = normalize(result.getPayChannel());
-        if (payChannel.isEmpty()) {
-            payChannel = getCurrentPayChannel();
-        }
-""",
-    """        String paymentStatus = normalize(result.getPaymentStatus());
-        String rawSelectedMode = normalize(result.getSelectedPaymentMode());
-        String rawPayChannel = normalize(result.getPayChannel());
-        String selectedMode = rawSelectedMode;
-        String payChannel = rawPayChannel;
-        if (!"FAILED".equals(paymentStatus)) {
-            // 普通部分响应可沿用上一快照；明确 FAILED 必须接受服务端“已清空支付入口”的最新状态。
-            if (selectedMode.isEmpty()) {
-                selectedMode = getCurrentSelectedPaymentMode();
-            }
-            if (payChannel.isEmpty()) {
-                payChannel = getCurrentPayChannel();
-            }
-        }
+    """            case "DISPENSING":
+                occupancy.onQrPurchaseStatus(requestNo, purchaseStatus);
+                preferences().edit().putBoolean(KEY_CANCEL_PENDING, false).commit();
+                setStage(STAGE_PAID);
+                broadcast(
+                        EVENT_SUCCESS,
+                        message.isEmpty() ? "支付成功，等待平台出珠指令" : message,
+                        requestNo,
+                        null,
+                        purchaseStatus
+                );
+                // DISPENSING 仍是服务端非终态；继续查原订单，直到物理完成且服务端收敛终态。
+                schedulePurchaseQuery(requestNo);
+                return;
 """,
 )
-
-one(
-    "failed rearm persistence",
-    """        if (explicitAttemptFailed
-                && isAuthCodeSubmitted()
-                && !preferences().edit().putBoolean(KEY_AUTH_CODE_SUBMITTED, false).commit()) {
-            setStage(STAGE_BLOCKED);
-            occupancy.markBlocked("PAYMENT_REARM_STATE_PERSISTENCE_FAILED");
-            broadcast(
-                    EVENT_FAILED,
-                    "支付重试状态无法可靠保存，设备已停止本次交易",
-                    requestNo,
-                    null,
-                    purchaseStatus
-            );
-            return;
-        }
-
-        // ORDER_CLOSED 可以先于 purchaseStatus=CLOSED 返回，必须权威关闭本地统一会话。
-        if (paymentSaysClosed) {
-            finishClosedByPaymentStatus(requestNo, message, purchaseStatus);
-            return;
-        }
-""",
-    """        if (explicitAttemptFailed
-                && !preferences().edit()
-                .putBoolean(KEY_AUTH_CODE_SUBMITTED, false)
-                .putLong(KEY_QUERY_DEADLINE, 0L)
-                .commit()) {
-            setStage(STAGE_BLOCKED);
-            occupancy.markBlocked("PAYMENT_REARM_STATE_PERSISTENCE_FAILED");
-            broadcast(
-                    EVENT_FAILED,
-                    "支付重试状态无法可靠保存，设备已停止本次交易",
-                    requestNo,
-                    null,
-                    purchaseStatus
-            );
-            return;
-        }
-""",
-)
-
-one(
-    "closed ordering",
-    """        // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。
-        if (terminal) {
-""",
-    """        /*
-         * ORDER_CLOSED 只有在 purchaseStatus 没有给出更强的出珠/退款/已完成语义时才结束
-         * 会话。取消与支付竞态中，DISPENSING/COMPLETED 必须保持支付胜出结果。
-         */
-        if (paymentSaysClosed) {
-            finishClosedByPaymentStatus(requestNo, message, purchaseStatus);
-            return;
-        }
-
-        // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。
-        if (terminal) {
-""",
-)
-
-one(
-    "no purchase scanner routing",
+replace_one(
+    manager,
+    "payment code without purchase remains sensitive",
     """            if (requestNo.isEmpty()) {
+                // 没有购珠会话时保持原扫码业务路由；仅活动购珠订单消费付款码格式数据。
+                return ScanSubmission.notHandled();
+            }
+""",
+    """            if (requestNo.isEmpty()) {
+                // 已识别为付款码的数据即使没有购珠订单也不进入核销/日志路径，避免支付凭证外泄。
                 return ScanSubmission.handled(
                         false,
                         "请先选择购珠套餐，再出示微信或支付宝付款码",
@@ -144,12 +62,150 @@ one(
                 );
             }
 """,
-    """            if (requestNo.isEmpty()) {
-                // 没有购珠会话时保持原扫码业务路由；仅活动购珠订单消费付款码格式数据。
-                return ScanSubmission.notHandled();
-            }
+)
+
+policy = "GouzhuApp/app/src/main/java/com/gouzhu/transaction/TransactionOccupancyPolicy.java"
+replace_one(
+    policy,
+    "physical phase regression policy",
+    """    public static boolean isCancellationSuccess(String purchaseStatus) {
+        String status = normalize(purchaseStatus);
+        return "CANCELED".equals(status) || "CLOSED".equals(status);
+    }
+
+    public static String normalize(String value) {
+""",
+    """    public static boolean isCancellationSuccess(String purchaseStatus) {
+        String status = normalize(purchaseStatus);
+        return "CANCELED".equals(status) || "CLOSED".equals(status);
+    }
+
+    /**
+     * MQTT 物理授权可能先于 HTTP 查单到达。已进入物理阶段后，迟到的普通非终态
+     * WAITING_PAYMENT / EXPIRED / DISPENSING / 未识别状态都不能把占用阶段回退。
+     * 终态和 REFUNDING 由上层显式处理，不在这里静默忽略。
+     */
+    public static boolean shouldPreservePhysicalPhase(
+            String currentPhase,
+            String purchaseStatus
+    ) {
+        if (!isPhysicalPhase(currentPhase)) {
+            return false;
+        }
+        String status = normalize(purchaseStatus);
+        return !("CANCELED".equals(status)
+                || "CLOSED".equals(status)
+                || "COMPLETED".equals(status)
+                || "REFUNDING".equals(status)
+                || "REFUNDED".equals(status));
+    }
+
+    public static String normalize(String value) {
 """,
 )
 
-path.write_text(text, encoding="utf-8")
+occupancy = "GouzhuApp/app/src/main/java/com/gouzhu/transaction/TransactionOccupancyManager.java"
+replace_one(
+    occupancy,
+    "do not regress physical occupancy",
+    """        if ("REFUNDED".equals(normalized)) {
+            if (store.hasActivePhysicalOrder()) {
+                transitionAnyPhase(
+                        snapshot.sessionId,
+                        PHASE_BLOCKED,
+                        "PAYMENT_REFUNDED_WITH_ACTIVE_DISPENSE"
+                );
+            } else {
+                release(snapshot.sessionId, "qr refunded", true);
+            }
+            return;
+        }
+        String next = TransactionOccupancyPolicy.paymentPhase(normalized);
+""",
+    """        if ("REFUNDED".equals(normalized)) {
+            if (store.hasActivePhysicalOrder()) {
+                transitionAnyPhase(
+                        snapshot.sessionId,
+                        PHASE_BLOCKED,
+                        "PAYMENT_REFUNDED_WITH_ACTIVE_DISPENSE"
+                );
+            } else {
+                release(snapshot.sessionId, "qr refunded", true);
+            }
+            return;
+        }
+        if ("REFUNDING".equals(normalized)
+                && TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)) {
+            // 物理出珠已经开始后再进入退款属于高风险冲突，保持占用并转人工处理。
+            transitionAnyPhase(
+                    snapshot.sessionId,
+                    PHASE_BLOCKED,
+                    "PAYMENT_REFUNDING_WITH_ACTIVE_DISPENSE"
+            );
+            return;
+        }
+        if (TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                snapshot.phase,
+                normalized
+        )) {
+            // 忽略迟到的 HTTP 非终态，绝不把 DISPENSING/FINISHING 等物理阶段向后回退。
+            return;
+        }
+        String next = TransactionOccupancyPolicy.paymentPhase(normalized);
+""",
+)
+replace_one(
+    occupancy,
+    "server terminal gates QR release after physical finish",
+    """            case "finished":
+                if (!OWNER_MEMBER_DEPOSIT.equals(snapshot.ownerType)) {
+                    release(snapshot.sessionId, "dispense completed", false);
+                }
+                break;
+""",
+    """            case "finished":
+                if (OWNER_QR_PURCHASE.equals(snapshot.ownerType)) {
+                    String purchaseStatus = PaymentManager.get(context).getCurrentPurchaseStatus();
+                    if ("COMPLETED".equals(purchaseStatus)) {
+                        // 统一购珠只有服务端 COMPLETED 后才允许释放并生成下一笔 clientRequestNo。
+                        release(snapshot.sessionId, "qr dispense completed and server terminal", false);
+                    } else if (!PHASE_BLOCKED.equals(snapshot.phase)) {
+                        // 控制板完成只代表物理动作结束，继续保持订单占用等待服务端终态。
+                        transitionAnyPhase(snapshot.sessionId, PHASE_FINISHING, "");
+                    }
+                } else if (!OWNER_MEMBER_DEPOSIT.equals(snapshot.ownerType)) {
+                    release(snapshot.sessionId, "dispense completed", false);
+                }
+                break;
+""",
+)
+
+test = "GouzhuApp/app/src/test/java/com/gouzhu/transaction/TransactionOccupancyPolicyTest.java"
+replace_one(
+    test,
+    "physical regression tests",
+    """    @Test
+    public void paymentStatusMapsToExpectedPhase() {
+""",
+    """    @Test
+    public void lateHttpStatusDoesNotRegressPhysicalPhase() {
+        assertTrue(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "DISPENSING", "WAITING_PAYMENT"));
+        assertTrue(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "FINISHING", "DISPENSING"));
+        assertTrue(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "DISPENSE_RESERVED", "EXPIRED"));
+        assertFalse(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "WAITING_PAYMENT", "WAITING_PAYMENT"));
+        assertFalse(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "DISPENSING", "COMPLETED"));
+        assertFalse(TransactionOccupancyPolicy.shouldPreservePhysicalPhase(
+                "DISPENSING", "REFUNDING"));
+    }
+
+    @Test
+    public void paymentStatusMapsToExpectedPhase() {
+""",
+)
+
 print("PATCH_OK")
