@@ -145,6 +145,12 @@ com/pinball/xiaoda/device/sdk/client/DeviceAppClient.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppInternalRedemptionResult.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppMemberWithdrawalResult.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppNativePurchaseResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$1.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$CodeRoute.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$RoutedVoucher.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$ThirdPartyChannel.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppThirdPartyRedemptionResult.class
 com/pinball/xiaoda/device/sdk/client/DeviceCredentialManager.class
 com/pinball/xiaoda/device/sdk/client/DeviceEnrollResult.class
 com/pinball/xiaoda/device/sdk/client/DeviceLifecycleClient$1.class
@@ -193,10 +199,14 @@ com/pinball/xiaoda/device/sdk/core/DeviceMqttTopics$CommandAction.class
 com/pinball/xiaoda/device/sdk/core/DeviceMqttTopics$ReportAction.class
 com/pinball/xiaoda/device/sdk/core/DeviceMqttTopics.class
 com/pinball/xiaoda/device/sdk/core/DeviceNumbers.class
+com/pinball/xiaoda/device/sdk/core/DeviceReinstallRecoveryProof.class
 com/pinball/xiaoda/device/sdk/core/DeviceSdkException.class
 com/pinball/xiaoda/device/sdk/core/MqttCredential.class
 com/pinball/xiaoda/device/sdk/core/MqttReceiptKey.class
 com/pinball/xiaoda/device/sdk/core/RequestNonceGenerator.class
+com/pinball/xiaoda/device/sdk/core/SdkLogFormatter$1.class
+com/pinball/xiaoda/device/sdk/core/SdkLogFormatter$AppendState.class
+com/pinball/xiaoda/device/sdk/core/SdkLogFormatter.class
 com/pinball/xiaoda/device/sdk/internal/gson/ExclusionStrategy.class
 com/pinball/xiaoda/device/sdk/internal/gson/FieldAttributes.class
 com/pinball/xiaoda/device/sdk/internal/gson/FieldNamingPolicy$1.class
@@ -425,6 +435,7 @@ com/pinball/xiaoda/device/sdk/protocol/CashConfigurationCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/CashEventResponseCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/CollectMarblesCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/CommandResultAcknowledgement.class
+com/pinball/xiaoda/device/sdk/protocol/ContinueMarbleDispenseCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/DeviceCommandResult$1.class
 com/pinball/xiaoda/device/sdk/protocol/DeviceCommandResult$Builder.class
 com/pinball/xiaoda/device/sdk/protocol/DeviceCommandResult.class
@@ -435,8 +446,10 @@ com/pinball/xiaoda/device/sdk/protocol/DeviceMqttCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/DeviceMqttCommandTypes.class
 com/pinball/xiaoda/device/sdk/protocol/DeviceMqttProtocolException.class
 com/pinball/xiaoda/device/sdk/protocol/DispenseMarblesCommandData.class
+com/pinball/xiaoda/device/sdk/protocol/MarbleDispenseResultCodes.class
 com/pinball/xiaoda/device/sdk/protocol/RawCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/RedemptionResponseCommandData.class
+com/pinball/xiaoda/device/sdk/protocol/ResolveMarbleOperationCommandData.class
 === JAVAP com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter ===
 Compiled from "MarbleHardwareAdapter.java"
 public interface com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter {
@@ -454,6 +467,7 @@ Compiled from "DeviceHardwareCommandMapper.java"
 public final class com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandMapper {
   public com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandMapper();
   public com.pinball.xiaoda.device.sdk.hardware.DispenseRequest toDispenseRequest(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, long);
+  public com.pinball.xiaoda.device.sdk.hardware.DispenseRequest toContinuationDispenseRequest(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, long);
   public com.pinball.xiaoda.device.sdk.hardware.CollectRequest toCollectRequest(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, long);
   public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult toTerminalResult(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult, long);
 }
@@ -461,11 +475,14 @@ public final class com.pinball.xiaoda.device.sdk.hardware.DeviceHardwareCommandM
 Compiled from "DispenseRequest.java"
 public final class com.pinball.xiaoda.device.sdk.hardware.DispenseRequest {
   public com.pinball.xiaoda.device.sdk.hardware.DispenseRequest(java.lang.String, java.lang.String, int, java.lang.String, long, long);
+  public com.pinball.xiaoda.device.sdk.hardware.DispenseRequest(java.lang.String, java.lang.String, java.lang.String, int, java.lang.String, long, long);
   public java.lang.String getMessageId();
   public java.lang.String getOperationNo();
+  public java.lang.String getContinuationNo();
   public int getQuantity();
   public java.lang.String getOperationToken();
   public long getExpireTime();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.hardware.CollectRequest ===
 Compiled from "CollectRequest.java"
@@ -477,6 +494,7 @@ public final class com.pinball.xiaoda.device.sdk.hardware.CollectRequest {
   public int getSessionTimeoutSeconds();
   public java.lang.String getOperationToken();
   public long getExpireTime();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult ===
 Compiled from "HardwareExecutionResult.java"
@@ -487,6 +505,7 @@ public final class com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResul
   public int getActualQuantity();
   public java.lang.String getResultCode();
   public java.lang.String getResultMessage();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult ===
 Compiled from "CashConfigurationResult.java"
@@ -495,6 +514,7 @@ public final class com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResul
   public static com.pinball.xiaoda.device.sdk.hardware.CashConfigurationResult rejected(java.lang.String);
   public boolean isApplied();
   public java.lang.String getMessage();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.hardware.CashTier ===
 Compiled from "CashTier.java"
@@ -504,6 +524,7 @@ public final class com.pinball.xiaoda.device.sdk.hardware.CashTier {
   public int getDenominationAmount();
   public int getMarbleQuantity();
   public java.lang.String getTierNo();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.client.MqttSessionManager ===
 Compiled from "MqttSessionManager.java"
@@ -535,6 +556,7 @@ public final class com.pinball.xiaoda.device.sdk.client.PendingOutboundMessage {
   public java.lang.String getTopic();
   public byte[] getPayload();
   public long getCreateTime();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.client.MqttSessionListener ===
 Compiled from "MqttSessionListener.java"
@@ -562,7 +584,10 @@ public final class com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult {
   public static final java.lang.String STATUS_FAILED;
   public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder builder(java.lang.String, java.lang.String, java.lang.String, java.lang.String, long);
   public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult acknowledgement(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, long);
+  public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult configurationAcknowledgement(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, long);
+  public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult configurationTerminal(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, boolean, java.lang.String, java.lang.String, long);
   public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult physicalTerminal(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, boolean, int, java.lang.String, java.lang.String, long);
+  public static com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult marbleOperationResolutionTerminal(com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<?>, java.lang.String, boolean, java.lang.String, java.lang.String, long);
   public java.lang.String getMessageId();
   public java.lang.String getCommandType();
   public java.lang.String getStatus();
@@ -575,12 +600,14 @@ public final class com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult {
   public java.lang.Long getConfigVersion();
   public long getTimestamp();
   public com.pinball.xiaoda.device.sdk.core.MqttReceiptKey getReceiptKey();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder ===
 Compiled from "DeviceCommandResult.java"
 public final class com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder {
   public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder operation(java.lang.String, java.lang.String);
   public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder terminal(int, java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder result(java.lang.String, java.lang.String);
   public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult$Builder configurationVersion(long);
   public com.pinball.xiaoda.device.sdk.protocol.DeviceCommandResult build();
 }
@@ -593,13 +620,16 @@ public final class com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommand<T ex
   public java.lang.String getCommandType();
   public long getTimestamp();
   public T getData();
+  public java.lang.String toString();
   public <D extends com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandData> D requireData(java.lang.Class<D>);
 }
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandTypes ===
 Compiled from "DeviceMqttCommandTypes.java"
 public final class com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandTypes {
   public static final java.lang.String DISPENSE_MARBLES;
+  public static final java.lang.String CONTINUE_MARBLE_DISPENSE;
   public static final java.lang.String COLLECT_MARBLES;
+  public static final java.lang.String RESOLVE_MARBLE_OPERATION;
   public static final java.lang.String SYNC_CASH_CONFIGURATION;
   public static final java.lang.String COMMAND_RESULT_ACK;
   public static final java.lang.String REDEMPTION_RESPONSE;
@@ -613,6 +643,7 @@ public final class com.pinball.xiaoda.device.sdk.protocol.DispenseMarblesCommand
   public java.lang.Integer getQuantity();
   public java.lang.String getOperationToken();
   public java.lang.String getExpireTime();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.CollectMarblesCommandData ===
 Compiled from "CollectMarblesCommandData.java"
@@ -623,6 +654,7 @@ public final class com.pinball.xiaoda.device.sdk.protocol.CollectMarblesCommandD
   public java.lang.Integer getSessionTimeoutSeconds();
   public java.lang.String getOperationToken();
   public java.lang.String getExpireTime();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData ===
 Compiled from "CashConfigurationCommandData.java"
@@ -634,6 +666,7 @@ public final class com.pinball.xiaoda.device.sdk.protocol.CashConfigurationComma
   public boolean isCashAcceptanceEnabled();
   public boolean isChangeEnabled();
   public java.util.List<com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData$CashSaleItem> getCashSaleItems();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.CashConfigurationCommandData$CashSaleItem ===
 Compiled from "CashConfigurationCommandData.java"
@@ -643,6 +676,7 @@ public final class com.pinball.xiaoda.device.sdk.protocol.CashConfigurationComma
   public java.lang.Integer getDenominationAmount();
   public java.lang.Integer getMarbleQuantity();
   public java.lang.String getCashSaleTierNo();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.CashEventResponseCommandData ===
 Compiled from "CashEventResponseCommandData.java"
@@ -668,6 +702,7 @@ public final class com.pinball.xiaoda.device.sdk.protocol.CashEventResponseComma
   public boolean isRejected();
   public boolean isUnknown();
   public com.pinball.xiaoda.device.sdk.core.MqttReceiptKey getReceiptKey();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowledgement ===
 Compiled from "CommandResultAcknowledgement.java"
@@ -683,6 +718,7 @@ public final class com.pinball.xiaoda.device.sdk.protocol.CommandResultAcknowled
   public boolean isRetryable();
   public boolean isRecorded();
   public com.pinball.xiaoda.device.sdk.core.MqttReceiptKey getReceiptKey();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.core.MqttReceiptKey ===
 Compiled from "MqttReceiptKey.java"
