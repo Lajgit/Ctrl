@@ -1,4 +1,4 @@
-name: Unified Purchase State Audit
+name: Unified Purchase Physical State Audit
 on:
   push:
     paths:
@@ -40,6 +40,11 @@ jobs:
           } > docs/unified-payment-build-status.txt
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java docs/unified-payment-build-status.txt
-          git commit -m '收紧统一支付订单身份和失败恢复边界'
+          git add \
+            GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/transaction/TransactionOccupancyManager.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/transaction/TransactionOccupancyPolicy.java \
+            GouzhuApp/app/src/test/java/com/gouzhu/transaction/TransactionOccupancyPolicyTest.java \
+            docs/unified-payment-build-status.txt
+          git commit -m '保持统一支付物理阶段直到服务端终态'
           git push
