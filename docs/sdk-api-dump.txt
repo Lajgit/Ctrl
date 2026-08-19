@@ -6,6 +6,8 @@ com/pinball/xiaoda/device/sdk/hardware/CollectRequest.class
 com/pinball/xiaoda/device/sdk/hardware/DeviceHardwareCommandMapper.class
 com/pinball/xiaoda/device/sdk/hardware/DispenseRequest.class
 com/pinball/xiaoda/device/sdk/hardware/HardwareExecutionResult.class
+com/pinball/xiaoda/device/sdk/hardware/MarbleCollectHardwareAdapter.class
+com/pinball/xiaoda/device/sdk/hardware/MarbleDispenseHardwareAdapter.class
 com/pinball/xiaoda/device/sdk/hardware/MarbleHardwareAdapter.class
 === JAR GouzhuApp/app/libs/xiaoda-device-mqtt-0.1.0.jar ===
 com/pinball/xiaoda/device/sdk/internal/paho/BufferedMessage.class
@@ -124,6 +126,7 @@ com/pinball/xiaoda/device/sdk/mqtt/paho/PahoMqttTransport.class
 com/pinball/xiaoda/device/sdk/client/CredentialStore.class
 com/pinball/xiaoda/device/sdk/client/DeviceActivationResult$MqttTopics.class
 com/pinball/xiaoda/device/sdk/client/DeviceActivationResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceApiErrorCodes.class
 com/pinball/xiaoda/device/sdk/client/DeviceApiException.class
 com/pinball/xiaoda/device/sdk/client/DeviceApiResponseParser$1.class
 com/pinball/xiaoda/device/sdk/client/DeviceApiResponseParser$ParsedEnvelope.class
@@ -144,13 +147,16 @@ com/pinball/xiaoda/device/sdk/client/DeviceAppClient$1.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppClient.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppInternalRedemptionResult.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppMemberWithdrawalResult.class
-com/pinball/xiaoda/device/sdk/client/DeviceAppNativePurchaseResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppPurchaseResult.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$1.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$CodeRoute.class
-com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$RoutedVoucher.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$SelectedVoucher.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting$ThirdPartyChannel.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppRedemptionRouting.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppThirdPartyRedemptionPrepareResult.class
 com/pinball/xiaoda/device/sdk/client/DeviceAppThirdPartyRedemptionResult.class
+com/pinball/xiaoda/device/sdk/client/DeviceAppThirdPartyVoucherCandidate.class
+com/pinball/xiaoda/device/sdk/client/DeviceCommandCapabilityPolicy.class
 com/pinball/xiaoda/device/sdk/client/DeviceCredentialManager.class
 com/pinball/xiaoda/device/sdk/client/DeviceEnrollResult.class
 com/pinball/xiaoda/device/sdk/client/DeviceLifecycleClient$1.class
@@ -160,6 +166,7 @@ com/pinball/xiaoda/device/sdk/client/DeviceSdkConfig$Builder.class
 com/pinball/xiaoda/device/sdk/client/DeviceSdkConfig.class
 com/pinball/xiaoda/device/sdk/client/DeviceSecretProvider.class
 com/pinball/xiaoda/device/sdk/client/DeviceStatusPayloadProvider.class
+com/pinball/xiaoda/device/sdk/client/DeviceTypes.class
 com/pinball/xiaoda/device/sdk/client/HttpResponse.class
 com/pinball/xiaoda/device/sdk/client/HttpTransport.class
 com/pinball/xiaoda/device/sdk/client/HttpUrlConnectionTransport.class
@@ -450,11 +457,54 @@ com/pinball/xiaoda/device/sdk/protocol/MarbleDispenseResultCodes.class
 com/pinball/xiaoda/device/sdk/protocol/RawCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/RedemptionResponseCommandData.class
 com/pinball/xiaoda/device/sdk/protocol/ResolveMarbleOperationCommandData.class
+=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppClient ===
+Compiled from "DeviceAppClient.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppClient {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppClient(com.pinball.xiaoda.device.sdk.client.DeviceSdkConfig, com.pinball.xiaoda.device.sdk.client.DeviceSecretProvider, com.pinball.xiaoda.device.sdk.client.HttpTransport);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult bootstrap(java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult createPurchase(java.lang.String, long, java.lang.Long, java.lang.Integer);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult queryPurchase(java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult cancelPurchase(java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult payByAuthCode(java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult createMemberWithdrawal(java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult createMemberWithdrawalFromRoutedCode(java.lang.String, com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult queryMemberWithdrawal(java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult createInternalRedemption(java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult createInternalRedemptionFromRoutedCode(java.lang.String, com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult queryInternalRedemption(java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionPrepareResult prepareThirdPartyRedemption(java.lang.String, java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionPrepareResult prepareThirdPartyRedemptionForSelectedChannel(java.lang.String, com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting, java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionResult confirmThirdPartyRedemption(java.lang.String, java.lang.String);
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionResult queryThirdPartyRedemption(java.lang.String);
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult ===
+Compiled from "DeviceAppPurchaseResult.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult();
+  public java.lang.String getClientRequestNo();
+  public java.lang.Long getOrderId();
+  public java.lang.String getOrderNo();
+  public java.lang.String getPayNo();
+  public java.lang.String getPayChannel();
+  public java.lang.String getSelectedPaymentMode();
+  public java.lang.String getScanUrl();
+  public java.util.List<java.lang.String> getSupportedChannels();
+  public java.lang.Long getPayAmount();
+  public java.lang.Integer getMarbleCount();
+  public java.lang.Integer getOrderStatus();
+  public java.lang.String getPurchaseStatus();
+  public boolean isTerminal();
+  public java.lang.String getExpireTime();
+  public java.lang.String getMessage();
+  public java.lang.String getPaymentStatus();
+  public java.lang.String getPaymentMessage();
+  public java.lang.String toString();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult ===
+Error: class not found: com.pinball.xiaoda.device.sdk.client.DeviceAppNativePurchaseResult
 === JAVAP com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter ===
 Compiled from "MarbleHardwareAdapter.java"
-public interface com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter {
-  public abstract com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult dispense(com.pinball.xiaoda.device.sdk.hardware.DispenseRequest);
-  public abstract com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult collect(com.pinball.xiaoda.device.sdk.hardware.CollectRequest);
+public interface com.pinball.xiaoda.device.sdk.hardware.MarbleHardwareAdapter extends com.pinball.xiaoda.device.sdk.hardware.MarbleCollectHardwareAdapter,com.pinball.xiaoda.device.sdk.hardware.MarbleDispenseHardwareAdapter {
 }
 === JAVAP com.pinball.xiaoda.device.sdk.hardware.CashConfigurationAdapter ===
 Compiled from "CashConfigurationAdapter.java"
