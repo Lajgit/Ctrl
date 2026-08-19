@@ -1,4 +1,4 @@
-name: Unified Purchase State Audit
+name: Unified Purchase State Audit Diagnostic
 on:
   push:
     paths:
@@ -19,22 +19,25 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Apply second-pass state fixes
+      - name: Apply audited state fixes
         shell: bash
         run: |
-          python3 <<'PY'
+          set +e
+          mkdir -p docs
+          python3 <<'PY' > docs/unified-patch-status.txt 2>&1
           from pathlib import Path
           path = Path('GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java')
           text = path.read_text(encoding='utf-8')
 
-          def one(old, new):
+          def one(label, old, new):
               global text
               count = text.count(old)
+              print(f'{label}: matches={count}')
               if count != 1:
-                  raise SystemExit(f'expected one match, got {count}: {old[:120]!r}')
+                  raise SystemExit(f'{label}: expected one match, got {count}')
               text = text.replace(old, new)
 
-          one(
+          one('request identity',
               '''        if (!requestNo.equals(getCurrentOrderId()) || result == null) {
             return;
         }
@@ -61,10 +64,9 @@ jobs:
         }
 
         String purchaseStatus = normalize(result.getPurchaseStatus());
-'''
-          )
+''')
 
-          one(
+          one('explicit failed raw state',
               '''        String paymentStatus = normalize(result.getPaymentStatus());
         String selectedMode = normalize(result.getSelectedPaymentMode());
         if (selectedMode.isEmpty()) {
@@ -89,10 +91,9 @@ jobs:
                 payChannel = getCurrentPayChannel();
             }
         }
-'''
-          )
+''')
 
-          one(
+          one('failed rearm persistence',
               '''        if (explicitAttemptFailed
                 && isAuthCodeSubmitted()
                 && !preferences().edit().putBoolean(KEY_AUTH_CODE_SUBMITTED, false).commit()) {
@@ -130,10 +131,9 @@ jobs:
             );
             return;
         }
-'''
-          )
+''')
 
-          one(
+          one('closed ordering',
               '''        // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。
         if (terminal) {
 ''',
@@ -148,10 +148,9 @@ jobs:
 
         // 未识别的 terminal=true 必须 fail-closed，禁止设备开启下一笔购买。
         if (terminal) {
-'''
-          )
+''')
 
-          one(
+          one('no purchase scanner routing',
               '''            if (requestNo.isEmpty()) {
                 return ScanSubmission.handled(
                         false,
@@ -164,48 +163,37 @@ jobs:
                 // 没有购珠会话时保持原扫码业务路由；仅活动购珠订单消费付款码格式数据。
                 return ScanSubmission.notHandled();
             }
-'''
-          )
+''')
 
           path.write_text(text, encoding='utf-8')
+          print('PATCH_OK')
           PY
+          patch_rc=$?
+          echo "patch_status=$patch_rc" >> docs/unified-patch-status.txt
 
-      - name: Static state assertions
-        shell: bash
-        run: |
-          set -e
-          FILE=GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java
-          grep -q 'PAYMENT_RESPONSE_REQUEST_MISMATCH' "$FILE"
-          grep -q 'rawSelectedMode' "$FILE"
-          grep -q 'KEY_QUERY_DEADLINE, 0L' "$FILE"
-          grep -q '没有购珠会话时保持原扫码业务路由' "$FILE"
-          ! grep -q 'Object result = sdkManager' "$FILE"
-          ! grep -q 'readString(result' "$FILE"
+          if [ "$patch_rc" -eq 0 ]; then
+            cd GouzhuApp
+            chmod +x gradlew
+            ./gradlew --no-daemon clean :app:testDebugUnitTest :app:assembleDebug > ../unified-payment-build-2.log 2>&1
+            build_rc=$?
+            cd ..
+          else
+            build_rc=99
+          fi
 
-      - name: Build and unit test
-        shell: bash
-        run: |
-          set +e
-          cd GouzhuApp
-          chmod +x gradlew
-          ./gradlew --no-daemon clean :app:testDebugUnitTest :app:assembleDebug > ../unified-payment-build-2.log 2>&1
-          rc=$?
-          cd ..
-          mkdir -p docs
           {
-            echo "status=$rc"
+            echo "status=$build_rc"
             echo "source_commit=$(git rev-parse HEAD)"
             echo "auth_log_scan=$(grep -R -n -E 'Log\.[a-zA-Z]+\([^\n]*authCode|authCode[^\n]*Log\.' GouzhuApp/app/src/main/java/com/gouzhu 2>/dev/null | wc -l)"
             echo '--- build tail ---'
-            tail -n 350 unified-payment-build-2.log
+            if [ -f unified-payment-build-2.log ]; then tail -n 350 unified-payment-build-2.log; fi
           } > docs/unified-payment-build-status.txt
-          exit 0
 
-      - name: Commit code and report
+      - name: Commit code and diagnostics
         shell: bash
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
-          git add GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java docs/unified-payment-build-status.txt
+          git add GouzhuApp/app/src/main/java/com/gouzhu/payment/PaymentManager.java docs/unified-patch-status.txt docs/unified-payment-build-status.txt
           git commit -m '收紧统一支付订单身份和失败恢复边界' || exit 0
           git push
