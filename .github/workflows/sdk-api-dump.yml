@@ -31,7 +31,10 @@ jobs:
           classes=(
             com.pinball.xiaoda.device.sdk.client.DeviceAppClient
             com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult
+            'com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$FeatureInfo'
             com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting
+            'com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$ThirdPartyChannel'
+            'com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$CodeRoute'
             com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionPrepareResult
             com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyVoucherCandidate
             com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionResult
@@ -71,5 +74,5 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git add docs/sdk-api-dump.txt
-          git commit -m '生成第三方核销SDK接口清单' || exit 0
+          git commit -m '生成第三方渠道SDK模型清单' || exit 0
           git push
