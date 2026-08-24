@@ -4,6 +4,8 @@ import android.content.Context;
 import android.database.Cursor;
 
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.redemption.MemberWithdrawalManager;
+import com.gouzhu.redemption.ThirdPartyRedemptionManager;
 import com.gouzhu.serial.BoardConnectionMonitor;
 import com.gouzhu.transaction.CashTransactionIsolation;
 import com.gouzhu.transaction.TransactionIdleCashRestorer;
@@ -83,6 +85,8 @@ public final class DeviceCommandManager {
         // Recovery must not depend on MainActivity being visible. The persisted requestNo
         // remains authoritative and the same QR purchase is queried/recreated idempotently.
         PaymentManager.get(context).resumePendingPayment();
+        MemberWithdrawalManager.get(context).resumePending();
+        ThirdPartyRedemptionManager.get(context).resumePending();
     }
 
     public void stop() {

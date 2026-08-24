@@ -136,6 +136,89 @@
                 android:text="@string/payment_cancel_button"
                 android:visibility="gone" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="30dp"
+                android:text="@string/home_redemption_section_title"
+                android:textColor="@color/text_primary"
+                android:textSize="23sp"
+                android:textStyle="bold" />
+
+            <!-- 参考主屏套餐卡片风格，顾客服务区只保留会员取珠和团购核销。 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:id="@+id/card_member_withdraw"
+                    android:layout_width="0dp"
+                    android:layout_height="112dp"
+                    android:layout_margin="8dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_package_button"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/member_withdraw_entry"
+                        android:textColor="@color/text_primary"
+                        android:textSize="22sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/text_member_withdraw_hint"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="7dp"
+                        android:gravity="center"
+                        android:maxLines="2"
+                        android:text="@string/member_withdraw_entry_hint"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="14sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/card_third_party_redemption"
+                    android:layout_width="0dp"
+                    android:layout_height="112dp"
+                    android:layout_margin="8dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_package_button"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/third_party_redemption_entry"
+                        android:textColor="@color/text_primary"
+                        android:textSize="22sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/text_third_party_redemption_hint"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="7dp"
+                        android:gravity="center"
+                        android:maxLines="2"
+                        android:text="@string/third_party_redemption_entry_hint"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="14sp" />
+                </LinearLayout>
+            </LinearLayout>
+
             <LinearLayout
                 android:id="@+id/layout_collection"
                 android:layout_width="match_parent"
@@ -192,7 +275,8 @@
                 style="@style/Widget.Gouzhu.ActionButton"
                 android:layout_width="220dp"
                 android:layout_marginTop="28dp"
-                android:text="@string/backend_debug_entry" />
+                android:text="@string/backend_debug_entry"
+                android:visibility="gone" />
         </LinearLayout>
     </ScrollView>
 
@@ -216,7 +300,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="V2.3.19"
+                android:text="V2.3.20"
                 android:textColor="@color/text_secondary"
                 android:textSize="13sp" />
 

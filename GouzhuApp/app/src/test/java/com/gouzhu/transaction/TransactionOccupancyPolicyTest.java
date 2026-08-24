@@ -33,6 +33,22 @@ public class TransactionOccupancyPolicyTest {
                 "CASH_PURCHASE",
                 "ACCEPTED"
         ));
+        assertFalse(TransactionOccupancyPolicy.canReserveDispense(
+                "MEMBER_WITHDRAWAL",
+                "READY"
+        ));
+        assertFalse(TransactionOccupancyPolicy.canReserveDispense(
+                "THIRD_PARTY_REDEMPTION",
+                "READY"
+        ));
+        assertTrue(TransactionOccupancyPolicy.canReserveDispense(
+                "MEMBER_WITHDRAWAL",
+                "WAITING_DISPENSE"
+        ));
+        assertTrue(TransactionOccupancyPolicy.canReserveDispense(
+                "THIRD_PARTY_REDEMPTION",
+                "WAITING_DISPENSE"
+        ));
         assertTrue(TransactionOccupancyPolicy.canReserveDispense("", ""));
     }
 

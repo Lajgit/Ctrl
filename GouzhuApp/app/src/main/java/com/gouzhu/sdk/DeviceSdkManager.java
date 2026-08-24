@@ -15,6 +15,9 @@ import com.pinball.xiaoda.device.sdk.client.DeviceAppClient;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionPrepareResult;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceCredentialManager;
 import com.pinball.xiaoda.device.sdk.client.DeviceLifecycleClient;
 import com.pinball.xiaoda.device.sdk.client.DeviceSdkConfig;
@@ -212,8 +215,47 @@ public final class DeviceSdkManager {
         return newAppClient().createMemberWithdrawal(clientRequestNo, withdrawalCode);
     }
 
+    public DeviceAppMemberWithdrawalResult createMemberWithdrawalFromRoutedCode(
+            String clientRequestNo,
+            DeviceAppRedemptionRouting routing,
+            String scannedCode
+    ) {
+        return newAppClient().createMemberWithdrawalFromRoutedCode(
+                clientRequestNo,
+                routing,
+                scannedCode
+        );
+    }
+
     public DeviceAppMemberWithdrawalResult queryMemberWithdrawal(String clientRequestNo) {
         return newAppClient().queryMemberWithdrawal(clientRequestNo);
+    }
+
+    /** 抖音/美团团购核销统一使用 SDK 强类型接口，设备端不自行拼签名或第三方协议。 */
+    public DeviceAppThirdPartyRedemptionPrepareResult
+    prepareThirdPartyRedemptionForSelectedChannel(
+            String clientRequestNo,
+            DeviceAppRedemptionRouting routing,
+            String selectedChannelCode,
+            String scannedRawCode
+    ) {
+        return newAppClient().prepareThirdPartyRedemptionForSelectedChannel(
+                clientRequestNo,
+                routing,
+                selectedChannelCode,
+                scannedRawCode
+        );
+    }
+
+    public DeviceAppThirdPartyRedemptionResult confirmThirdPartyRedemption(
+            String clientRequestNo,
+            String certificateId
+    ) {
+        return newAppClient().confirmThirdPartyRedemption(clientRequestNo, certificateId);
+    }
+
+    public DeviceAppThirdPartyRedemptionResult queryThirdPartyRedemption(String clientRequestNo) {
+        return newAppClient().queryThirdPartyRedemption(clientRequestNo);
     }
 
     public DeviceAppInternalRedemptionResult createInternalRedemption(

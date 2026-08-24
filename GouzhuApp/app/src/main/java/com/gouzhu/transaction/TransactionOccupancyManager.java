@@ -15,6 +15,8 @@ import com.gouzhu.mqtt.CashRuntimeCoordinator;
 import com.gouzhu.mqtt.DeviceCommandStore;
 import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.redemption.MemberWithdrawalManager;
+import com.gouzhu.redemption.ThirdPartyRedemptionManager;
 import com.gouzhu.serial.SerialManager;
 
 import org.json.JSONArray;
@@ -44,6 +46,8 @@ public final class TransactionOccupancyManager {
     public static final String OWNER_QR_PURCHASE = "QR_PURCHASE";
     public static final String OWNER_CASH_PURCHASE = "CASH_PURCHASE";
     public static final String OWNER_MEMBER_DEPOSIT = "MEMBER_DEPOSIT";
+    public static final String OWNER_MEMBER_WITHDRAWAL = "MEMBER_WITHDRAWAL";
+    public static final String OWNER_THIRD_PARTY_REDEMPTION = "THIRD_PARTY_REDEMPTION";
     public static final String OWNER_GENERIC_DISPENSE = "GENERIC_DISPENSE";
 
     public static final String PHASE_PREPARING = "PREPARING";
@@ -202,6 +206,158 @@ public final class TransactionOccupancyManager {
                 "",
                 ""
         );
+    }
+
+    /** 会员取珠和团购核销使用独立 owner，避免与购珠、现金和存珠会话混用。 */
+    public AcquireResult tryAcquireRedemption(String ownerType, String clientRequestNo) {
+        if (!isRedemptionOwner(ownerType) || blank(clientRequestNo)) {
+            return AcquireResult.denied("redemption identity is invalid", current());
+        }
+        if (!canStartNewTransaction()) {
+            return AcquireResult.denied(
+                    "device hardware is not ready for a new transaction",
+                    current()
+            );
+        }
+        return tryAcquire(
+                ownerType,
+                clientRequestNo,
+                PHASE_PREPARING,
+                clientRequestNo,
+                "",
+                "",
+                ""
+        );
+    }
+
+    /** APP 重启只恢复原 requestNo，不替换其他业务 owner。 */
+    public AcquireResult recoverRedemption(String ownerType, String clientRequestNo) {
+        if (!isRedemptionOwner(ownerType) || blank(clientRequestNo)) {
+            return AcquireResult.denied("redemption identity is invalid", current());
+        }
+        Snapshot snapshot = current();
+        if (snapshot != null) {
+            if (ownerType.equals(snapshot.ownerType)
+                    && clientRequestNo.equals(snapshot.clientRequestNo)) {
+                return AcquireResult.acquired(snapshot, false);
+            }
+            return AcquireResult.denied("device is occupied", snapshot);
+        }
+        return tryAcquire(
+                ownerType,
+                clientRequestNo,
+                PHASE_PREPARING,
+                clientRequestNo,
+                "",
+                "",
+                ""
+        );
+    }
+
+    /** 核销扫码前先关闭纸钞机/硬币器并等待控制板确认 mask=0。 */
+    public boolean prepareRedemptionCashIsolation(String sessionId, String ownerType) {
+        Snapshot snapshot = current();
+        if (snapshot == null
+                || !sessionId.equals(snapshot.sessionId)
+                || !isRedemptionOwner(ownerType)
+                || !ownerType.equals(snapshot.ownerType)
+                || !(PHASE_PREPARING.equals(snapshot.phase)
+                || PHASE_READY.equals(snapshot.phase))) {
+            return false;
+        }
+
+        int configVersion = Math.max(1, store.getCashConfigVersion());
+        CashDisableWaiter waiter = new CashDisableWaiter(configVersion);
+        cashDisableWaiter = waiter;
+        try {
+            long packed = configVersion & 0x00FFFFFFL;
+            boolean sent = SerialManager.get(context).sendCommand(
+                    CMD_CASH_APPLY_V22,
+                    packed,
+                    true
+            );
+            if (!sent) {
+                return false;
+            }
+            if (!waiter.latch.await(CASH_DISABLE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    || !waiter.matched) {
+                return false;
+            }
+            Snapshot after = current();
+            if (after == null
+                    || !sessionId.equals(after.sessionId)
+                    || !ownerType.equals(after.ownerType)) {
+                return false;
+            }
+            if (PHASE_READY.equals(after.phase)) {
+                return true;
+            }
+            return transition(
+                    sessionId,
+                    PHASE_PREPARING,
+                    PHASE_READY,
+                    null,
+                    null,
+                    null,
+                    null,
+                    ""
+            );
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            if (cashDisableWaiter == waiter) {
+                cashDisableWaiter = null;
+            }
+        }
+    }
+
+    public boolean transitionRedemption(String clientRequestNo, String phase) {
+        Snapshot snapshot = current();
+        if (snapshot == null
+                || !isRedemptionOwner(snapshot.ownerType)
+                || !safe(clientRequestNo).equals(snapshot.clientRequestNo)) {
+            return false;
+        }
+        return transitionAnyPhase(snapshot.sessionId, phase, "");
+    }
+
+    /**
+     * 把已经提交/确认的核销业务推进到“等待平台出珠授权”。
+     * HTTP 查询可能晚于 MQTT 物理动作，因此已进入物理阶段时只返回成功而绝不回退；
+     * BLOCKED/REFUNDING 等异常阶段也绝不被普通查询重新打开。
+     */
+    public boolean markRedemptionWaitingDispense(String clientRequestNo) {
+        Snapshot snapshot = current();
+        if (snapshot == null
+                || !isRedemptionOwner(snapshot.ownerType)
+                || !safe(clientRequestNo).equals(snapshot.clientRequestNo)) {
+            return false;
+        }
+        if (PHASE_WAITING_DISPENSE.equals(snapshot.phase)
+                || TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)) {
+            return true;
+        }
+        if (!(PHASE_PREPARING.equals(snapshot.phase) || PHASE_READY.equals(snapshot.phase))) {
+            return false;
+        }
+        return transition(
+                snapshot.sessionId,
+                snapshot.phase,
+                PHASE_WAITING_DISPENSE,
+                null,
+                null,
+                null,
+                null,
+                ""
+        );
+    }
+
+    public boolean isRedemptionOwned(String ownerType, String clientRequestNo) {
+        Snapshot snapshot = current();
+        return snapshot != null
+                && ownerType.equals(snapshot.ownerType)
+                && safe(clientRequestNo).equals(snapshot.clientRequestNo);
     }
 
     /**
@@ -596,6 +752,10 @@ public final class TransactionOccupancyManager {
         broadcast(null);
         if (OWNER_QR_PURCHASE.equals(released.ownerType)) {
             PaymentManager.get(context).onOccupancyReleased(released.clientRequestNo);
+        } else if (OWNER_MEMBER_WITHDRAWAL.equals(released.ownerType)) {
+            MemberWithdrawalManager.get(context).onOccupancyReleased(released.clientRequestNo);
+        } else if (OWNER_THIRD_PARTY_REDEMPTION.equals(released.ownerType)) {
+            ThirdPartyRedemptionManager.get(context).onOccupancyReleased(released.clientRequestNo);
         }
         if (restoreCash) {
             // 现金恢复必须先刷新bootstrap并统一协调，禁止直接按本地旧配置重新开硬件。
@@ -653,6 +813,16 @@ public final class TransactionOccupancyManager {
             return PHASE_COLLECTING.equals(snapshot.phase)
                     ? "正在存珠"
                     : "存珠会话已占用设备";
+        }
+        if (OWNER_MEMBER_WITHDRAWAL.equals(snapshot.ownerType)) {
+            return TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)
+                    ? "会员取珠正在出珠"
+                    : "会员取珠处理中";
+        }
+        if (OWNER_THIRD_PARTY_REDEMPTION.equals(snapshot.ownerType)) {
+            return TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)
+                    ? "团购核销正在出珠"
+                    : "团购核销处理中";
         }
         return "设备正在执行出珠任务";
     }
@@ -935,6 +1105,13 @@ public final class TransactionOccupancyManager {
                         // 控制板完成只代表物理动作结束，继续保持订单占用等待服务端终态。
                         transitionAnyPhase(snapshot.sessionId, PHASE_FINISHING, "");
                     }
+                } else if (OWNER_THIRD_PARTY_REDEMPTION.equals(snapshot.ownerType)) {
+                    // 物理完成不等于第三方核销业务终态，继续等待 status 收敛。
+                    transitionAnyPhase(snapshot.sessionId, PHASE_FINISHING, "");
+                    ThirdPartyRedemptionManager.get(context).onPhysicalDispenseFinished();
+                } else if (OWNER_MEMBER_WITHDRAWAL.equals(snapshot.ownerType)) {
+                    transitionAnyPhase(snapshot.sessionId, PHASE_FINISHING, "");
+                    MemberWithdrawalManager.get(context).onPhysicalDispenseFinished();
                 } else if (!OWNER_MEMBER_DEPOSIT.equals(snapshot.ownerType)) {
                     release(snapshot.sessionId, "dispense completed", false);
                 }
@@ -1149,6 +1326,11 @@ public final class TransactionOccupancyManager {
         } catch (Throwable error) {
             return null;
         }
+    }
+
+    private static boolean isRedemptionOwner(String ownerType) {
+        return OWNER_MEMBER_WITHDRAWAL.equals(ownerType)
+                || OWNER_THIRD_PARTY_REDEMPTION.equals(ownerType);
     }
 
     private static String newSessionId() {
