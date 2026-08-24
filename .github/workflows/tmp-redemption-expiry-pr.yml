@@ -1,0 +1,23 @@
+name: Temporary Redemption Expiry PR Build
+on:
+  pull_request:
+    branches:
+      - tmp-redemption-expiry-ci-base-20260824
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 单元测试和调试构建
+        run: |
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:testDebugUnitTest :app:assembleDebug
