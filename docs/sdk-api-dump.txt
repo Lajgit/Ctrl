@@ -539,6 +539,22 @@ public final class com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouti
   public boolean isStripPrefix();
   public java.lang.String toString();
 }
+=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult ===
+Compiled from "DeviceAppMemberWithdrawalResult.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult();
+  public java.lang.String getClientRequestNo();
+  public java.lang.Long getOperationId();
+  public java.lang.String getOperationNo();
+  public java.lang.Integer getRequestedQuantity();
+  public java.lang.Integer getDispensedQuantity();
+  public java.lang.Integer getOperationStatus();
+  public java.lang.String getWithdrawalStatus();
+  public boolean isTerminal();
+  public java.lang.String getExpireTime();
+  public java.lang.String getMessage();
+  public java.lang.String toString();
+}
 === JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionPrepareResult ===
 Compiled from "DeviceAppThirdPartyRedemptionPrepareResult.java"
 public final class com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionPrepareResult {
