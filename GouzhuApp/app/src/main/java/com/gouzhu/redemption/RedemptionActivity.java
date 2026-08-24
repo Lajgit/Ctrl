@@ -252,7 +252,7 @@ public final class RedemptionActivity extends AppCompatActivity {
             scanSection.setVisibility(View.GONE);
             candidateSection.setVisibility(View.GONE);
             confirmButton.setVisibility(View.GONE);
-            statusText.setText(R.string.third_party_choose_channel_hint);
+            // 渠道选择方法已经根据实际 capability 设置提示，避免覆盖“暂无可用渠道”。
             resultDetailText.setText("");
             backButton.setText(R.string.redemption_back_home);
             return;
