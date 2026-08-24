@@ -280,7 +280,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadBootstrap(boolean force) {
-        if (bootstrapLoading || (!force && !packageOptions.isEmpty())) {
+        // 核销 feature/routingVersion 可能由服务端动态变化，回首页和 MQTT 重连都重新读取。
+        if (bootstrapLoading) {
             return;
         }
 
@@ -382,6 +383,10 @@ public class MainActivity extends AppCompatActivity {
 
         memberWithdrawEntry.setVisibility(member.visible ? View.VISIBLE : View.GONE);
         thirdPartyRedemptionEntry.setVisibility(third.visible ? View.VISIBLE : View.GONE);
+        memberWithdrawEntry.setEnabled(memberWithdrawAvailable);
+        thirdPartyRedemptionEntry.setEnabled(thirdPartyAvailable);
+        memberWithdrawEntry.setAlpha(memberWithdrawAvailable ? 1f : 0.5f);
+        thirdPartyRedemptionEntry.setAlpha(thirdPartyAvailable ? 1f : 0.5f);
         memberWithdrawHint.setText(member.available
                 ? firstNonBlank(member.description, getString(R.string.member_withdraw_entry_hint))
                 : firstNonBlank(member.unavailableReason, getString(R.string.redemption_unavailable)));
@@ -410,6 +415,16 @@ public class MainActivity extends AppCompatActivity {
         boolean resumingThird = snapshot != null
                 && TransactionOccupancyManager.OWNER_THIRD_PARTY_REDEMPTION.equals(snapshot.ownerType)
                 && RedemptionActivity.MODE_THIRD_PARTY.equals(mode);
+        if (!resumingMember && RedemptionActivity.MODE_MEMBER.equals(mode)
+                && !memberWithdrawAvailable) {
+            Toast.makeText(this, R.string.redemption_start_failed, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!resumingThird && RedemptionActivity.MODE_THIRD_PARTY.equals(mode)
+                && !thirdPartyAvailable) {
+            Toast.makeText(this, R.string.redemption_start_failed, Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (!resumingMember && !resumingThird
                 && !TransactionOccupancyManager.get(this).canStartNewTransaction()) {
             Toast.makeText(this, R.string.transaction_device_busy, Toast.LENGTH_SHORT).show();

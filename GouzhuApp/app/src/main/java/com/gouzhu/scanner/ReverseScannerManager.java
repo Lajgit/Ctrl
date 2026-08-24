@@ -271,9 +271,10 @@ public final class ReverseScannerManager {
     }
 
     private void handleScan(byte[] payload) {
-        String content = new String(payload, StandardCharsets.UTF_8)
-                .replace("\u0000", "")
-                .trim();
+        // 业务扫码原文不在设备端做 URL 解码、截取或首尾改写；SDK 负责协议规定的 trim。
+        String rawContent = new String(payload, StandardCharsets.UTF_8)
+                .replace("\u0000", "");
+        String content = rawContent.trim();
         if (content.isEmpty()) {
             return;
         }
@@ -300,7 +301,7 @@ public final class ReverseScannerManager {
          */
         ThirdPartyRedemptionManager thirdParty = ThirdPartyRedemptionManager.get(context);
         if (thirdParty.isWaitingForScan()) {
-            if (thirdParty.handleScannerInput(content)) {
+            if (thirdParty.handleScannerInput(rawContent)) {
                 broadcast(
                         EVENT_SCAN_ACCEPTED,
                         "已接收团购券二维码，正在验券",
@@ -313,7 +314,7 @@ public final class ReverseScannerManager {
 
         MemberWithdrawalManager member = MemberWithdrawalManager.get(context);
         if (member.isWaitingForScan()) {
-            if (member.handleScannerInput(content)) {
+            if (member.handleScannerInput(rawContent)) {
                 broadcast(
                         EVENT_SCAN_ACCEPTED,
                         "已接收会员取珠二维码，正在确认",

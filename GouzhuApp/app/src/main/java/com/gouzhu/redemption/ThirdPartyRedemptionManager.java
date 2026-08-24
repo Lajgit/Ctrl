@@ -195,8 +195,10 @@ public final class ThirdPartyRedemptionManager {
                 session.clientRequestNo)) {
             return false;
         }
-        String code = rawCode == null ? "" : rawCode.trim();
-        if (code.isEmpty() || code.length() > MAX_VOUCHER_LENGTH || code.indexOf('|') >= 0) {
+        String code = rawCode == null ? "" : rawCode;
+        if (code.trim().isEmpty()
+                || code.length() > MAX_VOUCHER_LENGTH
+                || code.indexOf('|') >= 0) {
             session.message = "团购券二维码格式无效，请重新扫码";
             store.saveThirdParty(session);
             broadcast(session);
@@ -356,6 +358,13 @@ public final class ThirdPartyRedemptionManager {
             block("THIRD_PARTY_CONFIRM_STATE_SAVE_FAILED", "正式核销状态无法可靠保存");
             return false;
         }
+        if (!occupancy.transitionRedemption(
+                session.clientRequestNo,
+                TransactionOccupancyManager.PHASE_WAITING_DISPENSE
+        )) {
+            block("THIRD_PARTY_CONFIRM_OCCUPANCY_FAILED", "正式核销前交易状态切换失败");
+            return false;
+        }
         broadcast(session);
         executor.execute(() -> confirmOnce(session.clientRequestNo, candidate.certificateId));
         return true;
@@ -418,23 +427,38 @@ public final class ThirdPartyRedemptionManager {
                 ? -1 : Math.max(0, result.getActualQuantity());
         session.terminal = result.isTerminal();
         session.lastStatusCheckedAt = System.currentTimeMillis();
-        session.message = firstNonBlank(result.getMessage(), statusMessage(session));
         session.uiState = ThirdPartyRedemptionPolicy.terminalUiState(
                 session.terminal,
                 session.channelStatus,
                 session.fulfillmentStatus,
                 session.resolutionStatus
         );
+        session.message = firstNonBlank(result.getMessage(), statusMessage(session));
         if (!store.saveThirdParty(session)) {
             block("THIRD_PARTY_STATUS_SAVE_FAILED", "核销状态无法可靠保存");
             return;
         }
 
         if (!session.terminal) {
-            occupancy.transitionRedemption(
-                    session.clientRequestNo,
-                    TransactionOccupancyManager.PHASE_WAITING_DISPENSE
-            );
+            String resolution = normalize(session.resolutionStatus);
+            String channelStatus = normalize(session.channelStatus);
+            if ("MANUAL_REVIEW".equals(resolution)) {
+                occupancy.markBlocked("THIRD_PARTY_MANUAL_REVIEW");
+            } else if ("AUTO_COMPENSATING".equals(resolution)
+                    || "REVERSING".equals(channelStatus)
+                    || "REVERSED".equals(channelStatus)) {
+                if (!commandStore.hasActivePhysicalOrder()) {
+                    occupancy.transitionRedemption(
+                            session.clientRequestNo,
+                            TransactionOccupancyManager.PHASE_REFUNDING
+                    );
+                }
+            } else {
+                occupancy.transitionRedemption(
+                        session.clientRequestNo,
+                        TransactionOccupancyManager.PHASE_WAITING_DISPENSE
+                );
+            }
             broadcast(session);
             scheduleQuery(requestNo, ThirdPartyRedemptionPolicy.NORMAL_QUERY_DELAY_MS);
             return;
@@ -606,6 +630,10 @@ public final class ThirdPartyRedemptionManager {
             RedemptionSessionStore.ThirdPartySession session
     ) {
         if (session == null || !session.terminal) {
+            return;
+        }
+        if (ThirdPartyRedemptionPolicy.STATE_MANUAL_REVIEW.equals(session.uiState)) {
+            occupancy.markBlocked("THIRD_PARTY_TERMINAL_MANUAL_REVIEW");
             return;
         }
         if (commandStore.hasActivePhysicalOrder()) {

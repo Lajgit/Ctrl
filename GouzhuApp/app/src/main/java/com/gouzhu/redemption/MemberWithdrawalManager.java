@@ -157,8 +157,8 @@ public final class MemberWithdrawalManager {
         if (session == null || !STATE_SCANNING.equals(session.uiState)) {
             return false;
         }
-        String code = rawCode == null ? "" : rawCode.trim();
-        if (code.isEmpty() || code.length() > MAX_CODE_LENGTH) {
+        String code = rawCode == null ? "" : rawCode;
+        if (code.trim().isEmpty() || code.length() > MAX_CODE_LENGTH) {
             session.message = "会员取珠二维码格式无效，请重新扫码";
             store.saveMember(session);
             broadcast(session);
@@ -169,6 +169,17 @@ public final class MemberWithdrawalManager {
         session.message = "会员取珠码已识别，正在确认资格";
         if (!store.saveMember(session)) {
             occupancy.markBlocked("MEMBER_WITHDRAW_STATE_SAVE_FAILED");
+            return true;
+        }
+        if (!occupancy.transitionRedemption(
+                session.clientRequestNo,
+                TransactionOccupancyManager.PHASE_WAITING_DISPENSE
+        )) {
+            occupancy.markBlocked("MEMBER_WITHDRAW_OCCUPANCY_FAILED");
+            session.uiState = STATE_FAILED;
+            session.message = "会员取珠交易状态切换失败，请联系工作人员";
+            store.saveMember(session);
+            broadcast(session);
             return true;
         }
         broadcast(session);

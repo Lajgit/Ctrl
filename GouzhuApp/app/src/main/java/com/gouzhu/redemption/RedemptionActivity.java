@@ -342,15 +342,10 @@ public final class RedemptionActivity extends AppCompatActivity {
         if (snapshot.actualQuantity >= 0) {
             builder.append("  实出：").append(snapshot.actualQuantity).append("珠");
         }
-        if (!snapshot.channelStatus.isEmpty()) {
-            builder.append("\n渠道状态：").append(snapshot.channelStatus);
-        }
-        if (!snapshot.fulfillmentStatus.isEmpty()) {
-            builder.append("  履约：").append(snapshot.fulfillmentStatus);
-        }
-        if (!snapshot.resolutionStatus.isEmpty()
-                && !"NORMAL".equals(snapshot.resolutionStatus)) {
-            builder.append("\n处理状态：").append(snapshot.resolutionStatus);
+        if (ThirdPartyRedemptionPolicy.STATE_MANUAL_REVIEW.equals(snapshot.uiState)) {
+            builder.append("\n当前业务需要工作人员处理，请勿重复核销同一张券");
+        } else if (ThirdPartyRedemptionPolicy.STATE_SUCCEEDED.equals(snapshot.uiState)) {
+            builder.append("\n核销和出珠已完成");
         }
         return builder.toString();
     }

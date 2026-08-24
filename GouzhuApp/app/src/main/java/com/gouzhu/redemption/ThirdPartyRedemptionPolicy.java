@@ -85,9 +85,10 @@ public final class ThirdPartyRedemptionPolicy {
         if ("REDEEM_FAILED".equals(channel) && "CANCELED".equals(fulfillment)) {
             return STATE_FAILED;
         }
-        if ("MANUAL_REVIEW".equals(resolution)
+        if (!"RESOLVED".equals(resolution)
+                && ("MANUAL_REVIEW".equals(resolution)
                 || "PARTIAL_DELIVERY".equals(fulfillment)
-                || "RESULT_UNKNOWN".equals(fulfillment)) {
+                || "RESULT_UNKNOWN".equals(fulfillment))) {
             return STATE_MANUAL_REVIEW;
         }
         return STATE_FAILED;

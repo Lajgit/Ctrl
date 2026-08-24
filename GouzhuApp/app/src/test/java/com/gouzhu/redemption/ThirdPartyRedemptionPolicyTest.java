@@ -64,6 +64,9 @@ public class ThirdPartyRedemptionPolicyTest {
         assertEquals(ThirdPartyRedemptionPolicy.STATE_MANUAL_REVIEW,
                 ThirdPartyRedemptionPolicy.terminalUiState(
                         true, "REDEEMED", "PARTIAL_DELIVERY", "NORMAL"));
+        assertEquals(ThirdPartyRedemptionPolicy.STATE_FAILED,
+                ThirdPartyRedemptionPolicy.terminalUiState(
+                        true, "REDEEMED", "PARTIAL_DELIVERY", "RESOLVED"));
         assertEquals(ThirdPartyRedemptionPolicy.STATE_MANUAL_REVIEW,
                 ThirdPartyRedemptionPolicy.terminalUiState(
                         false, "REDEEMED", "DISPENSING", "MANUAL_REVIEW"));

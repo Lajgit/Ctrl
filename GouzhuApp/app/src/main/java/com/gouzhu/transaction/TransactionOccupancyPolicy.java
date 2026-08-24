@@ -31,11 +31,15 @@ public final class TransactionOccupancyPolicy {
         if (isBlockingPhase(phase)) {
             return false;
         }
+        if ("MEMBER_WITHDRAWAL".equals(owner)
+                || "THIRD_PARTY_REDEMPTION".equals(owner)) {
+            // prepare/扫码阶段绝不接受出珠；请求已提交后先切 WAITING_DISPENSE，
+            // 允许平台 MQTT 比对应 HTTP 响应更早到达。
+            return "WAITING_DISPENSE".equals(phase) || isPhysicalPhase(phase);
+        }
         return isIdleOwner(owner)
                 || "QR_PURCHASE".equals(owner)
                 || "CASH_PURCHASE".equals(owner)
-                || "MEMBER_WITHDRAWAL".equals(owner)
-                || "THIRD_PARTY_REDEMPTION".equals(owner)
                 || "GENERIC_DISPENSE".equals(owner);
     }
 
