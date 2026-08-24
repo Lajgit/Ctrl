@@ -63,3 +63,5 @@ jobs:
           git add docs/tmp-redemption-build-status.txt
           git commit -m '记录核销功能第四轮构建结果' || true
           git push origin HEAD:tmp-third-party-redemption-20260824
+
+# trigger-20260824-1031
