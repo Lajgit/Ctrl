@@ -24,7 +24,7 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>串口由本类独占打开，按 CR、LF、ETX 或字节空闲间隔切分扫码帧。付款码在统一购珠
  * 会话中优先交给 {@link PaymentManager}；主扫和反扫共用同一个 clientRequestNo。
- * 其他业务码仍交给 {@link ScannerBusinessRouter}，按 bootstrap 的 redemptionRouting 匹配。</p>
+ * 会员取珠、官方券码和第三方团购均要求先选择显式入口，再把扫码原文交给对应业务状态机。</p>
  *
  * <p>反扫读取、付款码支付和核销接口都不能直接驱动控制板；真实出珠只能执行平台
  * 下发并通过 SDK 校验的 MQTT dispense_marbles 指令。</p>
