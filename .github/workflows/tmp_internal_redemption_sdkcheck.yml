@@ -1,0 +1,22 @@
+name: Temporary Internal Redemption SDK Check
+on:
+  pull_request:
+    branches:
+      - tmp-internal-redemption-sdk-ci-base-20260824
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 检查官方券码核销SDK模型
+        run: |
+          cd GouzhuApp/app/libs
+          javap -classpath xiaoda-device-sdk-0.1.0.jar com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult
+          echo '--- DeviceAppClient ---'
+          javap -classpath xiaoda-device-sdk-0.1.0.jar com.pinball.xiaoda.device.sdk.client.DeviceAppClient | grep -E 'InternalRedemption|createInternal|queryInternal'
+          echo '--- Routing ---'
+          javap -classpath xiaoda-device-sdk-0.1.0.jar 'com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$InternalRedemptionRule'
