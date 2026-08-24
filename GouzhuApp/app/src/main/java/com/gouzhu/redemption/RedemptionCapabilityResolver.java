@@ -17,6 +17,7 @@ import java.util.Locale;
 public final class RedemptionCapabilityResolver {
 
     public static final String FEATURE_MEMBER_WITHDRAW = "MEMBER_WITHDRAW";
+    public static final String FEATURE_INTERNAL_REDEMPTION = "INTERNAL_REDEMPTION";
     public static final String FEATURE_THIRD_PARTY_REDEMPTION = "THIRD_PARTY_REDEMPTION";
     public static final String CHANNEL_DOUYIN = "DOUYIN";
     public static final String CHANNEL_MEITUAN = "MEITUAN";
@@ -26,6 +27,26 @@ public final class RedemptionCapabilityResolver {
 
     public static FeatureGate memberWithdrawal(DeviceAppBootstrapResult bootstrap) {
         return feature(bootstrap, FEATURE_MEMBER_WITHDRAW);
+    }
+
+    /** 官方小程序套餐券核销必须同时具备 feature 和 internalRedemption 路由。 */
+    public static FeatureGate internalRedemption(DeviceAppBootstrapResult bootstrap) {
+        FeatureGate gate = feature(bootstrap, FEATURE_INTERNAL_REDEMPTION);
+        if (!gate.visible || !gate.available) {
+            return gate;
+        }
+        if (bootstrap == null
+                || bootstrap.getRedemptionRouting() == null
+                || bootstrap.getRedemptionRouting().getInternalRedemption() == null) {
+            return new FeatureGate(
+                    true,
+                    false,
+                    gate.title,
+                    gate.description,
+                    "券码核销路由尚未加载"
+            );
+        }
+        return gate;
     }
 
     public static FeatureGate thirdPartyRedemption(DeviceAppBootstrapResult bootstrap) {

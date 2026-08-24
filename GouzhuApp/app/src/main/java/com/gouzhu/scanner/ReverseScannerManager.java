@@ -8,6 +8,7 @@ import android.util.Log;
 import com.gouzhu.AppConfig;
 import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.redemption.InternalRedemptionManager;
 import com.gouzhu.redemption.MemberWithdrawalManager;
 import com.gouzhu.redemption.ThirdPartyRedemptionManager;
 
@@ -23,7 +24,7 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>串口由本类独占打开，按 CR、LF、ETX 或字节空闲间隔切分扫码帧。付款码在统一购珠
  * 会话中优先交给 {@link PaymentManager}；主扫和反扫共用同一个 clientRequestNo。
- * 其他业务码仍交给 {@link ScannerBusinessRouter}，按 bootstrap 的 redemptionRouting 匹配。</p>
+ * 会员取珠、官方券码和第三方团购均要求先选择显式入口，再把扫码原文交给对应业务状态机。</p>
  *
  * <p>反扫读取、付款码支付和核销接口都不能直接驱动控制板；真实出珠只能执行平台
  * 下发并通过 SDK 校验的 MQTT dispense_marbles 指令。</p>
@@ -325,6 +326,19 @@ public final class ReverseScannerManager {
             }
         }
 
+        InternalRedemptionManager internal = InternalRedemptionManager.get(context);
+        if (internal.isWaitingForScan()) {
+            if (internal.handleScannerInput(rawContent)) {
+                broadcast(
+                        EVENT_SCAN_ACCEPTED,
+                        "已接收官方套餐核销二维码，正在确认",
+                        TYPE_INTERNAL_REDEMPTION,
+                        ""
+                );
+                return;
+            }
+        }
+
         // 未进入核销模式时，仍允许统一购珠订单识别微信/支付宝付款码。
         PaymentManager.ScanSubmission paymentSubmission =
                 PaymentManager.get(context).handleAuthCodeScan(content);
@@ -342,7 +356,7 @@ public final class ReverseScannerManager {
         String maskedCode = maskCode(content);
         broadcast(
                 EVENT_SCAN_UNSUPPORTED,
-                "请先在屏幕选择会员取珠或团购核销；长度=" + content.length()
+                "请先在屏幕选择会员取珠、券码核销或团购核销；长度=" + content.length()
                         + "，尾号=" + maskedCode,
                 TYPE_UNSUPPORTED,
                 maskedCode

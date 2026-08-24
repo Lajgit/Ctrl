@@ -30,6 +30,8 @@ import com.gouzhu.network.WifiConfigActivity;
 import com.gouzhu.network.WifiSupport;
 import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.payment.QrCodeUtil;
+import com.gouzhu.redemption.InternalRedemptionActivity;
+import com.gouzhu.redemption.InternalRedemptionManager;
 import com.gouzhu.redemption.RedemptionActivity;
 import com.gouzhu.redemption.RedemptionCapabilityResolver;
 import com.gouzhu.sdk.DeviceSdkManager;
@@ -60,11 +62,15 @@ public class MainActivity extends AppCompatActivity {
     private Button[] packageButtons;
 
     private View memberWithdrawEntry;
+    private View internalRedemptionEntry;
     private View thirdPartyRedemptionEntry;
     private TextView memberWithdrawHint;
+    private TextView internalRedemptionHint;
     private TextView thirdPartyRedemptionHint;
     private boolean memberWithdrawVisible;
     private boolean memberWithdrawAvailable;
+    private boolean internalRedemptionVisible;
+    private boolean internalRedemptionAvailable;
     private boolean thirdPartyVisible;
     private boolean thirdPartyAvailable;
 
@@ -149,6 +155,8 @@ public class MainActivity extends AppCompatActivity {
         hideSystemUi();
         loadBootstrap(false);
         PaymentManager.get(this).resumePendingPayment();
+        // 官方券码请求一旦提交，进程重建后只查询原 requestNo，不重新提交券码。
+        InternalRedemptionManager.get(this).resumePending();
         if (DeviceCommandManager.get(this).hasPendingCollection()) {
             collectionLayout.setVisibility(View.VISIBLE);
         }
@@ -194,8 +202,10 @@ public class MainActivity extends AppCompatActivity {
         cancelPaymentButton = findViewById(R.id.button_cancel_payment);
         paymentQrImage = findViewById(R.id.image_payment_qr);
         memberWithdrawEntry = findViewById(R.id.card_member_withdraw);
+        internalRedemptionEntry = findViewById(R.id.card_internal_redemption);
         thirdPartyRedemptionEntry = findViewById(R.id.card_third_party_redemption);
         memberWithdrawHint = findViewById(R.id.text_member_withdraw_hint);
+        internalRedemptionHint = findViewById(R.id.text_internal_redemption_hint);
         thirdPartyRedemptionHint = findViewById(R.id.text_third_party_redemption_hint);
 
         packageButtons = new Button[]{
@@ -241,6 +251,7 @@ public class MainActivity extends AppCompatActivity {
         memberWithdrawEntry.setOnClickListener(view ->
                 openRedemption(RedemptionActivity.MODE_MEMBER)
         );
+        internalRedemptionEntry.setOnClickListener(view -> openInternalRedemption());
         thirdPartyRedemptionEntry.setOnClickListener(view ->
                 openRedemption(RedemptionActivity.MODE_THIRD_PARTY)
         );
@@ -374,23 +385,33 @@ public class MainActivity extends AppCompatActivity {
     private void applyRedemptionCapabilities(DeviceAppBootstrapResult bootstrap) {
         RedemptionCapabilityResolver.FeatureGate member =
                 RedemptionCapabilityResolver.memberWithdrawal(bootstrap);
+        RedemptionCapabilityResolver.FeatureGate internal =
+                RedemptionCapabilityResolver.internalRedemption(bootstrap);
         RedemptionCapabilityResolver.FeatureGate third =
                 RedemptionCapabilityResolver.thirdPartyRedemption(bootstrap);
 
         memberWithdrawVisible = member.visible;
         memberWithdrawAvailable = member.visible && member.available;
+        internalRedemptionVisible = internal.visible;
+        internalRedemptionAvailable = internal.visible && internal.available;
         thirdPartyVisible = third.visible;
         thirdPartyAvailable = third.visible && third.available;
 
         memberWithdrawEntry.setVisibility(member.visible ? View.VISIBLE : View.GONE);
+        internalRedemptionEntry.setVisibility(internal.visible ? View.VISIBLE : View.GONE);
         thirdPartyRedemptionEntry.setVisibility(third.visible ? View.VISIBLE : View.GONE);
         memberWithdrawEntry.setEnabled(memberWithdrawAvailable);
+        internalRedemptionEntry.setEnabled(internalRedemptionAvailable);
         thirdPartyRedemptionEntry.setEnabled(thirdPartyAvailable);
         memberWithdrawEntry.setAlpha(memberWithdrawAvailable ? 1f : 0.5f);
+        internalRedemptionEntry.setAlpha(internalRedemptionAvailable ? 1f : 0.5f);
         thirdPartyRedemptionEntry.setAlpha(thirdPartyAvailable ? 1f : 0.5f);
         memberWithdrawHint.setText(member.available
                 ? firstNonBlank(member.description, getString(R.string.member_withdraw_entry_hint))
                 : firstNonBlank(member.unavailableReason, getString(R.string.redemption_unavailable)));
+        internalRedemptionHint.setText(internal.available
+                ? firstNonBlank(internal.description, getString(R.string.internal_redemption_entry_hint))
+                : firstNonBlank(internal.unavailableReason, getString(R.string.redemption_unavailable)));
         thirdPartyRedemptionHint.setText(third.available
                 ? firstNonBlank(third.description, getString(R.string.third_party_redemption_entry_hint))
                 : firstNonBlank(third.unavailableReason, getString(R.string.redemption_unavailable)));
@@ -399,11 +420,15 @@ public class MainActivity extends AppCompatActivity {
     private void disableRedemptionEntries() {
         memberWithdrawVisible = false;
         memberWithdrawAvailable = false;
+        internalRedemptionVisible = false;
+        internalRedemptionAvailable = false;
         thirdPartyVisible = false;
         thirdPartyAvailable = false;
         memberWithdrawEntry.setEnabled(false);
+        internalRedemptionEntry.setEnabled(false);
         thirdPartyRedemptionEntry.setEnabled(false);
         memberWithdrawEntry.setAlpha(0.5f);
+        internalRedemptionEntry.setAlpha(0.5f);
         thirdPartyRedemptionEntry.setAlpha(0.5f);
     }
 
@@ -434,6 +459,22 @@ public class MainActivity extends AppCompatActivity {
         Intent intent = new Intent(this, RedemptionActivity.class);
         intent.putExtra(RedemptionActivity.EXTRA_MODE, mode);
         startActivity(intent);
+    }
+
+    private void openInternalRedemption() {
+        TransactionOccupancyManager.Snapshot snapshot =
+                TransactionOccupancyManager.get(this).current();
+        boolean resuming = snapshot != null
+                && TransactionOccupancyManager.OWNER_INTERNAL_REDEMPTION.equals(snapshot.ownerType);
+        if (!resuming && !internalRedemptionAvailable) {
+            Toast.makeText(this, R.string.redemption_start_failed, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!resuming && !TransactionOccupancyManager.get(this).canStartNewTransaction()) {
+            Toast.makeText(this, R.string.transaction_device_busy, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        startActivity(new Intent(this, InternalRedemptionActivity.class));
     }
 
     private void appendRuleOptions(DeviceAppBootstrapResult.PurchaseRule rule) {
@@ -673,15 +714,21 @@ public class MainActivity extends AppCompatActivity {
 
         boolean memberOwned = snapshot != null
                 && TransactionOccupancyManager.OWNER_MEMBER_WITHDRAWAL.equals(snapshot.ownerType);
+        boolean internalOwned = snapshot != null
+                && TransactionOccupancyManager.OWNER_INTERNAL_REDEMPTION.equals(snapshot.ownerType);
         boolean thirdOwned = snapshot != null
                 && TransactionOccupancyManager.OWNER_THIRD_PARTY_REDEMPTION.equals(snapshot.ownerType);
         boolean memberEnabled = memberWithdrawVisible
                 && ((available && memberWithdrawAvailable) || memberOwned);
+        boolean internalEnabled = internalRedemptionVisible
+                && ((available && internalRedemptionAvailable) || internalOwned);
         boolean thirdEnabled = thirdPartyVisible
                 && ((available && thirdPartyAvailable) || thirdOwned);
         memberWithdrawEntry.setEnabled(memberEnabled);
+        internalRedemptionEntry.setEnabled(internalEnabled);
         thirdPartyRedemptionEntry.setEnabled(thirdEnabled);
         memberWithdrawEntry.setAlpha(memberEnabled ? 1f : 0.5f);
+        internalRedemptionEntry.setAlpha(internalEnabled ? 1f : 0.5f);
         thirdPartyRedemptionEntry.setAlpha(thirdEnabled ? 1f : 0.5f);
 
         if (idle) {
@@ -730,6 +777,7 @@ public class MainActivity extends AppCompatActivity {
             collectionStartButton.setEnabled(false);
             collectionFinishButton.setEnabled(false);
             if (TransactionOccupancyManager.OWNER_MEMBER_WITHDRAWAL.equals(owner)
+                    || TransactionOccupancyManager.OWNER_INTERNAL_REDEMPTION.equals(owner)
                     || TransactionOccupancyManager.OWNER_THIRD_PARTY_REDEMPTION.equals(owner)) {
                 paymentStatusText.setText(manager.displayMessage(snapshot));
             }
