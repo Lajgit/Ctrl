@@ -11,6 +11,9 @@ import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.redemption.InternalRedemptionManager;
 import com.gouzhu.redemption.MemberWithdrawalManager;
 import com.gouzhu.redemption.ThirdPartyRedemptionManager;
+import com.gouzhu.sdk.DeviceSdkManager;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -18,6 +21,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * ttyS6 反扫模块管理器。
@@ -297,11 +301,20 @@ public final class ReverseScannerManager {
         lastScanAt = now;
 
         /*
-         * 团购核销和会员取珠都要求用户先在屏幕明确选择入口。处于显式扫码态时，
-         * 扫码原文只交给对应业务，禁止再根据前缀、长度或 URL 自动猜渠道。
+         * 核销类业务都要求用户先在屏幕明确选择入口，再按本次 bootstrap 下发的路由前缀校验。
+         * 这里只验证当前已选业务/渠道，绝不根据二维码内容跨业务、跨渠道自动猜测。
          */
         ThirdPartyRedemptionManager thirdParty = ThirdPartyRedemptionManager.get(context);
         if (thirdParty.isWaitingForScan()) {
+            if (!matchesThirdPartyRoute(content, thirdParty.snapshot())) {
+                broadcast(
+                        EVENT_SCAN_UNSUPPORTED,
+                        "二维码不属于当前选择的团购渠道，请重新扫码",
+                        TYPE_THIRD_PARTY_REDEMPTION,
+                        ""
+                );
+                return;
+            }
             if (thirdParty.handleScannerInput(rawContent)) {
                 broadcast(
                         EVENT_SCAN_ACCEPTED,
@@ -315,6 +328,15 @@ public final class ReverseScannerManager {
 
         MemberWithdrawalManager member = MemberWithdrawalManager.get(context);
         if (member.isWaitingForScan()) {
+            if (!matchesMemberWithdrawalRoute(content)) {
+                broadcast(
+                        EVENT_SCAN_UNSUPPORTED,
+                        "非会员取珠二维码，请重新扫码",
+                        TYPE_MEMBER_WITHDRAWAL,
+                        ""
+                );
+                return;
+            }
             if (member.handleScannerInput(rawContent)) {
                 broadcast(
                         EVENT_SCAN_ACCEPTED,
@@ -328,6 +350,15 @@ public final class ReverseScannerManager {
 
         InternalRedemptionManager internal = InternalRedemptionManager.get(context);
         if (internal.isWaitingForScan()) {
+            if (!matchesInternalRedemptionRoute(content)) {
+                broadcast(
+                        EVENT_SCAN_UNSUPPORTED,
+                        "非官方套餐核销二维码，请重新扫码",
+                        TYPE_INTERNAL_REDEMPTION,
+                        ""
+                );
+                return;
+            }
             if (internal.handleScannerInput(rawContent)) {
                 broadcast(
                         EVENT_SCAN_ACCEPTED,
@@ -361,6 +392,93 @@ public final class ReverseScannerManager {
                 TYPE_UNSUPPORTED,
                 maskedCode
         );
+    }
+
+    /** 会员取珠只接受本次 bootstrap 下发的会员码前缀，普通二维码不进入提交态。 */
+    private boolean matchesMemberWithdrawalRoute(String content) {
+        DeviceAppRedemptionRouting routing = currentRedemptionRouting();
+        if (routing == null || routing.getMemberWithdrawal() == null) {
+            return false;
+        }
+        return matchesPrefix(
+                content,
+                readRoutePrefix(routing.getMemberWithdrawal(), "getCodePrefix")
+        );
+    }
+
+    /** 官方套餐核销只接受本次 bootstrap 下发的内部核销码前缀。 */
+    private boolean matchesInternalRedemptionRoute(String content) {
+        DeviceAppRedemptionRouting routing = currentRedemptionRouting();
+        if (routing == null || routing.getInternalRedemption() == null) {
+            return false;
+        }
+        return matchesPrefix(
+                content,
+                readRoutePrefix(routing.getInternalRedemption(), "getCodePrefix")
+        );
+    }
+
+    /** 团购核销只校验用户当前已选渠道的券码前缀，不根据码内容自动切换渠道。 */
+    private boolean matchesThirdPartyRoute(
+            String content,
+            ThirdPartyRedemptionManager.UiSnapshot snapshot
+    ) {
+        if (snapshot == null || snapshot.channelCode == null
+                || snapshot.channelCode.trim().isEmpty()) {
+            return false;
+        }
+        DeviceAppRedemptionRouting routing = currentRedemptionRouting();
+        if (routing == null) {
+            return false;
+        }
+        List<DeviceAppRedemptionRouting.ThirdPartyChannel> channels =
+                routing.getThirdPartyChannels();
+        if (channels == null || channels.isEmpty()) {
+            return false;
+        }
+        for (DeviceAppRedemptionRouting.ThirdPartyChannel channel : channels) {
+            if (channel == null || channel.getChannelCode() == null
+                    || !snapshot.channelCode.equalsIgnoreCase(channel.getChannelCode().trim())) {
+                continue;
+            }
+            return matchesPrefix(
+                    content,
+                    readRoutePrefix(channel, "getVoucherCodePrefix")
+            );
+        }
+        return false;
+    }
+
+    private DeviceAppRedemptionRouting currentRedemptionRouting() {
+        DeviceAppBootstrapResult bootstrap = DeviceSdkManager.get(context).getLastBootstrap();
+        return bootstrap == null ? null : bootstrap.getRedemptionRouting();
+    }
+
+    /** 兼容当前 SDK 只读路由模型，通过协议约定的 getter 读取前缀，读取失败时安全拒绝。 */
+    private static String readRoutePrefix(Object rule, String getterName) {
+        if (rule == null || getterName == null || getterName.isEmpty()) {
+            return "";
+        }
+        try {
+            Object value = rule.getClass().getMethod(getterName).invoke(rule);
+            return value == null ? "" : String.valueOf(value).trim();
+        } catch (Throwable error) {
+            Log.w(
+                    TAG,
+                    "读取扫码路由前缀失败：getter=" + getterName
+                            + "，type=" + rule.getClass().getSimpleName()
+            );
+            return "";
+        }
+    }
+
+    /** 路由前缀必须非空，且二维码不能只有协议前缀本身。 */
+    private static boolean matchesPrefix(String content, String prefix) {
+        String value = content == null ? "" : content.trim();
+        String expected = prefix == null ? "" : prefix.trim();
+        return !expected.isEmpty()
+                && value.startsWith(expected)
+                && value.length() > expected.length();
     }
 
     /** 线路空闲短帧只做低频 Debug 统计，避免污染正常联调日志。 */
