@@ -19,13 +19,13 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: 应用第三轮核销状态修正
+      - name: 应用第四轮核销过期会话修正
         run: |
-          python3 tools/tmp_review_fix3.py
+          python3 tools/tmp_review_fix4.py
           git config user.name github-actions
           git config user.email github-actions@github.com
           git add GouzhuApp
-          git commit -m '临时修正核销恢复和物理状态单调性' || true
+          git commit -m '临时修正核销过期会话自动重开' || true
           git push origin HEAD:tmp-third-party-redemption-20260824
       - name: 静态安全检查
         shell: bash
@@ -38,6 +38,7 @@ jobs:
           grep -R "confirmThirdPartyRedemption" GouzhuApp/app/src/main/java/com/gouzhu/redemption GouzhuApp/app/src/main/java/com/gouzhu/sdk
           grep -R "queryThirdPartyRedemption" GouzhuApp/app/src/main/java/com/gouzhu/redemption GouzhuApp/app/src/main/java/com/gouzhu/sdk
           grep -R "markRedemptionWaitingDispense" GouzhuApp/app/src/main/java/com/gouzhu/redemption GouzhuApp/app/src/main/java/com/gouzhu/transaction
+          grep -R "restartExpiredPrepare" GouzhuApp/app/src/main/java/com/gouzhu/redemption
       - name: 构建和单元测试
         shell: bash
         run: |
@@ -60,5 +61,5 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git add docs/tmp-redemption-build-status.txt
-          git commit -m '记录核销功能第三轮构建结果' || true
+          git commit -m '记录核销功能第四轮构建结果' || true
           git push origin HEAD:tmp-third-party-redemption-20260824
