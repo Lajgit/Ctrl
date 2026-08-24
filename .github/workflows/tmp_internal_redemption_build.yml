@@ -1,0 +1,54 @@
+name: Temporary Internal Redemption Build
+on:
+  pull_request:
+    branches:
+      - tmp-internal-redemption-build-ci-base-20260824
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 应用官方券码核销实现
+        run: |
+          python3 tools/apply_internal_redemption_patch.py
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add GouzhuApp/app/build.gradle \
+            GouzhuApp/app/src/main/AndroidManifest.xml \
+            GouzhuApp/app/src/main/java/com/gouzhu/MainActivity.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/sdk/DeviceSdkManager.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/redemption/RedemptionCapabilityResolver.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/redemption/InternalRedemptionPolicy.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/redemption/InternalRedemptionStore.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/redemption/InternalRedemptionManager.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/redemption/InternalRedemptionActivity.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/scanner/ReverseScannerManager.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/transaction/TransactionOccupancyManager.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/transaction/TransactionOccupancyPolicy.java \
+            GouzhuApp/app/src/main/res/layout/activity_main.xml \
+            GouzhuApp/app/src/main/res/layout/activity_internal_redemption.xml \
+            GouzhuApp/app/src/main/res/values/redemption_strings.xml \
+            GouzhuApp/app/src/test/java/com/gouzhu/redemption/InternalRedemptionPolicyTest.java \
+            GouzhuApp/app/src/test/java/com/gouzhu/transaction/TransactionOccupancyPolicyTest.java
+          if ! git diff --cached --quiet; then
+            git commit -m '临时应用官方小程序券码核销实现'
+            git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          fi
+      - name: 隐私和旧自动路由检查
+        run: |
+          ! grep -R "Log\..*rawCode\|Log\..*pickupCode\|Log\..*scannedCode" GouzhuApp/app/src/main/java/com/gouzhu/redemption/InternalRedemptionManager.java
+          ! grep -R "ScannerBusinessRouter" GouzhuApp/app/src/main/java/com/gouzhu/scanner/ReverseScannerManager.java
+      - name: 单元测试和调试构建
+        run: |
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:testDebugUnitTest :app:assembleDebug
