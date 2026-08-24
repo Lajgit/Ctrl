@@ -24,18 +24,36 @@ jobs:
           fi
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('GouzhuApp/app/src/main/java/com/gouzhu/scanner/ReverseScannerManager.java')
           s = p.read_text(encoding='utf-8')
           old = ' * 其他业务码仍交给 {@link ScannerBusinessRouter}，按 bootstrap 的 redemptionRouting 匹配。</p>'
           new = ' * 会员取珠、官方券码和第三方团购均要求先选择显式入口，再把扫码原文交给对应业务状态机。</p>'
           if old in s:
               p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          p = Path('GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandManager.java')
+          s = p.read_text(encoding='utf-8')
+          if 'import com.gouzhu.redemption.InternalRedemptionManager;' not in s:
+              old = 'import com.gouzhu.payment.PaymentManager;\nimport com.gouzhu.redemption.MemberWithdrawalManager;'
+              new = 'import com.gouzhu.payment.PaymentManager;\nimport com.gouzhu.redemption.InternalRedemptionManager;\nimport com.gouzhu.redemption.MemberWithdrawalManager;'
+              if old not in s:
+                  raise SystemExit('DeviceCommandManager import anchor missing')
+              s = s.replace(old, new, 1)
+          if 'InternalRedemptionManager.get(context).resumePending();' not in s:
+              old = '        MemberWithdrawalManager.get(context).resumePending();\n        ThirdPartyRedemptionManager.get(context).resumePending();'
+              new = '        MemberWithdrawalManager.get(context).resumePending();\n        InternalRedemptionManager.get(context).resumePending();\n        ThirdPartyRedemptionManager.get(context).resumePending();'
+              if old not in s:
+                  raise SystemExit('DeviceCommandManager recovery anchor missing')
+              s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
           PY
           git config user.name github-actions
           git config user.email github-actions@github.com
           git add GouzhuApp/app/build.gradle \
             GouzhuApp/app/src/main/AndroidManifest.xml \
             GouzhuApp/app/src/main/java/com/gouzhu/MainActivity.java \
+            GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandManager.java \
             GouzhuApp/app/src/main/java/com/gouzhu/sdk/DeviceSdkManager.java \
             GouzhuApp/app/src/main/java/com/gouzhu/redemption/RedemptionCapabilityResolver.java \
             GouzhuApp/app/src/main/java/com/gouzhu/redemption/InternalRedemptionPolicy.java \
