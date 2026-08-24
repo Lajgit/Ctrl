@@ -16,8 +16,15 @@
     <string name="third_party_redemption_title">团购核销</string>
     <string name="third_party_redemption_subtitle">先选择团购平台，再扫描官方团购券二维码</string>
     <string name="third_party_choose_channel_title">请选择团购平台</string>
-    <string name="third_party_choose_channel_hint">请选择抖音或美团</string>
+    <string name="third_party_choose_channel_tip">选择平台后再扫描对应团购券，未开通渠道将置灰</string>
+    <string name="third_party_choose_channel_hint">请选择可用的团购平台</string>
     <string name="third_party_no_channel">当前门店暂无可用团购核销渠道</string>
+    <string name="third_party_douyin_action">抖音核销</string>
+    <string name="third_party_meituan_action">美团核销</string>
+    <string name="third_party_channel_available">点击进入</string>
+    <string name="third_party_channel_unavailable">暂未开通</string>
+    <string name="third_party_douyin_logo_description">抖音</string>
+    <string name="third_party_meituan_logo_description">美团</string>
     <string name="third_party_scan_channel_format">请将%1$s团购券二维码对准扫码器</string>
 
     <string name="redemption_scanner_subtitle">请保持二维码完整，不要遮挡或重复快速扫码</string>
