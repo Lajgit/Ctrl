@@ -8,6 +8,7 @@ import android.util.Log;
 import com.gouzhu.AppConfig;
 import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.redemption.InternalRedemptionManager;
 import com.gouzhu.redemption.MemberWithdrawalManager;
 import com.gouzhu.redemption.ThirdPartyRedemptionManager;
 
@@ -325,6 +326,19 @@ public final class ReverseScannerManager {
             }
         }
 
+        InternalRedemptionManager internal = InternalRedemptionManager.get(context);
+        if (internal.isWaitingForScan()) {
+            if (internal.handleScannerInput(rawContent)) {
+                broadcast(
+                        EVENT_SCAN_ACCEPTED,
+                        "已接收官方套餐核销二维码，正在确认",
+                        TYPE_INTERNAL_REDEMPTION,
+                        ""
+                );
+                return;
+            }
+        }
+
         // 未进入核销模式时，仍允许统一购珠订单识别微信/支付宝付款码。
         PaymentManager.ScanSubmission paymentSubmission =
                 PaymentManager.get(context).handleAuthCodeScan(content);
@@ -342,7 +356,7 @@ public final class ReverseScannerManager {
         String maskedCode = maskCode(content);
         broadcast(
                 EVENT_SCAN_UNSUPPORTED,
-                "请先在屏幕选择会员取珠或团购核销；长度=" + content.length()
+                "请先在屏幕选择会员取珠、券码核销或团购核销；长度=" + content.length()
                         + "，尾号=" + maskedCode,
                 TYPE_UNSUPPORTED,
                 maskedCode
