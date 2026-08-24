@@ -1,0 +1,37 @@
+name: Temporary Internal Redemption Clean Candidate
+on:
+  pull_request:
+    branches:
+      - tmp-internal-redemption-clean-ci-base-20260824
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 核对正式候选不含临时文件
+        run: |
+          test ! -e tmp_internal_redemption_build_trigger.txt
+          test ! -e tools/apply_internal_redemption_patch.py
+          test ! -e tmp-clean-candidate-marker.txt
+          test ! -e tmp-clean-candidate-base-note.txt
+          test ! -e tmp-ignore.txt
+          test ! -e tmp-do-not-use.txt
+          test ! -e tmp-last-accidental-marker.txt
+          test ! -e tmp-marker-six.txt
+          test ! -e tmp-marker-seven.txt
+      - name: 核对扫码隐私和显式路由
+        run: |
+          ! grep -E "Log\..*(rawCode|pickupCode|scannedCode)" GouzhuApp/app/src/main/java/com/gouzhu/redemption/InternalRedemptionManager.java
+          ! grep -E "ScannerBusinessRouter\.(route|match|classify)" GouzhuApp/app/src/main/java/com/gouzhu/scanner/ReverseScannerManager.java
+          grep -q "InternalRedemptionManager.get(context).resumePending()" GouzhuApp/app/src/main/java/com/gouzhu/mqtt/DeviceCommandManager.java
+      - name: 单元测试和调试构建
+        run: |
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:testDebugUnitTest :app:assembleDebug
