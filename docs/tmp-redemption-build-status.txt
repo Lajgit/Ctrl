@@ -1,5 +1,5 @@
 status=0
-source_commit=1403a047e38a27328d0a03710a7d4109cfb07332
+source_commit=9c60a2463331d247f319fc1184fdd6ef259efa68
 --- build tail ---
 Downloading https://services.gradle.org/distributions/gradle-9.4.1-bin.zip
 .............10%.............20%.............30%.............40%.............50%.............60%..............70%.............80%.............90%.............100%
@@ -22,12 +22,13 @@ Daemon will be stopped at the end of the build
 > Task :app:packageDebugResources
 > Task :app:processDebugNavigationResources
 > Task :app:javaPreCompileDebug
-> Task :app:parseDebugLocalResources
 > Task :app:checkDebugAarMetadata
 > Task :app:mapDebugSourceSetPaths
-> Task :app:generateDebugRFile
+> Task :app:parseDebugLocalResources
 > Task :app:compileDebugNavigationResources
+> Task :app:generateDebugRFile
 > Task :app:compileDebugKotlin NO-SOURCE
+> Task :app:mergeDebugResources
 
 > Task :app:compileDebugJavaWithJavac
 Note: Some input files use or override a deprecated API.
@@ -36,20 +37,19 @@ Note: Recompile with -Xlint:deprecation for details.
 > Task :app:createDebugCompatibleScreenManifests
 > Task :app:extractDeepLinksDebug
 > Task :app:processDebugMainManifest
-> Task :app:mergeDebugResources
 > Task :app:processDebugManifest
 > Task :app:preDebugUnitTestBuild UP-TO-DATE
 > Task :app:javaPreCompileDebugUnitTest
+> Task :app:processDebugManifestForPackage
 > Task :app:processDebugJavaRes NO-SOURCE
 > Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
 > Task :app:generateDebugAssets UP-TO-DATE
 > Task :app:mergeDebugAssets
 > Task :app:compressDebugAssets
-> Task :app:processDebugManifestForPackage
 > Task :app:processDebugResources
 > Task :app:generateDebugGlobalSynthetics
-> Task :app:bundleDebugClassesToRuntimeJar
 > Task :app:bundleDebugClassesToCompileJar
+> Task :app:bundleDebugClassesToRuntimeJar
 > Task :app:compileDebugUnitTestKotlin NO-SOURCE
 > Task :app:mergeDebugJavaResource
 > Task :app:compileDebugUnitTestJavaWithJavac
@@ -57,9 +57,9 @@ Note: Recompile with -Xlint:deprecation for details.
 > Task :app:testDebugUnitTest
 > Task :app:checkDebugDuplicateClasses
 > Task :app:desugarDebugFileDependencies
-> Task :app:mergeLibDexDebug
 > Task :app:dexBuilderDebug
 > Task :app:mergeDebugJniLibFolders
+> Task :app:mergeLibDexDebug
 > Task :app:mergeDebugNativeLibs NO-SOURCE
 > Task :app:stripDebugDebugSymbols NO-SOURCE
 > Task :app:mergeProjectDexDebug
