@@ -1,0 +1,38 @@
+name: Temporary Redemption Brand UI PR Build
+on:
+  pull_request:
+    branches:
+      - tmp-redemption-brand-ui-ci-base-20260824
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 应用品牌入口补丁并回写头分支
+        run: |
+          if [ -f tools/tmp_apply_redemption_brand_ui.py ]; then
+            python3 tools/tmp_apply_redemption_brand_ui.py
+            rm -f tools/tmp_apply_redemption_brand_ui.py
+            rm -f .github/workflows/tmp-redemption-brand-ui-build.yml
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git add -A
+            git commit -m '临时应用团购核销品牌入口UI'
+            git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          fi
+      - name: 单元测试和调试构建
+        run: |
+          cd GouzhuApp
+          chmod +x gradlew
+          ./gradlew --no-daemon clean :app:testDebugUnitTest :app:assembleDebug
