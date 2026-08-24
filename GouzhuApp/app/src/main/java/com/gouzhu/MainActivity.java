@@ -30,6 +30,8 @@ import com.gouzhu.network.WifiConfigActivity;
 import com.gouzhu.network.WifiSupport;
 import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.payment.QrCodeUtil;
+import com.gouzhu.redemption.RedemptionActivity;
+import com.gouzhu.redemption.RedemptionCapabilityResolver;
 import com.gouzhu.sdk.DeviceSdkManager;
 import com.gouzhu.service.DeviceService;
 import com.gouzhu.transaction.TransactionOccupancyManager;
@@ -56,6 +58,15 @@ public class MainActivity extends AppCompatActivity {
     private Button cancelPaymentButton;
     private ImageView paymentQrImage;
     private Button[] packageButtons;
+
+    private View memberWithdrawEntry;
+    private View thirdPartyRedemptionEntry;
+    private TextView memberWithdrawHint;
+    private TextView thirdPartyRedemptionHint;
+    private boolean memberWithdrawVisible;
+    private boolean memberWithdrawAvailable;
+    private boolean thirdPartyVisible;
+    private boolean thirdPartyAvailable;
 
     private LinearLayout collectionLayout;
     private TextView collectionStatusText;
@@ -182,6 +193,10 @@ public class MainActivity extends AppCompatActivity {
         paymentButton = findViewById(R.id.button_start_payment);
         cancelPaymentButton = findViewById(R.id.button_cancel_payment);
         paymentQrImage = findViewById(R.id.image_payment_qr);
+        memberWithdrawEntry = findViewById(R.id.card_member_withdraw);
+        thirdPartyRedemptionEntry = findViewById(R.id.card_third_party_redemption);
+        memberWithdrawHint = findViewById(R.id.text_member_withdraw_hint);
+        thirdPartyRedemptionHint = findViewById(R.id.text_third_party_redemption_hint);
 
         packageButtons = new Button[]{
                 findViewById(R.id.button_package_1),
@@ -222,6 +237,12 @@ public class MainActivity extends AppCompatActivity {
         cancelPaymentButton.setOnClickListener(view -> confirmCancelPayment());
         findViewById(R.id.button_backend_settings).setOnClickListener(
                 view -> openBackendSettings()
+        );
+        memberWithdrawEntry.setOnClickListener(view ->
+                openRedemption(RedemptionActivity.MODE_MEMBER)
+        );
+        thirdPartyRedemptionEntry.setOnClickListener(view ->
+                openRedemption(RedemptionActivity.MODE_THIRD_PARTY)
         );
         collectionStartButton.setOnClickListener(view -> {
             if (DeviceCommandManager.get(this).startPendingCollection()) {
@@ -276,6 +297,7 @@ public class MainActivity extends AppCompatActivity {
             public void onFailure(Throwable error) {
                 bootstrapLoading = false;
                 disablePackages();
+                disableRedemptionEntries();
                 paymentStatusText.setText(getString(
                         R.string.sdk_bootstrap_failed_format,
                         messageOf(error)
@@ -287,6 +309,7 @@ public class MainActivity extends AppCompatActivity {
     private void applyBootstrap(DeviceAppBootstrapResult bootstrap) {
         if (bootstrap == null) {
             disablePackages();
+            disableRedemptionEntries();
             paymentStatusText.setText(R.string.sdk_bootstrap_empty);
             return;
         }
@@ -302,6 +325,8 @@ public class MainActivity extends AppCompatActivity {
                 packageSectionHint.setText(section.getDescription());
             }
         }
+
+        applyRedemptionCapabilities(bootstrap);
 
         packageOptions.clear();
         List<DeviceAppBootstrapResult.PurchaseRule> rules = bootstrap.getPurchaseRules();
@@ -342,6 +367,57 @@ public class MainActivity extends AppCompatActivity {
         }
         paymentStatusText.setText("");
         applyTransactionOccupancy();
+    }
+
+    private void applyRedemptionCapabilities(DeviceAppBootstrapResult bootstrap) {
+        RedemptionCapabilityResolver.FeatureGate member =
+                RedemptionCapabilityResolver.memberWithdrawal(bootstrap);
+        RedemptionCapabilityResolver.FeatureGate third =
+                RedemptionCapabilityResolver.thirdPartyRedemption(bootstrap);
+
+        memberWithdrawVisible = member.visible;
+        memberWithdrawAvailable = member.visible && member.available;
+        thirdPartyVisible = third.visible;
+        thirdPartyAvailable = third.visible && third.available;
+
+        memberWithdrawEntry.setVisibility(member.visible ? View.VISIBLE : View.GONE);
+        thirdPartyRedemptionEntry.setVisibility(third.visible ? View.VISIBLE : View.GONE);
+        memberWithdrawHint.setText(member.available
+                ? firstNonBlank(member.description, getString(R.string.member_withdraw_entry_hint))
+                : firstNonBlank(member.unavailableReason, getString(R.string.redemption_unavailable)));
+        thirdPartyRedemptionHint.setText(third.available
+                ? firstNonBlank(third.description, getString(R.string.third_party_redemption_entry_hint))
+                : firstNonBlank(third.unavailableReason, getString(R.string.redemption_unavailable)));
+    }
+
+    private void disableRedemptionEntries() {
+        memberWithdrawVisible = false;
+        memberWithdrawAvailable = false;
+        thirdPartyVisible = false;
+        thirdPartyAvailable = false;
+        memberWithdrawEntry.setEnabled(false);
+        thirdPartyRedemptionEntry.setEnabled(false);
+        memberWithdrawEntry.setAlpha(0.5f);
+        thirdPartyRedemptionEntry.setAlpha(0.5f);
+    }
+
+    private void openRedemption(String mode) {
+        TransactionOccupancyManager.Snapshot snapshot =
+                TransactionOccupancyManager.get(this).current();
+        boolean resumingMember = snapshot != null
+                && TransactionOccupancyManager.OWNER_MEMBER_WITHDRAWAL.equals(snapshot.ownerType)
+                && RedemptionActivity.MODE_MEMBER.equals(mode);
+        boolean resumingThird = snapshot != null
+                && TransactionOccupancyManager.OWNER_THIRD_PARTY_REDEMPTION.equals(snapshot.ownerType)
+                && RedemptionActivity.MODE_THIRD_PARTY.equals(mode);
+        if (!resumingMember && !resumingThird
+                && !TransactionOccupancyManager.get(this).canStartNewTransaction()) {
+            Toast.makeText(this, R.string.transaction_device_busy, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent intent = new Intent(this, RedemptionActivity.class);
+        intent.putExtra(RedemptionActivity.EXTRA_MODE, mode);
+        startActivity(intent);
     }
 
     private void appendRuleOptions(DeviceAppBootstrapResult.PurchaseRule rule) {
@@ -579,6 +655,19 @@ public class MainActivity extends AppCompatActivity {
         }
         paymentButton.setEnabled(available && selectedOption != null);
 
+        boolean memberOwned = snapshot != null
+                && TransactionOccupancyManager.OWNER_MEMBER_WITHDRAWAL.equals(snapshot.ownerType);
+        boolean thirdOwned = snapshot != null
+                && TransactionOccupancyManager.OWNER_THIRD_PARTY_REDEMPTION.equals(snapshot.ownerType);
+        boolean memberEnabled = memberWithdrawVisible
+                && ((available && memberWithdrawAvailable) || memberOwned);
+        boolean thirdEnabled = thirdPartyVisible
+                && ((available && thirdPartyAvailable) || thirdOwned);
+        memberWithdrawEntry.setEnabled(memberEnabled);
+        thirdPartyRedemptionEntry.setEnabled(thirdEnabled);
+        memberWithdrawEntry.setAlpha(memberEnabled ? 1f : 0.5f);
+        thirdPartyRedemptionEntry.setAlpha(thirdEnabled ? 1f : 0.5f);
+
         if (idle) {
             cancelPaymentButton.setVisibility(View.GONE);
             boolean pendingCollection = DeviceCommandManager.get(this).hasPendingCollection();
@@ -624,6 +713,10 @@ public class MainActivity extends AppCompatActivity {
         } else {
             collectionStartButton.setEnabled(false);
             collectionFinishButton.setEnabled(false);
+            if (TransactionOccupancyManager.OWNER_MEMBER_WITHDRAWAL.equals(owner)
+                    || TransactionOccupancyManager.OWNER_THIRD_PARTY_REDEMPTION.equals(owner)) {
+                paymentStatusText.setText(manager.displayMessage(snapshot));
+            }
         }
     }
 
@@ -731,6 +824,17 @@ public class MainActivity extends AppCompatActivity {
                             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             );
         }
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values != null) {
+            for (String value : values) {
+                if (value != null && !value.trim().isEmpty()) {
+                    return value.trim();
+                }
+            }
+        }
+        return "";
     }
 
     private static boolean notBlank(String value) {

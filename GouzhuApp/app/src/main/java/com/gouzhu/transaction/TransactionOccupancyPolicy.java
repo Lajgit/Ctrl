@@ -34,6 +34,8 @@ public final class TransactionOccupancyPolicy {
         return isIdleOwner(owner)
                 || "QR_PURCHASE".equals(owner)
                 || "CASH_PURCHASE".equals(owner)
+                || "MEMBER_WITHDRAWAL".equals(owner)
+                || "THIRD_PARTY_REDEMPTION".equals(owner)
                 || "GENERIC_DISPENSE".equals(owner);
     }
 

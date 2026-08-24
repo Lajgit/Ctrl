@@ -8,6 +8,8 @@ import android.util.Log;
 import com.gouzhu.AppConfig;
 import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.redemption.MemberWithdrawalManager;
+import com.gouzhu.redemption.ThirdPartyRedemptionManager;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -293,9 +295,36 @@ public final class ReverseScannerManager {
         lastScanAt = now;
 
         /*
-         * 付款码在统一购珠订单中优先消费。只要识别出微信/支付宝付款码，即使订单当前
-         * 已选主扫/正在取消，也在支付层明确拒绝，不再把敏感付款码送入核销路由。
+         * 团购核销和会员取珠都要求用户先在屏幕明确选择入口。处于显式扫码态时，
+         * 扫码原文只交给对应业务，禁止再根据前缀、长度或 URL 自动猜渠道。
          */
+        ThirdPartyRedemptionManager thirdParty = ThirdPartyRedemptionManager.get(context);
+        if (thirdParty.isWaitingForScan()) {
+            if (thirdParty.handleScannerInput(content)) {
+                broadcast(
+                        EVENT_SCAN_ACCEPTED,
+                        "已接收团购券二维码，正在验券",
+                        TYPE_THIRD_PARTY_REDEMPTION,
+                        ""
+                );
+                return;
+            }
+        }
+
+        MemberWithdrawalManager member = MemberWithdrawalManager.get(context);
+        if (member.isWaitingForScan()) {
+            if (member.handleScannerInput(content)) {
+                broadcast(
+                        EVENT_SCAN_ACCEPTED,
+                        "已接收会员取珠二维码，正在确认",
+                        TYPE_MEMBER_WITHDRAWAL,
+                        ""
+                );
+                return;
+            }
+        }
+
+        // 未进入核销模式时，仍允许统一购珠订单识别微信/支付宝付款码。
         PaymentManager.ScanSubmission paymentSubmission =
                 PaymentManager.get(context).handleAuthCodeScan(content);
         if (paymentSubmission.handled) {
@@ -310,28 +339,13 @@ public final class ReverseScannerManager {
         }
 
         String maskedCode = maskCode(content);
-        ScannerBusinessRouter.Submission submission =
-                ScannerBusinessRouter.get(context).submit(content);
-        if (submission.accepted) {
-            broadcast(
-                    EVENT_SCAN_ACCEPTED,
-                    submission.message + "，码值=" + maskedCode,
-                    submission.codeType,
-                    maskedCode
-            );
-            return;
-        }
-        if (submission.unsupported) {
-            broadcast(
-                    EVENT_SCAN_UNSUPPORTED,
-                    submission.message + "；长度=" + content.length()
-                            + "，尾号=" + maskedCode,
-                    TYPE_UNSUPPORTED,
-                    maskedCode
-            );
-            return;
-        }
-        broadcast(EVENT_ERROR, submission.message, "", maskedCode);
+        broadcast(
+                EVENT_SCAN_UNSUPPORTED,
+                "请先在屏幕选择会员取珠或团购核销；长度=" + content.length()
+                        + "，尾号=" + maskedCode,
+                TYPE_UNSUPPORTED,
+                maskedCode
+        );
     }
 
     /** 线路空闲短帧只做低频 Debug 统计，避免污染正常联调日志。 */
