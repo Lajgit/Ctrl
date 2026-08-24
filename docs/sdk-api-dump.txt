@@ -495,6 +495,21 @@ public final class com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult
   public java.util.List<java.lang.String> getDegradedMessages();
   public java.lang.String toString();
 }
+=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$FeatureInfo ===
+Compiled from "DeviceAppBootstrapResult.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$FeatureInfo {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult$FeatureInfo();
+  public java.lang.String getCode();
+  public java.lang.String getTitle();
+  public java.lang.String getDescription();
+  public java.lang.String getIcon();
+  public java.lang.Integer getSortOrder();
+  public java.lang.String getInteractionMode();
+  public boolean isVisible();
+  public boolean isAvailable();
+  public java.lang.String getUnavailableReason();
+  public java.lang.String toString();
+}
 === JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting ===
 Compiled from "DeviceAppRedemptionRouting.java"
 public final class com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting {
@@ -507,6 +522,22 @@ public final class com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouti
   public java.lang.String resolveMemberWithdrawal(java.lang.String);
   public java.lang.String resolveInternalRedemption(java.lang.String);
   public com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$SelectedVoucher selectThirdParty(java.lang.String, java.lang.String);
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$ThirdPartyChannel ===
+Compiled from "DeviceAppRedemptionRouting.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$ThirdPartyChannel {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$ThirdPartyChannel();
+  public java.lang.String getChannelCode();
+  public java.lang.String getChannelName();
+  public java.lang.String toString();
+}
+=== JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$CodeRoute ===
+Compiled from "DeviceAppRedemptionRouting.java"
+public final class com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$CodeRoute {
+  public com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting$CodeRoute();
+  public java.lang.String getCodePrefix();
+  public boolean isStripPrefix();
+  public java.lang.String toString();
 }
 === JAVAP com.pinball.xiaoda.device.sdk.client.DeviceAppThirdPartyRedemptionPrepareResult ===
 Compiled from "DeviceAppThirdPartyRedemptionPrepareResult.java"
