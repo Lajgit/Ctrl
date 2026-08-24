@@ -246,7 +246,29 @@ public final class MemberWithdrawalManager {
             broadcast(session);
             return;
         }
-        session.operationNo = safe(result.getOperationNo());
+
+        String responseOperationNo = safe(result.getOperationNo());
+        TransactionOccupancyManager.Snapshot occupancySnapshot = occupancy.current();
+        /*
+         * MQTT 物理指令可能早于 HTTP 响应到达。若物理侧已经绑定 operationNo，
+         * 后到的会员取珠 HTTP 结果必须与其一致，禁止把两笔业务错误合并。
+         */
+        if (!responseOperationNo.isEmpty()
+                && occupancySnapshot != null
+                && TransactionOccupancyManager.OWNER_MEMBER_WITHDRAWAL.equals(
+                occupancySnapshot.ownerType)
+                && requestNo.equals(occupancySnapshot.clientRequestNo)
+                && !safe(occupancySnapshot.operationNo).isEmpty()
+                && !responseOperationNo.equals(safe(occupancySnapshot.operationNo))) {
+            occupancy.markBlocked("MEMBER_WITHDRAW_OPERATION_NO_MISMATCH");
+            session.uiState = STATE_FAILED;
+            session.message = "会员取珠业务号与出珠指令不一致，请联系工作人员";
+            store.saveMember(session);
+            broadcast(session);
+            return;
+        }
+
+        session.operationNo = responseOperationNo;
         session.withdrawalStatus = safe(result.getWithdrawalStatus());
         session.requestedQuantity = result.getRequestedQuantity() == null
                 ? session.requestedQuantity : Math.max(0, result.getRequestedQuantity());
@@ -259,9 +281,22 @@ public final class MemberWithdrawalManager {
         session.message = firstNonBlank(result.getMessage(), result.getWithdrawalStatus(), "会员取珠处理中");
 
         if (session.terminal) {
-            session.uiState = session.requestedQuantity > 0
-                    && session.dispensedQuantity >= session.requestedQuantity
+            boolean completed = "COMPLETED".equalsIgnoreCase(session.withdrawalStatus);
+            session.uiState = completed && session.requestedQuantity > 0
                     ? STATE_SUCCEEDED : STATE_FAILED;
+            /*
+             * 人工部分结算后服务端可能返回 COMPLETED 且实出小于应出。
+             * 这属于“部分取珠完成”，不能继续按失败态展示。
+             */
+            if (completed
+                    && session.requestedQuantity > 0
+                    && session.dispensedQuantity < session.requestedQuantity
+                    && (session.message.isEmpty()
+                    || session.message.equalsIgnoreCase(session.withdrawalStatus))) {
+                session.message = "部分取珠完成，实出"
+                        + session.dispensedQuantity + "/"
+                        + session.requestedQuantity + "珠";
+            }
         } else {
             session.uiState = STATE_WAITING_DISPENSE;
             // 查询晚于 MQTT 时保持 DISPENSING/FINISHING，不把物理阶段回退。

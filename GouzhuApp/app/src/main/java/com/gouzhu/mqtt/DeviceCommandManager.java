@@ -6,6 +6,7 @@ import android.database.Cursor;
 import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.redemption.InternalRedemptionManager;
 import com.gouzhu.redemption.MemberWithdrawalManager;
+import com.gouzhu.redemption.RedemptionSessionStore;
 import com.gouzhu.redemption.ThirdPartyRedemptionManager;
 import com.gouzhu.serial.BoardConnectionMonitor;
 import com.gouzhu.transaction.CashTransactionIsolation;
@@ -172,6 +173,37 @@ public final class DeviceCommandManager {
         String operationNo = data == null
                 ? ""
                 : data.optString("operationNo", "").trim();
+
+        TransactionOccupancyManager.Snapshot current = occupancy.current();
+        if (current != null
+                && TransactionOccupancyManager.OWNER_MEMBER_WITHDRAWAL.equals(
+                current.ownerType)) {
+            RedemptionSessionStore.MemberSession memberSession =
+                    new RedemptionSessionStore(context).loadMember();
+            boolean contextMatches = memberSession != null
+                    && current.clientRequestNo.equals(memberSession.clientRequestNo)
+                    && !operationNo.isEmpty();
+            /*
+             * HTTP 已返回 operationNo 时，MQTT 必须命中同一会员取珠业务单。
+             * HTTP 尚未返回时允许合法 MQTT 先到；reserveDispense 会先绑定 operationNo，
+             * 后续 MemberWithdrawalManager 再用 HTTP 结果反向校验，覆盖两种到达顺序。
+             */
+            if (contextMatches
+                    && !memberSession.operationNo.isEmpty()
+                    && !operationNo.equals(memberSession.operationNo)) {
+                contextMatches = false;
+            }
+            if (!contextMatches) {
+                rejectCommand(
+                        topic,
+                        payload,
+                        "OPERATION_NO_MISMATCH",
+                        "member withdrawal operationNo does not match the accepted business operation"
+                );
+                return;
+            }
+        }
+
         TransactionOccupancyManager.DispenseReservation reservation =
                 occupancy.reserveDispense(messageId, operationNo);
         if (!reservation.allowed) {
