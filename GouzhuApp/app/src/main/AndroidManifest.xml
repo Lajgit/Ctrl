@@ -77,6 +77,12 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".redemption.InternalRedemptionActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".payment.PaymentQrActivity"
             android:excludeFromRecents="true"
             android:exported="false"

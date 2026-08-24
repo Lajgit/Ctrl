@@ -15,6 +15,7 @@ import com.gouzhu.mqtt.CashRuntimeCoordinator;
 import com.gouzhu.mqtt.DeviceCommandStore;
 import com.gouzhu.mqtt.MqttManager;
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.redemption.InternalRedemptionManager;
 import com.gouzhu.redemption.MemberWithdrawalManager;
 import com.gouzhu.redemption.ThirdPartyRedemptionManager;
 import com.gouzhu.serial.SerialManager;
@@ -47,6 +48,7 @@ public final class TransactionOccupancyManager {
     public static final String OWNER_CASH_PURCHASE = "CASH_PURCHASE";
     public static final String OWNER_MEMBER_DEPOSIT = "MEMBER_DEPOSIT";
     public static final String OWNER_MEMBER_WITHDRAWAL = "MEMBER_WITHDRAWAL";
+    public static final String OWNER_INTERNAL_REDEMPTION = "INTERNAL_REDEMPTION";
     public static final String OWNER_THIRD_PARTY_REDEMPTION = "THIRD_PARTY_REDEMPTION";
     public static final String OWNER_GENERIC_DISPENSE = "GENERIC_DISPENSE";
 
@@ -754,6 +756,8 @@ public final class TransactionOccupancyManager {
             PaymentManager.get(context).onOccupancyReleased(released.clientRequestNo);
         } else if (OWNER_MEMBER_WITHDRAWAL.equals(released.ownerType)) {
             MemberWithdrawalManager.get(context).onOccupancyReleased(released.clientRequestNo);
+        } else if (OWNER_INTERNAL_REDEMPTION.equals(released.ownerType)) {
+            InternalRedemptionManager.get(context).onOccupancyReleased(released.clientRequestNo);
         } else if (OWNER_THIRD_PARTY_REDEMPTION.equals(released.ownerType)) {
             ThirdPartyRedemptionManager.get(context).onOccupancyReleased(released.clientRequestNo);
         }
@@ -818,6 +822,11 @@ public final class TransactionOccupancyManager {
             return TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)
                     ? "会员取珠正在出珠"
                     : "会员取珠处理中";
+        }
+        if (OWNER_INTERNAL_REDEMPTION.equals(snapshot.ownerType)) {
+            return TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)
+                    ? "券码核销正在出珠"
+                    : "券码核销处理中";
         }
         if (OWNER_THIRD_PARTY_REDEMPTION.equals(snapshot.ownerType)) {
             return TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)
@@ -1112,6 +1121,10 @@ public final class TransactionOccupancyManager {
                 } else if (OWNER_MEMBER_WITHDRAWAL.equals(snapshot.ownerType)) {
                     transitionAnyPhase(snapshot.sessionId, PHASE_FINISHING, "");
                     MemberWithdrawalManager.get(context).onPhysicalDispenseFinished();
+                } else if (OWNER_INTERNAL_REDEMPTION.equals(snapshot.ownerType)) {
+                    // 官方券码 HTTP 核销状态和本地物理完成必须分别收敛，不能仅凭控制板完成释放交易。
+                    transitionAnyPhase(snapshot.sessionId, PHASE_FINISHING, "");
+                    InternalRedemptionManager.get(context).onPhysicalDispenseFinished();
                 } else if (!OWNER_MEMBER_DEPOSIT.equals(snapshot.ownerType)) {
                     release(snapshot.sessionId, "dispense completed", false);
                 }
@@ -1330,6 +1343,7 @@ public final class TransactionOccupancyManager {
 
     private static boolean isRedemptionOwner(String ownerType) {
         return OWNER_MEMBER_WITHDRAWAL.equals(ownerType)
+                || OWNER_INTERNAL_REDEMPTION.equals(ownerType)
                 || OWNER_THIRD_PARTY_REDEMPTION.equals(ownerType);
     }
 

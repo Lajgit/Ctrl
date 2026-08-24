@@ -265,6 +265,19 @@ public final class DeviceSdkManager {
         return newAppClient().createInternalRedemption(clientRequestNo, pickupCode);
     }
 
+    /** 官方小程序套餐券使用 bootstrap.redemptionRouting 的路由规则，设备端不写死券码前缀。 */
+    public DeviceAppInternalRedemptionResult createInternalRedemptionFromRoutedCode(
+            String clientRequestNo,
+            DeviceAppRedemptionRouting routing,
+            String scannedCode
+    ) {
+        return newAppClient().createInternalRedemptionFromRoutedCode(
+                clientRequestNo,
+                routing,
+                scannedCode
+        );
+    }
+
     public DeviceAppInternalRedemptionResult queryInternalRedemption(String clientRequestNo) {
         return newAppClient().queryInternalRedemption(clientRequestNo);
     }

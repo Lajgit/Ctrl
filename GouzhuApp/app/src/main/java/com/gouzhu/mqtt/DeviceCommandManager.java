@@ -4,6 +4,7 @@ import android.content.Context;
 import android.database.Cursor;
 
 import com.gouzhu.payment.PaymentManager;
+import com.gouzhu.redemption.InternalRedemptionManager;
 import com.gouzhu.redemption.MemberWithdrawalManager;
 import com.gouzhu.redemption.ThirdPartyRedemptionManager;
 import com.gouzhu.serial.BoardConnectionMonitor;
@@ -82,10 +83,10 @@ public final class DeviceCommandManager {
         runtime.start();
         cashConfigurationCoordinator.start();
         CashRuntimeCoordinator.get(context).reconcile("device_command_manager_started");
-        // Recovery must not depend on MainActivity being visible. The persisted requestNo
-        // remains authoritative and the same QR purchase is queried/recreated idempotently.
+        // 恢复流程不能依赖首页是否显示；所有已持久化业务都按原 requestNo 继续收敛。
         PaymentManager.get(context).resumePendingPayment();
         MemberWithdrawalManager.get(context).resumePending();
+        InternalRedemptionManager.get(context).resumePending();
         ThirdPartyRedemptionManager.get(context).resumePending();
     }
 

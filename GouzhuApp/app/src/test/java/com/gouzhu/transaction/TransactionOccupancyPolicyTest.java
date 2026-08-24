@@ -41,12 +41,20 @@ public class TransactionOccupancyPolicyTest {
                 "THIRD_PARTY_REDEMPTION",
                 "READY"
         ));
+        assertFalse(TransactionOccupancyPolicy.canReserveDispense(
+                "INTERNAL_REDEMPTION",
+                "READY"
+        ));
         assertTrue(TransactionOccupancyPolicy.canReserveDispense(
                 "MEMBER_WITHDRAWAL",
                 "WAITING_DISPENSE"
         ));
         assertTrue(TransactionOccupancyPolicy.canReserveDispense(
                 "THIRD_PARTY_REDEMPTION",
+                "WAITING_DISPENSE"
+        ));
+        assertTrue(TransactionOccupancyPolicy.canReserveDispense(
+                "INTERNAL_REDEMPTION",
                 "WAITING_DISPENSE"
         ));
         assertTrue(TransactionOccupancyPolicy.canReserveDispense("", ""));
