@@ -358,10 +358,7 @@ public final class ThirdPartyRedemptionManager {
             block("THIRD_PARTY_CONFIRM_STATE_SAVE_FAILED", "正式核销状态无法可靠保存");
             return false;
         }
-        if (!occupancy.transitionRedemption(
-                session.clientRequestNo,
-                TransactionOccupancyManager.PHASE_WAITING_DISPENSE
-        )) {
+        if (!occupancy.markRedemptionWaitingDispense(session.clientRequestNo)) {
             block("THIRD_PARTY_CONFIRM_OCCUPANCY_FAILED", "正式核销前交易状态切换失败");
             return false;
         }
@@ -454,10 +451,8 @@ public final class ThirdPartyRedemptionManager {
                     );
                 }
             } else {
-                occupancy.transitionRedemption(
-                        session.clientRequestNo,
-                        TransactionOccupancyManager.PHASE_WAITING_DISPENSE
-                );
+                // HTTP 非终态不得把已经开始的物理出珠回退到 WAITING_DISPENSE。
+                occupancy.markRedemptionWaitingDispense(session.clientRequestNo);
             }
             broadcast(session);
             scheduleQuery(requestNo, ThirdPartyRedemptionPolicy.NORMAL_QUERY_DELAY_MS);
@@ -558,6 +553,11 @@ public final class ThirdPartyRedemptionManager {
                 || ThirdPartyRedemptionPolicy.STATE_WAITING_DISPENSE_COMMAND.equals(session.uiState)
                 || ThirdPartyRedemptionPolicy.STATE_DISPENSING.equals(session.uiState)
                 || ThirdPartyRedemptionPolicy.STATE_MANUAL_REVIEW.equals(session.uiState)) {
+            // confirm 已经越过消费边界；如果 occupancy 是重建出来的 PREPARING，
+            // 先恢复到 WAITING_DISPENSE，避免合法 MQTT 比 HTTP query 更早到达时被误拒绝。
+            if (!ThirdPartyRedemptionPolicy.STATE_MANUAL_REVIEW.equals(session.uiState)) {
+                occupancy.markRedemptionWaitingDispense(session.clientRequestNo);
+            }
             scheduleQuery(session.clientRequestNo, 0L);
         } else {
             broadcast(session);

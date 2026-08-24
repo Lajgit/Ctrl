@@ -322,6 +322,37 @@ public final class TransactionOccupancyManager {
         return transitionAnyPhase(snapshot.sessionId, phase, "");
     }
 
+    /**
+     * 把已经提交/确认的核销业务推进到“等待平台出珠授权”。
+     * HTTP 查询可能晚于 MQTT 物理动作，因此已进入物理阶段时只返回成功而绝不回退；
+     * BLOCKED/REFUNDING 等异常阶段也绝不被普通查询重新打开。
+     */
+    public boolean markRedemptionWaitingDispense(String clientRequestNo) {
+        Snapshot snapshot = current();
+        if (snapshot == null
+                || !isRedemptionOwner(snapshot.ownerType)
+                || !safe(clientRequestNo).equals(snapshot.clientRequestNo)) {
+            return false;
+        }
+        if (PHASE_WAITING_DISPENSE.equals(snapshot.phase)
+                || TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase)) {
+            return true;
+        }
+        if (!(PHASE_PREPARING.equals(snapshot.phase) || PHASE_READY.equals(snapshot.phase))) {
+            return false;
+        }
+        return transition(
+                snapshot.sessionId,
+                snapshot.phase,
+                PHASE_WAITING_DISPENSE,
+                null,
+                null,
+                null,
+                null,
+                ""
+        );
+    }
+
     public boolean isRedemptionOwned(String ownerType, String clientRequestNo) {
         Snapshot snapshot = current();
         return snapshot != null

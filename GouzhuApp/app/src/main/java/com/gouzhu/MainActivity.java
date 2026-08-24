@@ -348,6 +348,7 @@ public class MainActivity extends AppCompatActivity {
         if (packageOptions.isEmpty()) {
             disablePackages();
             paymentStatusText.setText(R.string.sdk_no_purchase_tier);
+            applyTransactionOccupancy();
             return;
         }
 

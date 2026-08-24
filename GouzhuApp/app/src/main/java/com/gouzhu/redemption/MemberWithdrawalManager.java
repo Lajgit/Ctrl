@@ -171,10 +171,7 @@ public final class MemberWithdrawalManager {
             occupancy.markBlocked("MEMBER_WITHDRAW_STATE_SAVE_FAILED");
             return true;
         }
-        if (!occupancy.transitionRedemption(
-                session.clientRequestNo,
-                TransactionOccupancyManager.PHASE_WAITING_DISPENSE
-        )) {
+        if (!occupancy.markRedemptionWaitingDispense(session.clientRequestNo)) {
             occupancy.markBlocked("MEMBER_WITHDRAW_OCCUPANCY_FAILED");
             session.uiState = STATE_FAILED;
             session.message = "会员取珠交易状态切换失败，请联系工作人员";
@@ -267,10 +264,8 @@ public final class MemberWithdrawalManager {
                     ? STATE_SUCCEEDED : STATE_FAILED;
         } else {
             session.uiState = STATE_WAITING_DISPENSE;
-            occupancy.transitionRedemption(
-                    session.clientRequestNo,
-                    TransactionOccupancyManager.PHASE_WAITING_DISPENSE
-            );
+            // 查询晚于 MQTT 时保持 DISPENSING/FINISHING，不把物理阶段回退。
+            occupancy.markRedemptionWaitingDispense(session.clientRequestNo);
         }
         store.saveMember(session);
         broadcast(session);
@@ -343,6 +338,8 @@ public final class MemberWithdrawalManager {
                 || STATE_WAITING_DISPENSE.equals(session.uiState)
                 || STATE_WAITING_FINAL.equals(session.uiState)) {
             // 原扫码内容不落库；一旦曾经提交，重启后只查询原请求，禁止再次提交。
+            // occupancy 若是重建的 PREPARING，先恢复出珠资格以接住可能先到的 MQTT。
+            occupancy.markRedemptionWaitingDispense(session.clientRequestNo);
             scheduleQuery(session.clientRequestNo, 0L);
         } else {
             broadcast(session);
