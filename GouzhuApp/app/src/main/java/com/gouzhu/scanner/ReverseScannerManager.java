@@ -21,7 +21,6 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 
 /**
  * ttyS6 反扫模块管理器。
@@ -301,20 +300,11 @@ public final class ReverseScannerManager {
         lastScanAt = now;
 
         /*
-         * 核销类业务都要求用户先在屏幕明确选择入口，再按本次 bootstrap 下发的路由前缀校验。
-         * 这里只验证当前已选业务/渠道，绝不根据二维码内容跨业务、跨渠道自动猜测。
+         * 会员取珠和官方券码按本次 bootstrap 下发的路由前缀过滤普通二维码。
+         * 抖音/美团团购券码为纯数字，渠道由用户预先选择，券码有效性继续交给服务端 prepare 校验。
          */
         ThirdPartyRedemptionManager thirdParty = ThirdPartyRedemptionManager.get(context);
         if (thirdParty.isWaitingForScan()) {
-            if (!matchesThirdPartyRoute(content, thirdParty.snapshot())) {
-                broadcast(
-                        EVENT_SCAN_UNSUPPORTED,
-                        "二维码不属于当前选择的团购渠道，请重新扫码",
-                        TYPE_THIRD_PARTY_REDEMPTION,
-                        ""
-                );
-                return;
-            }
             if (thirdParty.handleScannerInput(rawContent)) {
                 broadcast(
                         EVENT_SCAN_ACCEPTED,
@@ -416,37 +406,6 @@ public final class ReverseScannerManager {
                 content,
                 readRoutePrefix(routing.getInternalRedemption(), "getCodePrefix")
         );
-    }
-
-    /** 团购核销只校验用户当前已选渠道的券码前缀，不根据码内容自动切换渠道。 */
-    private boolean matchesThirdPartyRoute(
-            String content,
-            ThirdPartyRedemptionManager.UiSnapshot snapshot
-    ) {
-        if (snapshot == null || snapshot.channelCode == null
-                || snapshot.channelCode.trim().isEmpty()) {
-            return false;
-        }
-        DeviceAppRedemptionRouting routing = currentRedemptionRouting();
-        if (routing == null) {
-            return false;
-        }
-        List<DeviceAppRedemptionRouting.ThirdPartyChannel> channels =
-                routing.getThirdPartyChannels();
-        if (channels == null || channels.isEmpty()) {
-            return false;
-        }
-        for (DeviceAppRedemptionRouting.ThirdPartyChannel channel : channels) {
-            if (channel == null || channel.getChannelCode() == null
-                    || !snapshot.channelCode.equalsIgnoreCase(channel.getChannelCode().trim())) {
-                continue;
-            }
-            return matchesPrefix(
-                    content,
-                    readRoutePrefix(channel, "getVoucherCodePrefix")
-            );
-        }
-        return false;
     }
 
     private DeviceAppRedemptionRouting currentRedemptionRouting() {
