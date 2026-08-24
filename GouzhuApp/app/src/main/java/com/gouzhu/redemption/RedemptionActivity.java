@@ -42,8 +42,10 @@ public final class RedemptionActivity extends AppCompatActivity {
     private TextView subtitleText;
     private TextView statusText;
     private LinearLayout channelSection;
-    private Button douyinButton;
-    private Button meituanButton;
+    private LinearLayout douyinButton;
+    private LinearLayout meituanButton;
+    private TextView douyinStatusText;
+    private TextView meituanStatusText;
     private LinearLayout scanSection;
     private TextView scanHintText;
     private LinearLayout candidateSection;
@@ -137,6 +139,8 @@ public final class RedemptionActivity extends AppCompatActivity {
         channelSection = findViewById(R.id.layout_redemption_channels);
         douyinButton = findViewById(R.id.button_channel_douyin);
         meituanButton = findViewById(R.id.button_channel_meituan);
+        douyinStatusText = findViewById(R.id.text_channel_douyin_status);
+        meituanStatusText = findViewById(R.id.text_channel_meituan_status);
         scanSection = findViewById(R.id.layout_redemption_scan);
         scanHintText = findViewById(R.id.text_redemption_scan_hint);
         candidateSection = findViewById(R.id.layout_redemption_candidates);
@@ -280,20 +284,36 @@ public final class RedemptionActivity extends AppCompatActivity {
 
     private void showChannelSelection(List<RedemptionCapabilityResolver.ChannelOption> channels) {
         channelSection.setVisibility(View.VISIBLE);
-        douyinButton.setVisibility(View.GONE);
-        meituanButton.setVisibility(View.GONE);
-        for (RedemptionCapabilityResolver.ChannelOption channel : channels) {
-            if (RedemptionCapabilityResolver.CHANNEL_DOUYIN.equals(channel.code)) {
-                douyinButton.setText(channel.name);
-                douyinButton.setVisibility(View.VISIBLE);
-            } else if (RedemptionCapabilityResolver.CHANNEL_MEITUAN.equals(channel.code)) {
-                meituanButton.setText(channel.name);
-                meituanButton.setVisibility(View.VISIBLE);
+        boolean douyinAvailable = false;
+        boolean meituanAvailable = false;
+        if (channels != null) {
+            for (RedemptionCapabilityResolver.ChannelOption channel : channels) {
+                if (RedemptionCapabilityResolver.CHANNEL_DOUYIN.equals(channel.code)) {
+                    douyinAvailable = true;
+                } else if (RedemptionCapabilityResolver.CHANNEL_MEITUAN.equals(channel.code)) {
+                    meituanAvailable = true;
+                }
             }
         }
-        if (channels.isEmpty()) {
-            statusText.setText(R.string.third_party_no_channel);
-        }
+
+        // 两个平台入口始终并列展示；服务端未开放的渠道只置灰，绝不绕过 bootstrap 发起核销。
+        applyChannelCardState(douyinButton, douyinStatusText, douyinAvailable);
+        applyChannelCardState(meituanButton, meituanStatusText, meituanAvailable);
+        statusText.setText(!douyinAvailable && !meituanAvailable
+                ? R.string.third_party_no_channel
+                : R.string.third_party_choose_channel_hint);
+    }
+
+    private void applyChannelCardState(LinearLayout card, TextView status, boolean available) {
+        card.setEnabled(available);
+        card.setClickable(available);
+        card.setAlpha(available ? 1.0f : 0.42f);
+        status.setText(available
+                ? R.string.third_party_channel_available
+                : R.string.third_party_channel_unavailable);
+        status.setTextColor(getColor(available
+                ? R.color.header_primary
+                : R.color.text_hint));
     }
 
     private void showCandidates(ThirdPartyRedemptionManager.UiSnapshot snapshot) {
