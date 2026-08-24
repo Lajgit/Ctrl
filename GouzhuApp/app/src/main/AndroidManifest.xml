@@ -152,6 +152,16 @@
             </intent-filter>
         </receiver>
 
+        <!-- prepare 尚未消费券；会话过期时自动结束旧请求并按原渠道回到新的扫码会话。 -->
+        <receiver
+            android:name=".redemption.ThirdPartyExpiryRecoveryReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.gouzhu.action.THIRD_PARTY_REDEMPTION_CHANGED" />
+            </intent-filter>
+        </receiver>
+
         <receiver
             android:name=".boot.BootReceiver"
             android:enabled="true"
