@@ -38,6 +38,8 @@ public final class MqttManager {
     private static final int MQTT_MAX_INFLIGHT = 32;
     private static final int MQTT_INFLIGHT_HIGH_WATERMARK = 28;
     private static final int MQTT_REASON_CODE_MAX_INFLIGHT = 32202;
+    /** Broker 对某个订阅返回 SUBACK Failure 时，Paho 抛出的 reason code。 */
+    private static final int MQTT_REASON_CODE_SUBSCRIBE_FAILED = 128;
     private static final int MQTT_KEEP_ALIVE_MIN_SECONDS = 10;
     private static final int MQTT_KEEP_ALIVE_MAX_SECONDS = 30;
     private static volatile MqttManager instance;
@@ -266,20 +268,42 @@ public final class MqttManager {
         }
 
         int qos = normalizeQos(current.getQos());
-        int success = 0;
+        int requiredSuccess = 0;
+        int optionalFailed = 0;
         for (String topic : topics) {
             try {
                 currentClient.subscribe(topic, qos);
-                success++;
+                if (!isOptionalSubscribeTopic(topic)) {
+                    requiredSuccess++;
+                }
                 Log.i(TAG, "MQTT 已订阅：" + topic + "，qos=" + qos);
+            } catch (MqttException error) {
+                if (isOptionalSubscribeTopic(topic)
+                        && error.getReasonCode() == MQTT_REASON_CODE_SUBSCRIBE_FAILED) {
+                    optionalFailed++;
+                    Log.w(
+                            TAG,
+                            "MQTT 可选 Topic 被 Broker 拒绝，继续使用已授权命令 Topic："
+                                    + topic
+                    );
+                    continue;
+                }
+                Log.e(TAG, "MQTT 订阅失败 topic=" + topic, error);
+                broadcastStatus("mqtt", "MQTT 订阅失败：" + messageOf(error));
             } catch (Throwable error) {
                 Log.e(TAG, "MQTT 订阅失败 topic=" + topic, error);
                 broadcastStatus("mqtt", "MQTT 订阅失败：" + messageOf(error));
             }
         }
-        subscribed = success > 0;
+        subscribed = requiredSuccess > 0;
         if (subscribed) {
-            broadcastStatus("mqtt", "MQTT 已连接，已订阅 " + success + " 个 Topic");
+            String text = "MQTT 已连接，已订阅 " + requiredSuccess + " 个命令 Topic";
+            if (optionalFailed > 0) {
+                text += "，" + optionalFailed + " 个可选 Topic 无权限";
+            }
+            broadcastStatus("mqtt", text);
+        } else {
+            broadcastStatus("mqtt", "MQTT 已连接，但命令 Topic 均未订阅成功");
         }
     }
 
@@ -288,11 +312,16 @@ public final class MqttManager {
         addTopic(topics, current.getCommandSubscribeTopic());
         String deviceNo = current.getDeviceNo();
         if (!blank(deviceNo)) {
-            /* 按 MQTT 对接文档补足存珠机必须监听的命令和平台应答 Topic。 */
+            /* 按 MQTT 对接文档补足存珠机必须监听的命令 Topic。 */
             addTopic(topics, "pxd/v1/device/" + deviceNo + "/command/control");
             addTopic(topics, "pxd/v1/device/" + deviceNo + "/command/config");
             addTopic(topics, "pxd/v1/device/" + deviceNo + "/command/upgrade");
             addTopic(topics, "pxd/v1/device/" + deviceNo + "/command/query");
+            /*
+             * reply/ack 在文档中列为平台应答 Topic，但当前联调 Broker 对设备账号返回
+             * SUBACK Failure(128)。该 Topic 不承载 collect_marbles 下发，先作为可选
+             * 订阅处理，避免单个 ACL 缺口导致整机误判为 MQTT 失败。
+             */
             addTopic(topics, "pxd/v1/device/" + deviceNo + "/reply/ack");
         }
         return topics;
@@ -302,6 +331,10 @@ public final class MqttManager {
         if (!blank(topic)) {
             topics.add(topic.trim());
         }
+    }
+
+    private static boolean isOptionalSubscribeTopic(String topic) {
+        return topic != null && topic.contains("/reply/ack");
     }
 
     private synchronized void startHeartbeatLoop() {
