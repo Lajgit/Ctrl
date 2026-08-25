@@ -6,7 +6,8 @@
 #define SYSLIGHT_BLINK_TIME 500U
 
 /*
- * 旧控台的灯光/按键模块仍在工程中保留源码，但新转发板不再执行这些业务。
+ * 旧控台的灯光/按键模块仍在工程中保留源码，但存珠机控制板主循环
+ * 只执行Android串口协议、收珠电机和光眼计数业务。
  * 保留Scene和Event全局符号，避免旧文件参与编译时产生链接错误。
  */
 Scene_t Scene = SCENE_LESSLIGHT;
@@ -31,7 +32,7 @@ void System_Reset(void)
 
 void Main_Init(void)
 {
-    /* 新板只初始化UART透明转发和第二组吐珠电机控制。 */
+    /* 初始化USART3存珠协议、收珠电机PWM和光眼计数定时器。 */
     CommInit();
 }
 
