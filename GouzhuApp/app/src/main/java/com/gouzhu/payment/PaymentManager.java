@@ -1432,7 +1432,7 @@ public final class PaymentManager {
             return "支付成功，等待平台出珠";
         }
         if ("AUTH_CODE".equals(mode) || isAuthCodeSubmitted()) {
-            return "付款码已提交，正在确认结果，请勿重复出示";
+            return "付款码已提交，正在确认支付结果";
         }
         if ("SCAN".equals(mode)) {
             return "已选择扫码支付，正在确认支付结果";
