@@ -1,0 +1,14 @@
+APP 使用最新现金配置的流程是：
+商家修改配置后，后端递增 configurationVersion。
+后端通过 MQTT command/config 下发完整的 sync_cash_configuration，不是增量字段。
+APP 读取 configVersion，只接受比本地当前版本更高的配置，禁止旧版本覆盖新版本。
+APP 将新版本及全部 cashSaleItems 原子保存，调用 CashConfigurationAdapter.apply(...)。
+硬件应用成功后，切换“最近成功应用版本”指针，并回传 success + configVersion。
+后端记录 applied_configuration_version；只有它与最新 configuration_version 一致时，bootstrap.cashSale.available 才可能为 true。
+APP 重启后从本地数据库恢复“最近成功应用版本”，不能从 bootstrap 重建硬件配置。
+重复和异常情况：
+相同 messageId：不重新操作硬件，只重发已保存的 ACK/终态。
+低版本：忽略，绝不能降级。
+新版本应用失败：关闭验钞器、回 failed，不能将其标记为成功版本。
+cashAcceptanceEnabled=false：即使档位为空，也要保存这个更高的禁用版本并关闭验钞器。
+bootstrap.cashSale.available 只控制当前入口是否可用，不能覆盖本地现金配置。
