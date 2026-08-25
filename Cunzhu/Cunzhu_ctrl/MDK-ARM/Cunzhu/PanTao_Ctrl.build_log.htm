@@ -1,0 +1,326 @@
+<html>
+<body>
+<pre>
+<h1>�Vision Build Log</h1>
+<h2>Tool Versions:</h2>
+IDE-Version: ��Vision V5.25.0.0
+Copyright (C) 2017 ARM Ltd and ARM Germany GmbH. All rights reserved.
+License Information: 1 2, 3, LIC=KRMW3-ACNVB-Y8KFK-Z7KZ0-J4CU1-8VSP7
+ 
+Tool Versions:
+Toolchain:       MDK-ARM Plus  Version: 5.25.0.0
+Toolchain Path:  D:\keil5\ARM\ARMCC\Bin
+C Compiler:      Armcc.exe V5.06 update 6 (build 750)
+Assembler:       Armasm.exe V5.06 update 6 (build 750)
+Linker/Locator:  ArmLink.exe V5.06 update 6 (build 750)
+Library Manager: ArmAr.exe V5.06 update 6 (build 750)
+Hex Converter:   FromElf.exe V5.06 update 6 (build 750)
+CPU DLL:         SARMCM3.DLL V5.25.0.0
+Dialog DLL:      DCM.DLL V1.17.0.0
+Target DLL:      STLink\ST-LINKIII-KEIL_SWO.dll V3.0.1.0
+Dialog DLL:      TCM.DLL V1.34.0.0
+ 
+<h2>Project:</h2>
+E:\1_Project\CtrlBoard\Cunzhu\MDK-ARM\Cunzhu.uvprojx
+Project File Date:  06/04/2026
+
+<h2>Output:</h2>
+*** Using Compiler 'V5.06 update 6 (build 750)', folder: 'D:\keil5\ARM\ARMCC\Bin'
+Build target 'Cunzhu'
+assembling startup_stm32f103xb.s...
+compiling dma.c...
+compiling stm32f1xx_it.c...
+compiling stm32f1xx_hal_dma.c...
+compiling stm32f1xx_hal_rcc_ex.c...
+compiling gpio.c...
+compiling stm32f1xx_hal_msp.c...
+compiling stm32f1xx_hal_gpio_ex.c...
+compiling stm32f1xx_hal_rcc.c...
+compiling tim.c...
+compiling main.c...
+compiling stm32f1xx_hal_gpio.c...
+compiling usart.c...
+compiling stm32f1xx_hal.c...
+compiling spi.c...
+compiling stm32f1xx_hal_cortex.c...
+compiling stm32f1xx_hal_spi.c...
+compiling app_flash.c...
+..\Lib\Src\app_flash.c(177): warning:  #1-D: last line of file ends without a newline
+  }
+..\Lib\Src\app_flash.c: 1 warning, 0 errors
+compiling stm32f1xx_hal_flash_ex.c...
+compiling stm32f1xx_hal_pwr.c...
+compiling system_stm32f1xx.c...
+compiling app_ws2812.c...
+..\Lib\Src\app_ws2812.c(377): warning:  #1-D: last line of file ends without a newline
+  }
+..\Lib\Src\app_ws2812.c: 1 warning, 0 errors
+compiling stm32f1xx_hal_flash.c...
+compiling stm32f1xx_hal_exti.c...
+compiling app_device.c...
+..\Lib\Src\app_device.c(88): warning:  #1-D: last line of file ends without a newline
+  }
+..\Lib\Src\app_device.c: 1 warning, 0 errors
+compiling app_crc.c...
+..\Lib\Inc\app_crc.h(9): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Src\app_crc.c(73): warning:  #1-D: last line of file ends without a newline
+  }
+..\Lib\Src\app_crc.c: 2 warnings, 0 errors
+compiling port_communicate.c...
+..\Mid\Inc\port_communicate.h(83): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Src\port_communicate.c: 1 warning, 0 errors
+compiling softspi.c...
+..\Lib\Src\softspi.c(25): warning:  #188-D: enumerated type mixed with another type
+          gpio_write(hspi->SPI_SDA_GPIOPORT, hspi->SPI_SDA_GPIOPIN, (data & (0x80 >> i)));
+..\Lib\Src\softspi.c(53): warning:  #188-D: enumerated type mixed with another type
+              gpio_write(hspi->SPI_SDA_GPIOPORT, hspi->SPI_SDA_GPIOPIN, (pData[i] & (0x80 >> j)));
+..\Lib\Src\softspi.c(61): warning:  #188-D: enumerated type mixed with another type
+          gpio_write(hspi->SPI_CS_GPIOPORT, hspi->SPI_CS_GPIOPIN, !hspi->CS_Level);
+..\Lib\Src\softspi.c(76): warning:  #1-D: last line of file ends without a newline
+  }
+..\Lib\Src\softspi.c: 4 warnings, 0 errors
+compiling app_ringbuf.c...
+..\Lib\Src\app_ringbuf.c(212): warning:  #1-D: last line of file ends without a newline
+  }
+..\Lib\Src\app_ringbuf.c: 1 warning, 0 errors
+compiling app_list.c...
+..\Lib\Inc\app_list.h(30): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Src\app_list.c(183): warning:  #1-D: last line of file ends without a newline
+  }
+..\Lib\Src\app_list.c: 2 warnings, 0 errors
+compiling stm32f1xx_hal_tim_ex.c...
+compiling stm32f1xx_hal_uart.c...
+compiling stm32f1xx_hal_tim.c...
+compiling CommTask.c...
+..\Mid\Inc\port_communicate.h(83): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Inc\app_list.h(30): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_event.h(28): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_lighteffect.h(91): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Inc\app_crc.h(9): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Task\Src\CommTask.c(57): warning:  #1182-D: a declaration cannot have a label
+              int data = mesg->Data1 * 1000 + mesg->Data2 * 100 + mesg->Data3 * 10 + mesg->Data4;
+..\Task\Src\CommTask.c(49): warning:  #546-D: transfer of control bypasses initialization of:
+            variable "data"  (declared at line 57)
+          switch (mesg->Code2)
+          ^
+..\Task\Src\CommTask.c(45): warning:  #177-D: variable "data"  was declared but never referenced
+      uint32_t data;
+..\Task\Src\CommTask.c(121): error:  #20: identifier "huart1" is undefined
+      Rxinit.huart = &huart1;
+..\Task\Src\CommTask.c: 8 warnings, 1 error
+compiling port_digitaltube.c...
+..\Mid\Src\port_digitaltube.c(92): warning:  #940-D: missing return statement at end of non-void function "DigitalTube_SetNum" 
+  }
+..\Mid\Src\port_digitaltube.c: 1 warning, 0 errors
+compiling port_light.c...
+..\Mid\Src\port_light.c(21): warning:  #1-D: last line of file ends without a newline
+  }
+..\Mid\Src\port_light.c: 1 warning, 0 errors
+compiling port_key.c...
+..\Mid\Src\port_key.c(23): warning:  #188-D: enumerated type mixed with another type
+      key->last_state = !key->trigger_level;
+..\Mid\Src\port_key.c(130): warning:  #1-D: last line of file ends without a newline
+  }
+..\Mid\Src\port_key.c: 2 warnings, 0 errors
+compiling port_event.c...
+..\Mid\Inc\port_event.h(28): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Src\port_event.c(18): warning:  #1-D: last line of file ends without a newline
+  }
+..\Mid\Src\port_event.c: 2 warnings, 0 errors
+compiling FlashTask.c...
+..\Mid\Inc\port_event.h(28): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Task\Src\FlashTask.c(43): warning:  #1-D: last line of file ends without a newline
+  }
+..\Task\Src\FlashTask.c: 2 warnings, 0 errors
+compiling DigitalTubeTask.c...
+..\Task\Src\DigitalTubeTask.c(13): error:  #20: identifier "SPI2_SDA_GPIO_Port" is undefined
+      Init.SDA_Port = SPI2_SDA_GPIO_Port;
+..\Task\Src\DigitalTubeTask.c(14): error:  #20: identifier "SPI2_SDA_Pin" is undefined
+      Init.SDA_Pin = SPI2_SDA_Pin;
+..\Task\Src\DigitalTubeTask.c(15): error:  #20: identifier "SPI2_CLK_GPIO_Port" is undefined
+      Init.CLK_Port = SPI2_CLK_GPIO_Port;
+..\Task\Src\DigitalTubeTask.c(16): error:  #20: identifier "SPI2_CLK_Pin" is undefined
+      Init.CLK_Pin = SPI2_CLK_Pin;
+..\Task\Src\DigitalTubeTask.c(49): warning:  #1-D: last line of file ends without a newline
+  }
+..\Task\Src\DigitalTubeTask.c: 1 warning, 4 errors
+compiling MainTask.c...
+..\Mid\Inc\port_communicate.h(83): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Inc\app_list.h(30): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_lighteffect.h(91): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_event.h(28): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Task\Src\MainTask.c(11): error:  #5: cannot open source input file "iwdg.h": No such file or directory
+  #include "iwdg.h"
+..\Task\Src\MainTask.c: 4 warnings, 1 error
+compiling KeyTask.c...
+..\Mid\Inc\port_event.h(28): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_communicate.h(83): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Inc\app_list.h(30): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_lighteffect.h(91): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Task\Src\KeyTask.c(13): error:  #20: identifier "Switch1_GPIO_Port" is undefined
+  static GPIO_TypeDef *Switch_GPIO[11] = {Switch1_GPIO_Port, Switch2_GPIO_Port, Switch3_GPIO_Port, Switch4_GPIO_Port, Switch5_GPIO_Port, Switch6_GPIO_Port,
+..\Task\Src\KeyTask.c(13): error:  #20: identifier "Switch2_GPIO_Port" is undefined
+  static GPIO_TypeDef *Switch_GPIO[11] = {Switch1_GPIO_Port, Switch2_GPIO_Port, Switch3_GPIO_Port, Switch4_GPIO_Port, Switch5_GPIO_Port, Switch6_GPIO_Port,
+..\Task\Src\KeyTask.c(13): error:  #20: identifier "Switch3_GPIO_Port" is undefined
+  static GPIO_TypeDef *Switch_GPIO[11] = {Switch1_GPIO_Port, Switch2_GPIO_Port, Switch3_GPIO_Port, Switch4_GPIO_Port, Switch5_GPIO_Port, Switch6_GPIO_Port,
+..\Task\Src\KeyTask.c(13): error:  #20: identifier "Switch4_GPIO_Port" is undefined
+  static GPIO_TypeDef *Switch_GPIO[11] = {Switch1_GPIO_Port, Switch2_GPIO_Port, Switch3_GPIO_Port, Switch4_GPIO_Port, Switch5_GPIO_Port, Switch6_GPIO_Port,
+..\Task\Src\KeyTask.c(13): error:  #20: identifier "Switch5_GPIO_Port" is undefined
+  static GPIO_TypeDef *Switch_GPIO[11] = {Switch1_GPIO_Port, Switch2_GPIO_Port, Switch3_GPIO_Port, Switch4_GPIO_Port, Switch5_GPIO_Port, Switch6_GPIO_Port,
+..\Task\Src\KeyTask.c(13): error:  #20: identifier "Switch6_GPIO_Port" is undefined
+  static GPIO_TypeDef *Switch_GPIO[11] = {Switch1_GPIO_Port, Switch2_GPIO_Port, Switch3_GPIO_Port, Switch4_GPIO_Port, Switch5_GPIO_Port, Switch6_GPIO_Port,
+..\Task\Src\KeyTask.c(14): error:  #20: identifier "Switch7_GPIO_Port" is undefined
+                                          Switch7_GPIO_Port, Switch8_GPIO_Port, Switch9_GPIO_Port, Switch10_GPIO_Port, Switch11_GPIO_Port};
+..\Task\Src\KeyTask.c(14): error:  #20: identifier "Switch8_GPIO_Port" is undefined
+                                          Switch7_GPIO_Port, Switch8_GPIO_Port, Switch9_GPIO_Port, Switch10_GPIO_Port, Switch11_GPIO_Port};
+..\Task\Src\KeyTask.c(14): error:  #20: identifier "Switch9_GPIO_Port" is undefined
+                                          Switch7_GPIO_Port, Switch8_GPIO_Port, Switch9_GPIO_Port, Switch10_GPIO_Port, Switch11_GPIO_Port};
+..\Task\Src\KeyTask.c(14): error:  #20: identifier "Switch10_GPIO_Port" is undefined
+                                          Switch7_GPIO_Port, Switch8_GPIO_Port, Switch9_GPIO_Port, Switch10_GPIO_Port, Switch11_GPIO_Port};
+..\Task\Src\KeyTask.c(14): error:  #20: identifier "Switch11_GPIO_Port" is undefined
+                                          Switch7_GPIO_Port, Switch8_GPIO_Port, Switch9_GPIO_Port, Switch10_GPIO_Port, Switch11_GPIO_Port};
+..\Task\Src\KeyTask.c(15): error:  #20: identifier "Switch1_Pin" is undefined
+  static uint16_t Switch_Pin[11] = {Switch1_Pin, Switch2_Pin, Switch3_Pin, Switch4_Pin, Switch5_Pin, Switch6_Pin,
+..\Task\Src\KeyTask.c(15): error:  #20: identifier "Switch2_Pin" is undefined
+  static uint16_t Switch_Pin[11] = {Switch1_Pin, Switch2_Pin, Switch3_Pin, Switch4_Pin, Switch5_Pin, Switch6_Pin,
+..\Task\Src\KeyTask.c(15): error:  #20: identifier "Switch3_Pin" is undefined
+  static uint16_t Switch_Pin[11] = {Switch1_Pin, Switch2_Pin, Switch3_Pin, Switch4_Pin, Switch5_Pin, Switch6_Pin,
+..\Task\Src\KeyTask.c(15): error:  #20: identifier "Switch4_Pin" is undefined
+  static uint16_t Switch_Pin[11] = {Switch1_Pin, Switch2_Pin, Switch3_Pin, Switch4_Pin, Switch5_Pin, Switch6_Pin,
+..\Task\Src\KeyTask.c(15): error:  #20: identifier "Switch5_Pin" is undefined
+  static uint16_t Switch_Pin[11] = {Switch1_Pin, Switch2_Pin, Switch3_Pin, Switch4_Pin, Switch5_Pin, Switch6_Pin,
+..\Task\Src\KeyTask.c(15): error:  #20: identifier "Switch6_Pin" is undefined
+  static uint16_t Switch_Pin[11] = {Switch1_Pin, Switch2_Pin, Switch3_Pin, Switch4_Pin, Switch5_Pin, Switch6_Pin,
+..\Task\Src\KeyTask.c(16): error:  #20: identifier "Switch7_Pin" is undefined
+                                    Switch7_Pin, Switch8_Pin, Switch9_Pin, Switch10_Pin, Switch11_Pin};
+..\Task\Src\KeyTask.c(16): error:  #20: identifier "Switch8_Pin" is undefined
+                                    Switch7_Pin, Switch8_Pin, Switch9_Pin, Switch10_Pin, Switch11_Pin};
+..\Task\Src\KeyTask.c(16): error:  #20: identifier "Switch9_Pin" is undefined
+                                    Switch7_Pin, Switch8_Pin, Switch9_Pin, Switch10_Pin, Switch11_Pin};
+..\Task\Src\KeyTask.c(16): error:  #20: identifier "Switch10_Pin" is undefined
+                                    Switch7_Pin, Switch8_Pin, Switch9_Pin, Switch10_Pin, Switch11_Pin};
+..\Task\Src\KeyTask.c(16): error:  #20: identifier "Switch11_Pin" is undefined
+                                    Switch7_Pin, Switch8_Pin, Switch9_Pin, Switch10_Pin, Switch11_Pin};
+..\Task\Src\KeyTask.c(21): warning:  #177-D: variable "Switch_Key"  was declared but never referenced
+  static Key_HandleTypeDef Switch_Key[11];
+..\Task\Src\KeyTask.c(22): warning:  #177-D: variable "Switch_List"  was declared but never referenced
+  static Key_HandleTypeDef *Switch_List[11];
+..\Task\Src\KeyTask.c(24): warning:  #177-D: variable "Key_event"  was declared but never referenced
+  static Event_Handle_t Key_event;
+..\Task\Src\KeyTask.c: 7 warnings, 22 errors
+compiling CtrlTask.c...
+..\Mid\Inc\port_event.h(28): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_lighteffect.h(91): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Task\Src\CtrlTask.c(179): error:  #20: identifier "CardCtrl_GPIO_Port" is undefined
+      Device_Switch_Init(&Card.Switch, CardCtrl_GPIO_Port, CardCtrl_Pin, GPIO_PIN_SET);
+..\Task\Src\CtrlTask.c(179): error:  #20: identifier "CardCtrl_Pin" is undefined
+      Device_Switch_Init(&Card.Switch, CardCtrl_GPIO_Port, CardCtrl_Pin, GPIO_PIN_SET);
+..\Task\Src\CtrlTask.c(180): error:  #20: identifier "Lock_GPIO_Port" is undefined
+      Device_Switch_Init(&Lock_Valve.Switch, Lock_GPIO_Port,Lock_Pin, GPIO_PIN_SET);
+..\Task\Src\CtrlTask.c(180): error:  #20: identifier "Lock_Pin" is undefined
+      Device_Switch_Init(&Lock_Valve.Switch, Lock_GPIO_Port,Lock_Pin, GPIO_PIN_SET);
+..\Task\Src\CtrlTask.c(181): error:  #20: identifier "htim4" is undefined
+      HAL_TIM_Base_Start(&htim4); 
+..\Task\Src\CtrlTask.c(196): warning:  #1-D: last line of file ends without a newline
+  }
+..\Task\Src\CtrlTask.c(149): warning:  #177-D: function "ValveTimeout_callback"  was declared but never referenced
+  static void ValveTimeout_callback(void)
+..\Task\Src\CtrlTask.c: 4 warnings, 5 errors
+compiling port_flash.c...
+..\Mid\Src\port_flash.c(36): warning:  #1-D: last line of file ends without a newline
+  }
+..\Mid\Src\port_flash.c: 1 warning, 0 errors
+compiling port_device.c...
+..\Mid\Src\port_device.c(219): warning:  #188-D: enumerated type mixed with another type
+      HAL_GPIO_WritePin(S->gpio, S->pin, !(S->level));
+..\Mid\Src\port_device.c(263): warning:  #188-D: enumerated type mixed with another type
+      Switch_SetState(Switch->gpio, Switch->pin, !(Switch->level));
+..\Mid\Src\port_device.c(264): warning:  #1-D: last line of file ends without a newline
+  }
+..\Mid\Src\port_device.c: 3 warnings, 0 errors
+compiling LightTask.c...
+..\Mid\Inc\port_lighteffect.h(91): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Inc\app_list.h(30): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_communicate.h(83): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Task\Src\LightTask.c(71): warning:  #1-D: last line of file ends without a newline
+  }
+..\Task\Src\LightTask.c: 4 warnings, 0 errors
+compiling MesgTask.c...
+..\Mid\Inc\port_event.h(28): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_communicate.h(83): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Inc\app_list.h(30): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Task\Src\MesgTask.c(23): warning:  #1-D: last line of file ends without a newline
+  }
+..\Task\Src\MesgTask.c(13): warning:  #177-D: variable "NFCUnlock_mesg"  was declared but never referenced
+  static uint8_t NFCUnlock_mesg[11] = {0xaa, 0x0f, 0x01, 0x01, 0x01, 0x01, 0x5c, 0x77, 0x08, 0x7f, 0x55};
+..\Task\Src\MesgTask.c: 5 warnings, 0 errors
+compiling InterruptTask.c...
+..\Mid\Inc\port_event.h(28): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Inc\port_communicate.h(83): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Lib\Inc\app_list.h(30): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Task\Src\InterruptTask.c(21): warning:  #1-D: last line of file ends without a newline
+  }
+..\Task\Src\InterruptTask.c: 4 warnings, 0 errors
+compiling port_lighteffect.c...
+..\Mid\Inc\port_lighteffect.h(91): warning:  #1-D: last line of file ends without a newline
+  #endif
+..\Mid\Src\port_lighteffect.c(1204): warning:  #1-D: last line of file ends without a newline
+  }
+..\Mid\Src\port_lighteffect.c: 2 warnings, 0 errors
+"Cunzhu\Cunzhu.axf" - 33 Error(s), 64 Warning(s).
+
+<h2>Software Packages used:</h2>
+
+Package Vendor: ARM
+                http://www.keil.com/pack/ARM.CMSIS.5.2.0.pack
+                ARM.CMSIS.5.2.0
+                CMSIS (Cortex Microcontroller Software Interface Standard)
+   * Component: CORE Version: 5.0.2
+
+Package Vendor: Keil
+                http://www.keil.com/pack/Keil.STM32F1xx_DFP.2.3.0.pack
+                Keil.STM32F1xx_DFP.2.3.0
+                STMicroelectronics STM32F1 Series Device Support, Drivers and Examples
+
+<h2>Collection of Component include folders:</h2>
+  .\RTE\_Cunzhu
+  D:\keil5\ARM\PACK\ARM\CMSIS\5.2.0\CMSIS\Include
+  D:\keil5\ARM\PACK\Keil\STM32F1xx_DFP\2.3.0\Device\Include
+
+<h2>Collection of Component Files used:</h2>
+
+   * Component: ARM::CMSIS:CORE:5.0.2
+Target not created.
+Build Time Elapsed:  00:00:10
+</pre>
+</body>
+</html>

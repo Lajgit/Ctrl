@@ -1,24 +1,24 @@
 {
     "configurations": [
         {
-            "name": "Quzhu",
+            "name": "Cunzhu",
             "includePath": [
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Core\\Inc",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Drivers\\STM32F1xx_HAL_Driver\\Inc",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Drivers\\STM32F1xx_HAL_Driver\\Inc\\Legacy",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Drivers\\CMSIS\\Device\\ST\\STM32F1xx\\Include",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Drivers\\CMSIS\\Include",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Lib\\Inc",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Mid\\Inc",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Task\\Inc",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Core\\Inc",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Drivers\\STM32F1xx_HAL_Driver\\Inc",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Drivers\\STM32F1xx_HAL_Driver\\Inc\\Legacy",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Drivers\\CMSIS\\Device\\ST\\STM32F1xx\\Include",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Drivers\\CMSIS\\Include",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Lib\\Inc",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Mid\\Inc",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Task\\Inc",
                 "D:\\keil5\\ARM\\ARMCC\\include",
                 "D:\\keil5\\ARM\\ARMCC\\include\\rw",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\MDK-ARM",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Core\\Src",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Drivers\\STM32F1xx_HAL_Driver\\Src",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Lib\\Src",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Mid\\Src",
-                "e:\\1_Project\\CtrlBoard\\Quzhu\\Task\\Src"
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\MDK-ARM",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Core\\Src",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Drivers\\STM32F1xx_HAL_Driver\\Src",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Lib\\Src",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Mid\\Src",
+                "e:\\1_Project\\CtrlBoard\\Cunzhu\\Task\\Src"
             ],
             "defines": [
                 "USE_HAL_DRIVER",

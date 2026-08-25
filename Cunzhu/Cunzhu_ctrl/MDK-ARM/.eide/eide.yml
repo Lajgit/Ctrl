@@ -1,5 +1,5 @@
 version: "4.1"
-name: Quzhu
+name: Cunzhu
 type: ARM
 deviceName: null
 packDir: null
@@ -94,7 +94,7 @@ outDir: build
 miscInfo:
   uid: 509d122729a8585c9fb87413a5577b98
 targets:
-  Quzhu:
+  Cunzhu:
     cppPreprocessAttrs:
       defineList:
         - USE_HAL_DRIVER
@@ -109,7 +109,7 @@ targets:
         - ../Mid/Inc
         - ../Task/Inc
         - .cmsis/include
-        - RTE/_Quzhu
+        - RTE/_Cunzhu
       libList: []
     excludeList:
       - <virtual_root>/Task/FlashTask.c
@@ -238,7 +238,7 @@ targets:
         address: "0x8000000"
         bin: ""
         elFile: None
-        optionBytes: .eide/quzhu.st.option.bytes.ini
+        optionBytes: .eide/cunzhu.st.option.bytes.ini
         otherCmds: ""
         proType: SWD
         resetMode: default

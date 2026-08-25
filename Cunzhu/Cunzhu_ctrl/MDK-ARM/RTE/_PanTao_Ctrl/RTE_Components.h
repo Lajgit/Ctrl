@@ -3,8 +3,8 @@
  * Auto generated Run-Time-Environment Component Configuration File
  *      *** Do not modify ! ***
  *
- * Project: 'Quzhu' 
- * Target:  'Quzhu' 
+ * Project: 'Cunzhu' 
+ * Target:  'Cunzhu' 
  */
 
 #ifndef RTE_COMPONENTS_H
