@@ -5,9 +5,11 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.util.Log;
 
+import com.gouzhu.mqtt.DeviceCommandStore;
 import com.gouzhu.sdk.DeviceSdkManager;
 import com.gouzhu.transaction.TransactionOccupancyManager;
 import com.gouzhu.transaction.TransactionOccupancyPolicy;
+import com.pinball.xiaoda.device.sdk.client.DeviceApiException;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppPurchaseResult;
@@ -996,6 +998,9 @@ public final class PaymentManager {
                 consecutiveNetworkFailures = 0;
                 handlePurchaseResult(requestNo, result);
             } catch (Throwable error) {
+                if (handleMissingPurchaseIfSafe(requestNo, error)) {
+                    return;
+                }
                 Log.w(TAG, "恢复统一购珠订单查询失败，将按退避继续查询", error);
                 schedulePurchaseQueryAfterFailure(requestNo);
             }
@@ -1052,6 +1057,9 @@ public final class PaymentManager {
                 }
                 handlePurchaseResult(requestNo, result);
             } catch (Throwable error) {
+                if (handleMissingPurchaseIfSafe(requestNo, error)) {
+                    return;
+                }
                 Log.w(TAG, "统一购珠订单查询失败，将按退避继续查询原请求号", error);
                 broadcast(
                         EVENT_WAITING,
@@ -1063,6 +1071,69 @@ public final class PaymentManager {
                 schedulePurchaseQueryAfterFailure(requestNo);
             }
         }, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 服务端明确确认原统一购珠订单不存在时，只清理“无物理出珠证据”的孤儿 QR 会话。
+     * 若已有物理阶段或 active_physical_order，保持 BLOCKED，禁止自动释放高风险状态。
+     */
+    private synchronized boolean handleMissingPurchaseIfSafe(
+            String requestNo,
+            Throwable error
+    ) {
+        if (!isPurchaseNotFound(error) || !requestNo.equals(getCurrentOrderId())) {
+            return false;
+        }
+
+        cancelPurchaseQuery();
+        TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
+        if (!isSameQrSession(snapshot, requestNo)) {
+            Log.w(TAG, "服务端返回购珠订单不存在，但本地 QR 占用已不匹配，保持现状：requestNo="
+                    + requestNo);
+            return true;
+        }
+
+        boolean physicalPhase = TransactionOccupancyPolicy.isPhysicalPhase(snapshot.phase);
+        boolean activePhysicalOrder = new DeviceCommandStore(context).hasActivePhysicalOrder();
+        if (physicalPhase || activePhysicalOrder) {
+            setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_NOT_FOUND_WITH_PHYSICAL_STATE");
+            Log.e(TAG, "服务端返回购珠订单不存在，但检测到物理出珠状态，禁止自动清理：requestNo="
+                    + requestNo + "，phase=" + snapshot.phase
+                    + "，activePhysicalOrder=" + activePhysicalOrder);
+            broadcast(
+                    EVENT_FAILED,
+                    "原购珠订单在服务端不存在，但设备仍有物理出珠状态，请人工处理",
+                    requestNo,
+                    null,
+                    "ORDER_NOT_FOUND"
+            );
+            return true;
+        }
+
+        Log.w(TAG, "服务端明确返回购珠订单不存在，清理无物理出珠证据的残留会话：requestNo="
+                + requestNo);
+        if (!occupancy.release(snapshot.sessionId, "purchase order not found", true)) {
+            setStage(STAGE_BLOCKED);
+            occupancy.markBlocked("PAYMENT_NOT_FOUND_RELEASE_FAILED");
+            broadcast(
+                    EVENT_FAILED,
+                    "原购珠订单已不存在，但本地残留会话释放失败，请人工处理",
+                    requestNo,
+                    null,
+                    "ORDER_NOT_FOUND_RELEASE_FAILED"
+            );
+            return true;
+        }
+
+        broadcast(
+                EVENT_CLOSED,
+                "原购珠订单已不存在，已自动清理本地残留会话",
+                requestNo,
+                null,
+                "ORDER_NOT_FOUND"
+        );
+        return true;
     }
 
     private synchronized void schedulePurchaseQueryAfterFailure(String requestNo) {
@@ -1361,7 +1432,7 @@ public final class PaymentManager {
             return "支付成功，等待平台出珠";
         }
         if ("AUTH_CODE".equals(mode) || isAuthCodeSubmitted()) {
-            return "付款码已提交，正在确认支付结果";
+            return "付款码已提交，正在确认结果，请勿重复出示";
         }
         if ("SCAN".equals(mode)) {
             return "已选择扫码支付，正在确认支付结果";
@@ -1564,6 +1635,18 @@ public final class PaymentManager {
         }
         int visible = Math.min(4, content.length());
         return "***" + content.substring(content.length() - visible);
+    }
+
+    private static boolean isPurchaseNotFound(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof DeviceApiException
+                    && safe(current.getMessage()).contains("设备扫码购珠订单不存在")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private static String messageOf(Throwable error) {
