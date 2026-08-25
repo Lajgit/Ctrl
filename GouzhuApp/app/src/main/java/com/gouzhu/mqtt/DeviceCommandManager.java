@@ -2,6 +2,7 @@ package com.gouzhu.mqtt;
 
 import android.content.Context;
 import android.database.Cursor;
+import android.util.Log;
 
 import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.redemption.InternalRedemptionManager;
@@ -31,6 +32,7 @@ public final class DeviceCommandManager {
     public static final String COLLECTION_FINISHED = "finished";
     public static final String COLLECTION_FAILED = "failed";
 
+    private static final String STATUS_TAG = "GouzhuStatusDiag";
     private static final long MIN_COLLECTION_STATE_VERSION = 0x02020002L;
 
     private static volatile DeviceCommandManager instance;
@@ -266,25 +268,71 @@ public final class DeviceCommandManager {
 
     public int getRunningStatus() {
         BoardConnectionMonitor boardMonitor = BoardConnectionMonitor.get(context);
-        if (boardMonitor.isStateKnown() && !boardMonitor.isConnected()) {
-            return 2;
-        }
-        // 人工结案删除原暂停会话后，历史继续记录不得继续占用运行状态。
-        if (continuationReady && store.hasActivePhysicalOrder()) {
-            int continuationStatus = continuationManager.getRunningStatus();
-            if (continuationStatus != 0) {
-                return continuationStatus;
-            }
-        }
+        boolean boardStateKnown = boardMonitor.isStateKnown();
+        boolean boardConnected = boardMonitor.isConnected();
+        DeviceCommandStore.ActivePhysicalOrder active = store.loadActivePhysicalOrder();
+        boolean activePhysicalOrder = active != null;
+        boolean physicalBlocked = store.isPhysicalBlocked();
+        boolean cashBlocked = store.isCashBlocked();
         TransactionOccupancyManager.Snapshot snapshot = occupancy.current();
-        if (snapshot != null) {
+        int continuationStatus = continuationReady && activePhysicalOrder
+                ? continuationManager.getRunningStatus()
+                : 0;
+        int resolutionStatus = resolutionManager.getRunningStatus();
+
+        int runningStatus;
+        String reason;
+        if (boardStateKnown && !boardConnected) {
+            runningStatus = 2;
+            reason = "BOARD_DISCONNECTED";
+        } else if (continuationStatus != 0) {
+            runningStatus = continuationStatus;
+            reason = "CONTINUATION_STATUS";
+        } else if (snapshot != null) {
             if (TransactionOccupancyManager.PHASE_BLOCKED.equals(snapshot.phase)
                     || TransactionOccupancyManager.PHASE_REFUNDING.equals(snapshot.phase)) {
-                return 2;
+                runningStatus = 2;
+                reason = "OCCUPANCY_FAULT";
+            } else {
+                runningStatus = 1;
+                reason = "OCCUPANCY_ACTIVE";
             }
-            return 1;
+        } else {
+            runningStatus = resolutionStatus;
+            reason = resolutionStatus == 0 ? "IDLE" : "RESOLUTION_STATUS";
         }
-        return resolutionManager.getRunningStatus();
+
+        /*
+         * OperationResolutionManager 当前只有 active physical、physical_blocked、cash_blocked
+         * 和 local-reset 四类故障来源；前三项都为 false 而 resolutionStatus=2 时，
+         * 可以精确定位为 manual_operation_local_reset_required 门禁仍未解除。
+         */
+        boolean localResetRequired = snapshot == null
+                && !activePhysicalOrder
+                && !physicalBlocked
+                && !cashBlocked
+                && resolutionStatus == 2;
+
+        Log.i(
+                STATUS_TAG,
+                "设备状态判定：runningStatus=" + runningStatus
+                        + "，reason=" + reason
+                        + "，boardStateKnown=" + boardStateKnown
+                        + "，boardConnected=" + boardConnected
+                        + "，boardVersion=0x" + Long.toHexString(store.getBoardVersion())
+                        + "，occupancyOwner=" + (snapshot == null ? "NONE" : snapshot.ownerType)
+                        + "，occupancyPhase=" + (snapshot == null ? "IDLE" : snapshot.phase)
+                        + "，occupancyBlockedReason="
+                        + (snapshot == null ? "" : snapshot.blockedReason)
+                        + "，activePhysicalOrder=" + activePhysicalOrder
+                        + "，activePhysicalState=" + (active == null ? "NONE" : active.state)
+                        + "，physicalBlocked=" + physicalBlocked
+                        + "，cashBlocked=" + cashBlocked
+                        + "，localResetRequired=" + localResetRequired
+                        + "，continuationStatus=" + continuationStatus
+                        + "，resolutionStatus=" + resolutionStatus
+        );
+        return runningStatus;
     }
 
     public void requestActivePhysicalOrderState() {
