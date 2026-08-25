@@ -280,8 +280,9 @@ public final class MqttManager implements MqttTransport {
         try {
             DeviceCommandStore commandStore = new DeviceCommandStore(context);
             String boardVersion = DeviceUtil.formatBoardVersion(commandStore.getBoardVersion());
+            int runningStatus = DeviceCommandManager.get(context).getRunningStatus();
             JSONObject json = new JSONObject();
-            json.put("runningStatus", DeviceCommandManager.get(context).getRunningStatus());
+            json.put("runningStatus", runningStatus);
             json.put("publicIp", "");
             json.put("privateIp", getPrivateIp());
             json.put("networkType", getNetworkType());
@@ -291,7 +292,15 @@ public final class MqttManager implements MqttTransport {
             json.put("firmwareVersion", boardVersion);
             json.put("firmwareVersionCode", DeviceUtil.parseBoardVersionCode(boardVersion));
             json.put("timestamp", System.currentTimeMillis());
-            return publishReport("status", json.toString());
+            boolean published = publishReport("status", json.toString());
+            Log.i(
+                    TAG,
+                    "设备状态上报：runningStatus=" + runningStatus
+                            + "，firmwareVersion=" + boardVersion
+                            + "，mqttConnected=" + isConnected()
+                            + "，published=" + published
+            );
+            return published;
         } catch (Throwable error) {
             Log.e(TAG, "状态上报失败", error);
             return false;
