@@ -286,19 +286,26 @@ public final class DeviceCommandManager {
             runningStatus = 2;
             reason = "BOARD_DISCONNECTED";
         } else if (continuationStatus != 0) {
-            runningStatus = continuationStatus;
+            // 售珠机物理继续出珠沿用内部1态，但对平台必须上报DISPENSING(5)。
+            runningStatus = continuationStatus == 1 ? 5 : continuationStatus;
             reason = "CONTINUATION_STATUS";
         } else if (snapshot != null) {
             if (TransactionOccupancyManager.PHASE_BLOCKED.equals(snapshot.phase)
                     || TransactionOccupancyManager.PHASE_REFUNDING.equals(snapshot.phase)) {
                 runningStatus = 2;
                 reason = "OCCUPANCY_FAULT";
+            } else if (TransactionOccupancyManager.PHASE_DISPENSING.equals(snapshot.phase)
+                    || TransactionOccupancyManager.PHASE_FINISHING.equals(snapshot.phase)) {
+                // 售珠机只有真实物理出珠阶段才上报5；等待支付等业务占用仍按IDLE上报。
+                runningStatus = 5;
+                reason = "OCCUPANCY_DISPENSING";
             } else {
-                runningStatus = 1;
-                reason = "OCCUPANCY_ACTIVE";
+                runningStatus = 0;
+                reason = "OCCUPANCY_NON_PHYSICAL";
             }
         } else {
-            runningStatus = resolutionStatus;
+            // 首轮物理出珠恢复路径内部仍使用1表示执行中，这里只转换平台运行状态值。
+            runningStatus = resolutionStatus == 1 ? 5 : resolutionStatus;
             reason = resolutionStatus == 0 ? "IDLE" : "RESOLUTION_STATUS";
         }
 
