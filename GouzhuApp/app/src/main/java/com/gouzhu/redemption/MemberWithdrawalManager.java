@@ -10,7 +10,6 @@ import com.gouzhu.transaction.TransactionOccupancyManager;
 import com.pinball.xiaoda.device.sdk.client.DeviceApiException;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppMemberWithdrawalResult;
-import com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting;
 
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -82,11 +81,6 @@ public final class MemberWithdrawalManager {
                 RedemptionCapabilityResolver.memberWithdrawal(bootstrap);
         if (!gate.visible || !gate.available) {
             broadcastMessage(firstNonBlank(gate.unavailableReason, "会员取珠当前不可用"), STATE_FAILED, "");
-            return false;
-        }
-        DeviceAppRedemptionRouting routing = bootstrap == null ? null : bootstrap.getRedemptionRouting();
-        if (routing == null || routing.getMemberWithdrawal() == null) {
-            broadcastMessage("会员取珠扫码路由尚未加载", STATE_FAILED, "");
             return false;
         }
         if (!occupancy.canStartNewTransaction()) {
@@ -192,12 +186,9 @@ public final class MemberWithdrawalManager {
             if (session == null || !requestNo.equals(session.clientRequestNo)) {
                 return;
             }
-            DeviceAppBootstrapResult bootstrap = sdkManager.getLastBootstrap();
-            DeviceAppRedemptionRouting routing = RedemptionCapabilityResolver.requireRouting(bootstrap);
             raw = new String(sensitiveCode);
-            DeviceAppMemberWithdrawalResult result = sdkManager.createMemberWithdrawalFromRoutedCode(
+            DeviceAppMemberWithdrawalResult result = sdkManager.createMemberWithdrawal(
                     requestNo,
-                    routing,
                     raw
             );
             applyResult(requestNo, result);
