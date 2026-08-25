@@ -37,10 +37,19 @@ public class MainActivity extends AppCompatActivity {
     private TextView actualText;
     private TextView errorText;
     private boolean receiverRegistered;
+    private String activationStatusMessage = "等待激活状态";
+    private String mqttStatusMessage = "未连接";
+    private String serviceStatusMessage = "服务尚未上报状态";
+    private String lastRuntimeMessage = "";
 
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            if (intent != null && AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())) {
+                String key = intent.getStringExtra("key");
+                String value = intent.getStringExtra("value");
+                updateRuntimeMessage(key, value);
+            }
             refreshStatus();
         }
     };
@@ -182,20 +191,40 @@ public class MainActivity extends AppCompatActivity {
         refreshStatus();
     }
 
+    private void updateRuntimeMessage(String key, String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return;
+        }
+        String text = value.trim();
+        if ("mqtt".equals(key)) {
+            mqttStatusMessage = text;
+        } else if ("activation".equals(key)) {
+            activationStatusMessage = text;
+        } else if ("service".equals(key)) {
+            serviceStatusMessage = text;
+        }
+        if (text.contains("失败") || text.contains("错误") || text.contains("断开")) {
+            lastRuntimeMessage = text;
+        }
+    }
+
     private void refreshStatus() {
         ActivationStore activationStore = new ActivationStore(this);
         DeviceStateRepository stateRepository = DeviceStateRepository.get(this);
         DepositSession session = stateRepository.getSession();
-        activationText.setText("激活状态: " + (activationStore.isActivated() ? "已激活" : "未激活"));
-        deviceNoText.setText("deviceNo: " + DeviceUtil.getDeviceNo(this));
-        mqttText.setText("MQTT: " + (MqttManager.get(this).isConnected() ? "已连接" : "未连接"));
-        serialText.setText("串口: " + AppConfig.DEFAULT_BOARD_SERIAL_PORT
-                + " / "
+        int runningStatus = stateRepository.getRunningStatus();
+        activationText.setText("激活\n" + (activationStore.isActivated() ? "已激活" : "未激活")
+                + " · " + activationStatusMessage);
+        deviceNoText.setText("设备号\n" + emptyAsDash(DeviceUtil.getDeviceNo(this)));
+        mqttText.setText("MQTT\n" + (MqttManager.get(this).isConnected() ? "已连接" : mqttStatusMessage));
+        serialText.setText("控制板串口\n" + AppConfig.DEFAULT_BOARD_SERIAL_PORT
+                + " · " + AppConfig.DEFAULT_BOARD_BAUD_RATE + "bps · "
                 + (BoardSerialPort.get(this).isOpen() ? "已打开" : "未打开"));
-        runningText.setText("runningStatus: " + stateRepository.getRunningStatus());
-        operationText.setText("operationNo: " + (session == null ? "" : session.operationNo));
-        maximumText.setText("maximumQuantity: " + (session == null ? 0 : session.maximumQuantity));
-        actualText.setText("actualQuantity: " + (session == null ? 0 : session.actualQuantity));
+        runningText.setText("运行状态\n" + runningStatus + " · " + describeRunningStatus(runningStatus)
+                + " · " + serviceStatusMessage);
+        operationText.setText("业务单号\n" + (session == null ? "-" : emptyAsDash(session.operationNo)));
+        maximumText.setText("最大收珠数\n" + (session == null ? 0 : session.maximumQuantity));
+        actualText.setText("已确认收珠\n" + (session == null ? 0 : session.actualQuantity));
         String error = stateRepository.getLastError();
         if ((error == null || error.isEmpty()) && session != null) {
             error = session.errorMessage;
@@ -203,6 +232,30 @@ public class MainActivity extends AppCompatActivity {
         if (error == null || error.isEmpty()) {
             error = BoardSerialPort.get(this).getLastError();
         }
-        errorText.setText("最后错误: " + (error == null || error.isEmpty() ? "无" : error));
+        if ((error == null || error.isEmpty()) && !lastRuntimeMessage.isEmpty()) {
+            error = lastRuntimeMessage;
+        }
+        errorText.setText("最后错误\n" + (error == null || error.isEmpty() ? "无" : error));
+    }
+
+    private static String describeRunningStatus(int status) {
+        switch (status) {
+            case AppConfig.STATUS_IDLE:
+                return "空闲";
+            case AppConfig.STATUS_FAULT:
+                return "故障";
+            case AppConfig.STATUS_MAINTENANCE:
+                return "维护";
+            case AppConfig.STATUS_UPGRADING:
+                return "升级";
+            case AppConfig.STATUS_COLLECTING:
+                return "收珠中";
+            default:
+                return "未知";
+        }
+    }
+
+    private static String emptyAsDash(String value) {
+        return value == null || value.trim().isEmpty() ? "-" : value.trim();
     }
 }
