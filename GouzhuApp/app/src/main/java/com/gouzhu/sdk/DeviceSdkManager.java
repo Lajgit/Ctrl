@@ -208,23 +208,12 @@ public final class DeviceSdkManager {
         return newAppClient().payByAuthCode(clientRequestNo, authCode);
     }
 
+    /** 会员账户取珠二维码必须传入完整 PXD1:AWD 原文，由 SDK 严格校验。 */
     public DeviceAppMemberWithdrawalResult createMemberWithdrawal(
             String clientRequestNo,
-            String withdrawalCode
+            String qrContent
     ) {
-        return newAppClient().createMemberWithdrawal(clientRequestNo, withdrawalCode);
-    }
-
-    public DeviceAppMemberWithdrawalResult createMemberWithdrawalFromRoutedCode(
-            String clientRequestNo,
-            DeviceAppRedemptionRouting routing,
-            String scannedCode
-    ) {
-        return newAppClient().createMemberWithdrawalFromRoutedCode(
-                clientRequestNo,
-                routing,
-                scannedCode
-        );
+        return newAppClient().createMemberWithdrawal(clientRequestNo, qrContent);
     }
 
     public DeviceAppMemberWithdrawalResult queryMemberWithdrawal(String clientRequestNo) {
@@ -265,17 +254,12 @@ public final class DeviceSdkManager {
         return newAppClient().createInternalRedemption(clientRequestNo, pickupCode);
     }
 
-    /** 官方小程序套餐券使用 bootstrap.redemptionRouting 的路由规则，设备端不写死券码前缀。 */
-    public DeviceAppInternalRedemptionResult createInternalRedemptionFromRoutedCode(
+    /** 套餐二维码必须传入完整 PXD1:PCK 原文，由 SDK 严格校验。 */
+    public DeviceAppInternalRedemptionResult createInternalRedemptionByQr(
             String clientRequestNo,
-            DeviceAppRedemptionRouting routing,
-            String scannedCode
+            String qrContent
     ) {
-        return newAppClient().createInternalRedemptionFromRoutedCode(
-                clientRequestNo,
-                routing,
-                scannedCode
-        );
+        return newAppClient().createInternalRedemptionByQr(clientRequestNo, qrContent);
     }
 
     public DeviceAppInternalRedemptionResult queryInternalRedemption(String clientRequestNo) {
