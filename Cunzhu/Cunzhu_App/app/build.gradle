@@ -15,7 +15,7 @@ android {
         minSdk 33
         targetSdk 36
         versionCode 1
-        versionName "1.0"
+        versionName "1.0.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -37,6 +37,9 @@ dependencies {
     implementation libs.appcompat
     implementation libs.constraintlayout
     implementation libs.material
+    implementation files('libs/xiaoda-device-sdk-0.3.0.jar')
+    implementation files('libs/xiaoda-device-mqtt-0.3.0.jar')
+    implementation files('libs/xiaoda-device-hardware-0.3.0.jar')
     testImplementation libs.junit
     androidTestImplementation libs.espresso.core
     androidTestImplementation libs.ext.junit

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="存珠机注册激活"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/text_activation_device"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_activation_status"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_activation_claim_code"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_activation_qr"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_activation_error"
+            style="@style/DebugText" />
+    </LinearLayout>
+</ScrollView>

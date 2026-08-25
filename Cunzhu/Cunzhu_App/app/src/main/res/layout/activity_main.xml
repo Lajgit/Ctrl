@@ -1,19 +1,96 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
-    <TextView
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Hello World!"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+        android:orientation="vertical"
+        android:padding="20dp">
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+        <TextView
+            android:id="@+id/text_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="存珠机调试首页"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/text_activation_state"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_device_no"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_mqtt_state"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_serial_state"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_running_status"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_operation_no"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_maximum_quantity"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_actual_quantity"
+            style="@style/DebugText" />
+
+        <TextView
+            android:id="@+id/text_last_error"
+            style="@style/DebugText" />
+
+        <Button
+            android:id="@+id/button_open_serial"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="打开串口" />
+
+        <Button
+            android:id="@+id/button_close_serial"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="关闭串口" />
+
+        <Button
+            android:id="@+id/button_sim_start"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="模拟开始收珠" />
+
+        <Button
+            android:id="@+id/button_sim_add"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="模拟增加 1 颗" />
+
+        <Button
+            android:id="@+id/button_sim_finish"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="模拟结束收珠" />
+
+        <Button
+            android:id="@+id/button_report_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="上报当前状态" />
+    </LinearLayout>
+
+</ScrollView>
