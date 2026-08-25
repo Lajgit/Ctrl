@@ -10,7 +10,6 @@ import com.gouzhu.transaction.TransactionOccupancyManager;
 import com.pinball.xiaoda.device.sdk.client.DeviceApiException;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppInternalRedemptionResult;
-import com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting;
 
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -89,12 +88,6 @@ public final class InternalRedemptionManager {
                     STATE_FAILED,
                     ""
             );
-            return false;
-        }
-        DeviceAppRedemptionRouting routing =
-                bootstrap == null ? null : bootstrap.getRedemptionRouting();
-        if (routing == null || routing.getInternalRedemption() == null) {
-            broadcastMessage("券码核销扫码路由尚未加载", STATE_FAILED, "");
             return false;
         }
         if (!occupancy.canStartNewTransaction()) {
@@ -208,17 +201,10 @@ public final class InternalRedemptionManager {
             if (session == null || !requestNo.equals(session.clientRequestNo)) {
                 return;
             }
-            DeviceAppBootstrapResult bootstrap = sdkManager.getLastBootstrap();
-            DeviceAppRedemptionRouting routing =
-                    RedemptionCapabilityResolver.requireRouting(bootstrap);
-            if (routing.getInternalRedemption() == null) {
-                throw new IllegalStateException("券码核销路由已失效");
-            }
             raw = new String(sensitiveCode);
             DeviceAppInternalRedemptionResult result =
-                    sdkManager.createInternalRedemptionFromRoutedCode(
+                    sdkManager.createInternalRedemptionByQr(
                             requestNo,
-                            routing,
                             raw
                     );
             applyResult(requestNo, result);
