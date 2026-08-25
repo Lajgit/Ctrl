@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -29,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class DeviceService extends Service {
 
+    private static final String TAG = "CunzhuService";
     private static final long RETRY_DELAY_MS = 30_000L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -78,12 +80,17 @@ public final class DeviceService extends Service {
         }
         activationRepository = new ActivationRepository(this);
         MqttCredential storedCredential = activationRepository.loadCredential();
-        if (storedCredential != null && new ActivationStore(this).isActivated()) {
-            broadcastStatus("activation", "已检测到本地激活凭证，开始连接 MQTT");
-            connectMqtt(storedCredential);
-            return;
+        ActivationStore activationStore = new ActivationStore(this);
+        if (storedCredential != null && activationStore.isActivated()) {
+            /*
+             * MQTT 对接文档要求日常启动必须先 reactivate 刷新正式 MQTT 凭证，
+             * 不能直接长期复用本地旧 broker/clientId/password。
+             */
+            broadcastStatus("activation", "检测到本地凭证，正在重新激活刷新 MQTT 凭证");
+            Log.i(TAG, "检测到本地 MQTT 凭证，先执行 reactivate 刷新后再连接 MQTT");
+        } else {
+            broadcastStatus("activation", "正在执行设备注册激活");
         }
-        broadcastStatus("activation", "正在执行设备注册激活");
         activationRepository.start(new ActivationRepository.Callback() {
             @Override
             public void onWaitingClaim(String qrContent, String claimCode) {
@@ -93,7 +100,7 @@ public final class DeviceService extends Service {
 
             @Override
             public void onActivated(MqttCredential credential) {
-                broadcastActivation("设备激活成功", null, null, null);
+                broadcastActivation("设备激活成功，开始连接 MQTT", null, null, null);
                 connectMqtt(credential);
             }
 
