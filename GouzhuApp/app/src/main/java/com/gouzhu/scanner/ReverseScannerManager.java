@@ -11,9 +11,10 @@ import com.gouzhu.payment.PaymentManager;
 import com.gouzhu.redemption.InternalRedemptionManager;
 import com.gouzhu.redemption.MemberWithdrawalManager;
 import com.gouzhu.redemption.ThirdPartyRedemptionManager;
-import com.gouzhu.sdk.DeviceSdkManager;
-import com.pinball.xiaoda.device.sdk.client.DeviceAppBootstrapResult;
-import com.pinball.xiaoda.device.sdk.client.DeviceAppRedemptionRouting;
+import com.pinball.xiaoda.device.sdk.core.DeviceSdkException;
+import com.pinball.xiaoda.device.sdk.core.InternalQrCodeCodec;
+import com.pinball.xiaoda.device.sdk.core.InternalQrPayload;
+import com.pinball.xiaoda.device.sdk.core.InternalQrType;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -300,8 +301,8 @@ public final class ReverseScannerManager {
         lastScanAt = now;
 
         /*
-         * 会员取珠和官方券码按本次 bootstrap 下发的路由前缀过滤普通二维码。
-         * 抖音/美团团购券码为纯数字，渠道由用户预先选择，券码有效性继续交给服务端 prepare 校验。
+         * 抖音/美团团购券码保持原逻辑：渠道由用户预先选择，原始券码直接交给服务端 prepare。
+         * 内部会员/套餐二维码不再读取 bootstrap 前缀，统一由 SDK InternalQrCodeCodec 解码。
          */
         ThirdPartyRedemptionManager thirdParty = ThirdPartyRedemptionManager.get(context);
         if (thirdParty.isWaitingForScan()) {
@@ -318,10 +319,13 @@ public final class ReverseScannerManager {
 
         MemberWithdrawalManager member = MemberWithdrawalManager.get(context);
         if (member.isWaitingForScan()) {
-            if (!matchesMemberWithdrawalRoute(content)) {
+            InternalQrType qrType = decodeInternalQrType(rawContent);
+            if (qrType != InternalQrType.ACCOUNT_WITHDRAWAL) {
                 broadcast(
                         EVENT_SCAN_UNSUPPORTED,
-                        "非会员取珠二维码，请重新扫码",
+                        isUnsupportedInternalQrType(qrType)
+                                ? "当前售珠机不支持该内部二维码"
+                                : "非会员取珠二维码，请重新扫码",
                         TYPE_MEMBER_WITHDRAWAL,
                         ""
                 );
@@ -340,10 +344,13 @@ public final class ReverseScannerManager {
 
         InternalRedemptionManager internal = InternalRedemptionManager.get(context);
         if (internal.isWaitingForScan()) {
-            if (!matchesInternalRedemptionRoute(content)) {
+            InternalQrType qrType = decodeInternalQrType(rawContent);
+            if (qrType != InternalQrType.PICKUP) {
                 broadcast(
                         EVENT_SCAN_UNSUPPORTED,
-                        "非官方套餐核销二维码，请重新扫码",
+                        isUnsupportedInternalQrType(qrType)
+                                ? "当前售珠机不支持该内部二维码"
+                                : "非官方套餐核销二维码，请重新扫码",
                         TYPE_INTERNAL_REDEMPTION,
                         ""
                 );
@@ -384,60 +391,18 @@ public final class ReverseScannerManager {
         );
     }
 
-    /** 会员取珠只接受本次 bootstrap 下发的会员码前缀，普通二维码不进入提交态。 */
-    private boolean matchesMemberWithdrawalRoute(String content) {
-        DeviceAppRedemptionRouting routing = currentRedemptionRouting();
-        if (routing == null || routing.getMemberWithdrawal() == null) {
-            return false;
-        }
-        return matchesPrefix(
-                content,
-                readRoutePrefix(routing.getMemberWithdrawal(), "getCodePrefix")
-        );
-    }
-
-    /** 官方套餐核销只接受本次 bootstrap 下发的内部核销码前缀。 */
-    private boolean matchesInternalRedemptionRoute(String content) {
-        DeviceAppRedemptionRouting routing = currentRedemptionRouting();
-        if (routing == null || routing.getInternalRedemption() == null) {
-            return false;
-        }
-        return matchesPrefix(
-                content,
-                readRoutePrefix(routing.getInternalRedemption(), "getCodePrefix")
-        );
-    }
-
-    private DeviceAppRedemptionRouting currentRedemptionRouting() {
-        DeviceAppBootstrapResult bootstrap = DeviceSdkManager.get(context).getLastBootstrap();
-        return bootstrap == null ? null : bootstrap.getRedemptionRouting();
-    }
-
-    /** 兼容当前 SDK 只读路由模型，通过协议约定的 getter 读取前缀，读取失败时安全拒绝。 */
-    private static String readRoutePrefix(Object rule, String getterName) {
-        if (rule == null || getterName == null || getterName.isEmpty()) {
-            return "";
-        }
+    /** 内部二维码只交给 SDK 解码，格式、版本、类型和 token 都不在 App 中手写解析。 */
+    private static InternalQrType decodeInternalQrType(String qrContent) {
         try {
-            Object value = rule.getClass().getMethod(getterName).invoke(rule);
-            return value == null ? "" : String.valueOf(value).trim();
-        } catch (Throwable error) {
-            Log.w(
-                    TAG,
-                    "读取扫码路由前缀失败：getter=" + getterName
-                            + "，type=" + rule.getClass().getSimpleName()
-            );
-            return "";
+            InternalQrPayload payload = InternalQrCodeCodec.decode(qrContent);
+            return payload == null ? null : payload.getType();
+        } catch (DeviceSdkException error) {
+            return null;
         }
     }
 
-    /** 路由前缀必须非空，且二维码不能只有协议前缀本身。 */
-    private static boolean matchesPrefix(String content, String prefix) {
-        String value = content == null ? "" : content.trim();
-        String expected = prefix == null ? "" : prefix.trim();
-        return !expected.isEmpty()
-                && value.startsWith(expected)
-                && value.length() > expected.length();
+    private static boolean isUnsupportedInternalQrType(InternalQrType qrType) {
+        return qrType == InternalQrType.MEMBER || qrType == InternalQrType.GIFT;
     }
 
     /** 线路空闲短帧只做低频 Debug 统计，避免污染正常联调日志。 */
