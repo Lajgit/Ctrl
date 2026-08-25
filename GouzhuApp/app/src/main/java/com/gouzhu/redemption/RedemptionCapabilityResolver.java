@@ -9,10 +9,10 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 根据本次 bootstrap 动态解析会员取珠和第三方团购核销能力。
+ * 根据本次 bootstrap 动态解析会员取珠、套餐取珠和第三方团购核销能力。
  *
- * <p>设备只信任服务端下发的 feature 与 redemptionRouting，不使用本地旧缓存强行开放
- * 入口，也不根据扫码内容猜测抖音/美团渠道。</p>
+ * <p>会员取珠和套餐二维码使用 SDK 固定 PXD1 协议，不再依赖 bootstrap 内部码路由；
+ * 第三方团购仍只信任 redemptionRouting 白名单，不根据扫码内容猜测抖音/美团渠道。</p>
  */
 public final class RedemptionCapabilityResolver {
 
@@ -29,24 +29,9 @@ public final class RedemptionCapabilityResolver {
         return feature(bootstrap, FEATURE_MEMBER_WITHDRAW);
     }
 
-    /** 官方小程序套餐券核销必须同时具备 feature 和 internalRedemption 路由。 */
+    /** 官方小程序套餐二维码使用 SDK 固定 PXD1 协议，只由 feature 控制入口可用性。 */
     public static FeatureGate internalRedemption(DeviceAppBootstrapResult bootstrap) {
-        FeatureGate gate = feature(bootstrap, FEATURE_INTERNAL_REDEMPTION);
-        if (!gate.visible || !gate.available) {
-            return gate;
-        }
-        if (bootstrap == null
-                || bootstrap.getRedemptionRouting() == null
-                || bootstrap.getRedemptionRouting().getInternalRedemption() == null) {
-            return new FeatureGate(
-                    true,
-                    false,
-                    gate.title,
-                    gate.description,
-                    "券码核销路由尚未加载"
-            );
-        }
-        return gate;
+        return feature(bootstrap, FEATURE_INTERNAL_REDEMPTION);
     }
 
     public static FeatureGate thirdPartyRedemption(DeviceAppBootstrapResult bootstrap) {
