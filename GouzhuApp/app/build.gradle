@@ -57,9 +57,9 @@ dependencies {
     implementation libs.constraintlayout
     implementation libs.material
 
-    implementation files('libs/xiaoda-device-sdk-0.1.0.jar')
-    implementation files('libs/xiaoda-device-mqtt-0.1.0.jar')
-    implementation files('libs/xiaoda-device-hardware-0.1.0.jar')
+    implementation files('libs/xiaoda-device-sdk-0.3.0.jar')
+    implementation files('libs/xiaoda-device-mqtt-0.3.0.jar')
+    implementation files('libs/xiaoda-device-hardware-0.3.0.jar')
 
     // 现有传输层暂时使用宿主 Paho；业务命令、结果和硬件映射均使用新版 SDK。
     implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
