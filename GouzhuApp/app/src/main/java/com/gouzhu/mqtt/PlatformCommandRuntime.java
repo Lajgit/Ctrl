@@ -87,6 +87,7 @@ final class PlatformCommandRuntime {
     private long lastCashDeviceStatus = Long.MIN_VALUE;
     private volatile boolean controllerVersionKnown;
     private volatile boolean controllerProtocolReady;
+    private volatile boolean controllerRecoveryCompleted;
     private volatile CountDownLatch controllerVersionLatch;
 
     private final SerialMarbleHardwareAdapter.Observer hardwareObserver =
@@ -168,6 +169,7 @@ final class PlatformCommandRuntime {
         cashAdapter.markApplied(store.getCashConfigVersion());
         controllerVersionKnown = false;
         controllerProtocolReady = false;
+        controllerRecoveryCompleted = false;
         cashAdapter.setProtocolV22Ready(false);
         cashAdapter.disableCashAcceptance();
         CountDownLatch versionLatch = new CountDownLatch(1);
@@ -182,28 +184,21 @@ final class PlatformCommandRuntime {
         }
         if (!controllerProtocolReady) {
             cashAdapter.disableCashAcceptance();
+            long lastPersistedBoardVersion = store.getBoardVersion();
+            String versionDetail = controllerVersionKnown
+                    ? "boardVersion=" + Long.toUnsignedString(lastPersistedBoardVersion)
+                    : "boardVersion=unavailable, lastPersistedBoardVersion="
+                            + Long.toUnsignedString(lastPersistedBoardVersion);
             MqttManager.get(context).reportFault(
                     "CONTROLLER_PROTOCOL_UNSUPPORTED",
                     "controller protocol version is below 2.2.0.0 or unavailable",
                     3,
-                    "boardVersion=" + Long.toUnsignedString(store.getBoardVersion())
+                    versionDetail
             );
             return;
         }
 
-        int cleanedCashEvents = cleanupCompletedCashEvents();
-        if (cleanedCashEvents > 0) {
-            Log.i(TAG, "已清理完成的历史现金事件：" + cleanedCashEvents);
-        }
-
-        SerialManager.get(context).sendCommand(CMD_HARDWARE_STATUS, 0L, false);
-        recoverActivePhysicalOrder();
-        discardInterruptedCashConfiguration();
-        if (canEnableCash()) {
-            reapplyCashConfiguration();
-        } else {
-            cashAdapter.disableCashAcceptance();
-        }
+        completeControllerRecoveryOnce();
     }
 
     synchronized void stop() {
@@ -214,8 +209,41 @@ final class PlatformCommandRuntime {
             }
             receiverRegistered = false;
         }
+        controllerRecoveryCompleted = false;
         cashAdapter.stop();
         marbleAdapter.stop();
+    }
+
+    /**
+     * 控制板协议确认后只执行一次启动恢复。
+     * 启动阶段版本查询若超时，后续重连收到有效 VersionReport 时仍会从这里自动补恢复。
+     */
+    private synchronized void completeControllerRecoveryOnce() {
+        if (!controllerProtocolReady || controllerRecoveryCompleted) {
+            return;
+        }
+        controllerRecoveryCompleted = true;
+        try {
+            int cleanedCashEvents = cleanupCompletedCashEvents();
+            if (cleanedCashEvents > 0) {
+                Log.i(TAG, "已清理完成的历史现金事件：" + cleanedCashEvents);
+            }
+
+            SerialManager.get(context).sendCommand(CMD_HARDWARE_STATUS, 0L, false);
+            recoverActivePhysicalOrder();
+            discardInterruptedCashConfiguration();
+            if (canEnableCash()) {
+                reapplyCashConfiguration();
+            } else {
+                cashAdapter.disableCashAcceptance();
+            }
+            Log.i(TAG, "控制板协议已确认，启动恢复流程完成：boardVersion=0x"
+                    + Long.toHexString(store.getBoardVersion()));
+        } catch (Throwable error) {
+            controllerRecoveryCompleted = false;
+            cashAdapter.disableCashAcceptance();
+            Log.e(TAG, "控制板启动恢复流程失败，等待后续版本帧重试", error);
+        }
     }
 
     void handleCommand(String topic, byte[] payload) {
@@ -871,6 +899,9 @@ final class PlatformCommandRuntime {
                             3,
                             "boardVersion=" + Long.toUnsignedString(packed)
                     );
+                } else {
+                    // 启动时版本查询即使已经超时，后续重连收到有效版本也必须补执行恢复。
+                    completeControllerRecoveryOnce();
                 }
                 MqttManager.get(context).reportStatus();
                 break;
