@@ -1,11 +1,14 @@
 package com.gouzhu.payment;
 
+import android.app.ActivityManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.util.Log;
 
+import com.gouzhu.MainActivity;
 import com.gouzhu.transaction.TransactionOccupancyManager;
 
 /**
@@ -46,6 +49,20 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
                         "忽略非待支付阶段统一支付窗口：requestNo=" + requestNo
                                 + "，owner=" + (snapshot == null ? "NONE" : snapshot.ownerType)
                                 + "，phase=" + (snapshot == null ? "NONE" : snapshot.phase)
+                );
+                return;
+            }
+
+            /*
+             * DeviceService 会在启动页甚至只有后台服务存活时恢复原支付订单。
+             * 此时静态 Receiver 不能用 NEW_TASK 单独拉起支付 Activity，否则支付窗口
+             * 结束后任务栈下面没有 MainActivity，界面会直接回到系统桌面。
+             * 主界面 onResume 本身会再次恢复同一 requestNo，届时再正常打开支付窗口。
+             */
+            if (!isMainActivityForeground(context)) {
+                Log.i(
+                        TAG,
+                        "主界面尚未处于前台，暂不打开统一支付窗口：requestNo=" + requestNo
                 );
                 return;
             }
@@ -130,6 +147,36 @@ public final class PaymentQrPopupReceiver extends BroadcastReceiver {
                 || TransactionOccupancyManager.PHASE_WAITING_PAYMENT.equals(snapshot.phase)
                 || TransactionOccupancyManager.PHASE_CANCELLING.equals(snapshot.phase)
                 || TransactionOccupancyManager.PHASE_CONFIRMING_CLOSE.equals(snapshot.phase));
+    }
+
+    private static boolean isMainActivityForeground(Context context) {
+        ActivityManager.RunningAppProcessInfo processInfo =
+                new ActivityManager.RunningAppProcessInfo();
+        ActivityManager.getMyMemoryState(processInfo);
+        if (processInfo.importance
+                != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND) {
+            return false;
+        }
+
+        ActivityManager activityManager =
+                (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        if (activityManager == null) {
+            return false;
+        }
+        try {
+            for (ActivityManager.AppTask appTask : activityManager.getAppTasks()) {
+                ActivityManager.RecentTaskInfo taskInfo = appTask.getTaskInfo();
+                ComponentName topActivity = taskInfo == null ? null : taskInfo.topActivity;
+                if (topActivity != null
+                        && context.getPackageName().equals(topActivity.getPackageName())
+                        && MainActivity.class.getName().equals(topActivity.getClassName())) {
+                    return true;
+                }
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "判断主界面前台状态失败，暂不打开支付窗口", error);
+        }
+        return false;
     }
 
     private static String safe(String value) {
