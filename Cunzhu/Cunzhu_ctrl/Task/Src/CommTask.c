@@ -1,39 +1,35 @@
 #include "CommTask.h"
-#include "MainTask.h"
 #include "app_crc.h"
 #include "string.h"
 #include "tim.h"
 #include "usart.h"
 
-#define Mesg_Head 0xAA
-#define Mesg_Tail 0x55
-#define RELAY_FRAME_LEN 14U
-#define UART_QUEUE_SIZE 1024U
+#define Mesg_Head 0xAAU
+#define Mesg_Tail 0x55U
+#define CZ_FRAME_LEN 14U
+#define UART_QUEUE_SIZE 512U
 #define UART_QUEUE_MASK (UART_QUEUE_SIZE - 1U)
-#define UART_FORWARD_CHUNK 64U
-#define MOTOR2_SPEED 85U
-#define MOTOR2_TIMEOUT_MS 3000U
-#define MOTOR2_REVERSE_MS 300U
-#define MOTOR2_REVERSE_DELAY_MS 1U
-#define MOTOR2_RETRY_TIMES 3U
-#define MOTOR2_VALID_PULSE_US 100U
-#define LOCAL_DEDUP_COUNT 16U
-#define LOCAL_DEDUP_TIME_MS 5000U
-#define RAW_EXIT_MIN_TIME_MS 500U
+#define UART_PROCESS_CHUNK 64U
+
+#define COLLECT_MOTOR_SPEED 85U
+#define COLLECT_PULSE_VALID_US 100U
+#define COLLECT_NO_PULSE_TIMEOUT_MS 3000U
+#define COLLECT_REVERSE_DELAY_MS 1U
+#define COLLECT_REVERSE_MS 300U
+#define COLLECT_RETRY_TIMES 3U
+#define COLLECT_DEFAULT_TIMEOUT_MS 300000UL
+#define TERMINAL_RESEND_INTERVAL_MS 500U
+#define TERMINAL_RESEND_TIMES 3U
+#define COMMAND_DEDUP_COUNT 16U
+#define COMMAND_DEDUP_TIME_MS 5000U
 
 typedef enum
 {
-    RELAY_MODE_NORMAL = 0,
-    RELAY_MODE_RAW
-} RelayMode_t;
-
-typedef enum
-{
-    MOTOR2_STATE_IDLE = 0,
-    MOTOR2_STATE_BUSY,
-    MOTOR2_STATE_REVERSE_DELAY,
-    MOTOR2_STATE_REVERSING
-} Motor2State_t;
+    MOTOR_STATE_IDLE = 0,
+    MOTOR_STATE_FORWARD,
+    MOTOR_STATE_REVERSE_DELAY,
+    MOTOR_STATE_REVERSE
+} CollectMotorState_t;
 
 typedef struct
 {
@@ -48,34 +44,41 @@ typedef struct
     uint8_t ID;
     uint8_t Code2;
     uint32_t Tick;
-} LocalDedupe_t;
+} CommandDedupe_t;
 
-/* 兼容旧控台文件保留，新的转发逻辑不再使用旧Rx解析器。 */
+/* 兼容旧控台文件保留，新的存珠协议不再使用旧Rx解析器。 */
 Tx_HandleTypeDef Tx;
 Rx_HandleTypeDef Rx;
 
 static ByteQueue_t AndroidRxQueue;
-static ByteQueue_t MainBoardRxQueue;
 static uint8_t AndroidRxByte;
-static uint8_t MainBoardRxByte;
-static RelayMode_t RelayMode = RELAY_MODE_NORMAL;
-static uint32_t RawModeEnterTick;
-static uint8_t AndroidFrame[RELAY_FRAME_LEN];
+static uint8_t AndroidFrame[CZ_FRAME_LEN];
 static uint8_t AndroidFrameIndex;
-static uint8_t RawProbeFrame[RELAY_FRAME_LEN];
-static uint8_t RawProbeIndex;
-static LocalDedupe_t LocalDedupe[LOCAL_DEDUP_COUNT];
-static volatile uint16_t Motor2RemainingCount;
-static volatile uint8_t Motor2RetryCount;
-static volatile uint8_t Motor2PulseStarted;
-static volatile uint8_t Motor2StopRequested;
-static volatile uint8_t Motor2RemainingReportPending;
-static volatile uint8_t Motor2TimeoutReportPending;
-static Motor2State_t Motor2State = MOTOR2_STATE_IDLE;
-static uint32_t Motor2RuntimeTick;
-static uint32_t Motor2PhaseTick;
-static uint8_t RelayTxID;
+static CommandDedupe_t CommandDedupe[COMMAND_DEDUP_COUNT];
+static uint8_t BoardTxID;
 static uint8_t LegacyTxID;
+
+static volatile uint16_t CollectMaximumQuantity;
+static volatile uint16_t CollectActualQuantity;
+static volatile uint8_t CollectPulseStarted;
+static volatile uint8_t CountReportPending;
+static volatile uint8_t FinishRequestPending;
+static volatile uint8_t FinishReasonPending;
+static uint32_t CollectStartTick;
+static uint32_t CollectTimeoutMs;
+static uint32_t MotorRuntimeTick;
+static uint32_t MotorPhaseTick;
+static uint8_t CollectState = CZ_STATE_IDLE;
+static uint8_t CurrentErrorCode = CZ_RESULT_OK;
+static uint8_t MotorRetryCount;
+static CollectMotorState_t MotorState = MOTOR_STATE_IDLE;
+
+static uint8_t TerminalPending;
+static uint8_t TerminalFrame[CZ_FRAME_LEN];
+static uint8_t TerminalResendCount;
+static uint32_t TerminalLastSendTick;
+static uint8_t TerminalFrameID;
+static uint8_t TerminalCode2;
 
 static uint8_t ByteQueue_Push(ByteQueue_t *Queue, uint8_t Data)
 {
@@ -96,338 +99,515 @@ static uint8_t ByteQueue_Pop(ByteQueue_t *Queue, uint8_t *Data)
     return 1U;
 }
 
-static uint16_t ByteQueue_Read(ByteQueue_t *Queue, uint8_t *Data, uint16_t MaxLen)
+static uint16_t Protocol_CalcCrc(const uint8_t *Frame)
 {
-    uint16_t len = 0U;
-    while ((len < MaxLen) && (ByteQueue_Pop(Queue, &Data[len]) != 0U))
-        len++;
-    return len;
+    return CRC16_calculate((uint8_t *)Frame, 11U);
 }
 
-static uint8_t Relay_FrameVerify(const uint8_t *Frame)
+static uint8_t Protocol_FrameVerify(const uint8_t *Frame)
 {
     uint16_t crc;
-    uint16_t receive_crc;
+    uint16_t rx_crc;
+
     if ((Frame[0] != Mesg_Head) || (Frame[13] != Mesg_Tail))
         return 0U;
-    crc = CRC16_calculate((uint8_t *)Frame, 11U);
-    receive_crc = (uint16_t)(((uint16_t)Frame[11] << 8U) | Frame[12]);
-    return (crc == receive_crc) ? 1U : 0U;
+
+    crc = Protocol_CalcCrc(Frame);
+    rx_crc = (uint16_t)((uint16_t)Frame[11] | ((uint16_t)Frame[12] << 8U));
+    return (crc == rx_crc) ? 1U : 0U;
 }
 
-static void Relay_TransmitToAndroid(const uint8_t *Data, uint16_t Len)
+static void Protocol_FillCrc(uint8_t *Frame)
 {
-    if ((Data == NULL) || (Len == 0U))
+    uint16_t crc = Protocol_CalcCrc(Frame);
+    Frame[11] = (uint8_t)(crc & 0xFFU);
+    Frame[12] = (uint8_t)((crc >> 8U) & 0xFFU);
+}
+
+static uint8_t Protocol_NextID(void)
+{
+    BoardTxID++;
+    if (BoardTxID == 0U)
+        BoardTxID = 1U;
+    return BoardTxID;
+}
+
+static void Protocol_BuildBoardFrame(
+    uint8_t ResendID,
+    uint8_t ID,
+    uint8_t Code2,
+    uint8_t Data1,
+    uint8_t Data2,
+    uint8_t Data3,
+    uint8_t Data4,
+    uint8_t AckByte,
+    uint8_t ExpandCode,
+    uint8_t *OutFrame)
+{
+    memset(OutFrame, 0, CZ_FRAME_LEN);
+    OutFrame[0] = Mesg_Head;
+    OutFrame[1] = ResendID;
+    OutFrame[2] = ID;
+    OutFrame[3] = Board_to_Android;
+    OutFrame[4] = Code2;
+    OutFrame[5] = Data1;
+    OutFrame[6] = Data2;
+    OutFrame[7] = Data3;
+    OutFrame[8] = Data4;
+    OutFrame[9] = AckByte;
+    OutFrame[10] = ExpandCode;
+    Protocol_FillCrc(OutFrame);
+    OutFrame[13] = Mesg_Tail;
+}
+
+static void Protocol_TransmitToAndroid(const uint8_t *Data, uint16_t Len)
+{
+    if ((Data == 0) || (Len == 0U))
         return;
     (void)HAL_UART_Transmit(&huart3, (uint8_t *)Data, Len, 100U);
 }
 
-static void Relay_TransmitToMainBoard(const uint8_t *Data, uint16_t Len)
+static void Protocol_SendAckEcho(const uint8_t *Frame, uint8_t ExpandCode)
 {
-    if ((Data == NULL) || (Len == 0U))
-        return;
-    (void)HAL_UART_Transmit(&huart2, (uint8_t *)Data, Len, 100U);
+    uint8_t ack[CZ_FRAME_LEN];
+
+    /* ACK echo必须回显原帧ResendID、ID、Code2和Data1..Data4，只替换方向、ACKbyte和结果码。 */
+    Protocol_BuildBoardFrame(
+        Frame[1],
+        Frame[2],
+        Frame[4],
+        Frame[5],
+        Frame[6],
+        Frame[7],
+        Frame[8],
+        CZ_ACK_ECHO,
+        ExpandCode,
+        ack);
+    Protocol_TransmitToAndroid(ack, CZ_FRAME_LEN);
 }
 
-static uint8_t LocalDedupe_IsRepeat(uint8_t ID, uint8_t Code2)
+static uint8_t CommandDedupe_IsRepeat(uint8_t ID, uint8_t Code2)
 {
     uint32_t now = HAL_GetTick();
     uint32_t oldest_age = 0U;
     uint8_t oldest_index = 0U;
     uint8_t i;
 
-    for (i = 0U; i < LOCAL_DEDUP_COUNT; i++)
+    for (i = 0U; i < COMMAND_DEDUP_COUNT; i++)
     {
-        if ((LocalDedupe[i].Valid != 0U) && (LocalDedupe[i].ID == ID) &&
-            (LocalDedupe[i].Code2 == Code2) && ((now - LocalDedupe[i].Tick) <= LOCAL_DEDUP_TIME_MS))
+        if ((CommandDedupe[i].Valid != 0U) &&
+            (CommandDedupe[i].ID == ID) &&
+            (CommandDedupe[i].Code2 == Code2) &&
+            ((now - CommandDedupe[i].Tick) <= COMMAND_DEDUP_TIME_MS))
         {
-            /* 重发包继续刷新时间窗，但只返回ACK，不重复执行。 */
-            LocalDedupe[i].Tick = now;
+            CommandDedupe[i].Tick = now;
             return 1U;
         }
     }
 
-    for (i = 0U; i < LOCAL_DEDUP_COUNT; i++)
+    for (i = 0U; i < COMMAND_DEDUP_COUNT; i++)
     {
-        if (LocalDedupe[i].Valid == 0U)
+        if (CommandDedupe[i].Valid == 0U)
         {
             oldest_index = i;
             break;
         }
-        if ((now - LocalDedupe[i].Tick) >= oldest_age)
+        if ((now - CommandDedupe[i].Tick) >= oldest_age)
         {
-            oldest_age = now - LocalDedupe[i].Tick;
+            oldest_age = now - CommandDedupe[i].Tick;
             oldest_index = i;
         }
     }
 
-    LocalDedupe[oldest_index].Valid = 1U;
-    LocalDedupe[oldest_index].ID = ID;
-    LocalDedupe[oldest_index].Code2 = Code2;
-    LocalDedupe[oldest_index].Tick = now;
+    CommandDedupe[oldest_index].Valid = 1U;
+    CommandDedupe[oldest_index].ID = ID;
+    CommandDedupe[oldest_index].Code2 = Code2;
+    CommandDedupe[oldest_index].Tick = now;
     return 0U;
 }
 
-static void Motor2_SetCompare(uint32_t Channel, uint16_t Percent)
+static uint8_t Collect_GetSensorState(void)
+{
+    uint8_t state = 0U;
+
+    if (HAL_GPIO_ReadPin(HoolleOutput2_GPIO_Port, HoolleOutput2_Pin) == GPIO_PIN_RESET)
+        state |= 0x02U;
+    if (MotorState != MOTOR_STATE_IDLE)
+        state |= 0x04U;
+    return state;
+}
+
+static void Motor_SetCompare(uint32_t Channel, uint16_t Percent)
 {
     uint32_t compare = ((uint32_t)htim3.Init.Period * Percent) / 100U;
     __HAL_TIM_SET_COMPARE(&htim3, Channel, compare);
 }
 
-static void Motor2_RunForward(void)
+static void Motor_RunForward(void)
 {
-    /* 实机确认原方向相反：正常吐珠时PA7/BI输出PWM，PA6/FI保持低电平。 */
-    Motor2_SetCompare(TIM_CHANNEL_1, 0U);
-    Motor2_SetCompare(TIM_CHANNEL_2, MOTOR2_SPEED);
-    Motor2RuntimeTick = HAL_GetTick();
-    Motor2State = MOTOR2_STATE_BUSY;
+    /* 存珠收珠方向沿用当前样机实测方向：PA7/BI输出PWM，PA6/FI保持低电平。 */
+    Motor_SetCompare(TIM_CHANNEL_1, 0U);
+    Motor_SetCompare(TIM_CHANNEL_2, COLLECT_MOTOR_SPEED);
+    MotorRuntimeTick = HAL_GetTick();
+    MotorState = MOTOR_STATE_FORWARD;
 }
 
-static void Motor2_RunReverse(void)
+static void Motor_RunReverse(void)
 {
-    /* 堵珠反转与正常吐珠方向相反。 */
-    Motor2_SetCompare(TIM_CHANNEL_1, MOTOR2_SPEED);
-    Motor2_SetCompare(TIM_CHANNEL_2, 0U);
+    /* 堵珠排障方向与正常收珠方向相反。 */
+    Motor_SetCompare(TIM_CHANNEL_1, COLLECT_MOTOR_SPEED);
+    Motor_SetCompare(TIM_CHANNEL_2, 0U);
 }
 
-static void Motor2_Brake(void)
+static void Motor_Brake(void)
 {
-    /* 与原球盘Motor_Stop保持一致：两路均拉到100%作为停止制动。 */
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, htim3.Init.Period);
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, htim3.Init.Period);
 }
 
-static void Motor2_LosePower(void)
+static void Motor_LosePower(void)
 {
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, 0U);
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, 0U);
 }
 
-static void Motor2_Stop(uint8_t ReportRemaining)
+static void Motor_StopOutput(void)
 {
-    Motor2_Brake();
-    Motor2State = MOTOR2_STATE_IDLE;
-    Motor2RemainingCount = 0U;
-    Motor2RetryCount = 0U;
-    Motor2PulseStarted = 0U;
-    Motor2StopRequested = 0U;
-    if (ReportRemaining != 0U)
-        Motor2RemainingReportPending = 1U;
+    Motor_Brake();
+    MotorState = MOTOR_STATE_IDLE;
+    MotorRetryCount = 0U;
+    CollectPulseStarted = 0U;
 }
 
-static void Motor2_StopForRawMode(void)
+static void Protocol_SendStatusFrame(uint8_t Code2)
 {
-    /* OTA透明模式期间不允许插入本地上报，直接断开电机输出。 */
-    Motor2_LosePower();
-    Motor2State = MOTOR2_STATE_IDLE;
-    Motor2RemainingCount = 0U;
-    Motor2RetryCount = 0U;
-    Motor2PulseStarted = 0U;
-    Motor2StopRequested = 0U;
-    Motor2RemainingReportPending = 0U;
-    Motor2TimeoutReportPending = 0U;
+    uint8_t frame[CZ_FRAME_LEN];
+    uint16_t actual = CollectActualQuantity;
+
+    Protocol_BuildBoardFrame(
+        0U,
+        Protocol_NextID(),
+        Code2,
+        CollectState,
+        (uint8_t)((actual >> 8U) & 0xFFU),
+        (uint8_t)(actual & 0xFFU),
+        Collect_GetSensorState(),
+        CZ_ACK_NONE,
+        CurrentErrorCode,
+        frame);
+    Protocol_TransmitToAndroid(frame, CZ_FRAME_LEN);
 }
 
-static void Motor2_AddOutput(uint16_t Num)
+static void Protocol_SendCountChanged(void)
 {
-    Motor2RemainingCount = (uint16_t)(Motor2RemainingCount + Num);
-    if (Motor2RemainingCount != 0U)
+    uint8_t frame[CZ_FRAME_LEN];
+    uint16_t actual = CollectActualQuantity;
+
+    Protocol_BuildBoardFrame(
+        0U,
+        Protocol_NextID(),
+        CZ_CODE2_COUNT_CHANGED,
+        (uint8_t)((actual >> 8U) & 0xFFU),
+        (uint8_t)(actual & 0xFFU),
+        CollectState,
+        Collect_GetSensorState(),
+        CZ_ACK_NONE,
+        CurrentErrorCode,
+        frame);
+    Protocol_TransmitToAndroid(frame, CZ_FRAME_LEN);
+}
+
+static void Protocol_SendTerminalFrame(
+    uint8_t Code2,
+    uint8_t Data3,
+    uint8_t Data4,
+    uint8_t ExpandCode)
+{
+    uint16_t actual = CollectActualQuantity;
+
+    Protocol_BuildBoardFrame(
+        0U,
+        Protocol_NextID(),
+        Code2,
+        (uint8_t)((actual >> 8U) & 0xFFU),
+        (uint8_t)(actual & 0xFFU),
+        Data3,
+        Data4,
+        CZ_ACK_NONE,
+        ExpandCode,
+        TerminalFrame);
+
+    TerminalPending = 1U;
+    TerminalResendCount = 0U;
+    TerminalLastSendTick = HAL_GetTick();
+    TerminalFrameID = TerminalFrame[2];
+    TerminalCode2 = Code2;
+    Protocol_TransmitToAndroid(TerminalFrame, CZ_FRAME_LEN);
+}
+
+static void Collect_Finish(uint8_t FinishReason)
+{
+    if ((CollectState != CZ_STATE_COLLECTING) && (CollectState != CZ_STATE_STOPPING))
+        return;
+
+    Motor_StopOutput();
+    CollectState = CZ_STATE_IDLE;
+    CurrentErrorCode = CZ_RESULT_OK;
+    FinishRequestPending = 0U;
+    Protocol_SendTerminalFrame(
+        CZ_CODE2_COLLECT_FINISHED,
+        FinishReason,
+        CZ_STATE_IDLE,
+        CZ_RESULT_OK);
+}
+
+static void Collect_Fault(uint8_t ErrorCode)
+{
+    if (CollectState == CZ_STATE_IDLE)
+        return;
+
+    Motor_StopOutput();
+    CollectState = CZ_STATE_FAULT;
+    CurrentErrorCode = ErrorCode;
+    FinishRequestPending = 0U;
+    Protocol_SendTerminalFrame(
+        CZ_CODE2_FAULT_EVENT,
+        CZ_STATE_FAULT,
+        Collect_GetSensorState(),
+        ErrorCode);
+}
+
+static void Collect_Start(uint16_t MaximumQuantity, uint16_t TimeoutSeconds)
+{
+    CollectMaximumQuantity = MaximumQuantity;
+    CollectActualQuantity = 0U;
+    CollectPulseStarted = 0U;
+    CountReportPending = 0U;
+    FinishRequestPending = 0U;
+    FinishReasonPending = CZ_FINISH_REACH_MAX;
+    MotorRetryCount = 0U;
+    CurrentErrorCode = CZ_RESULT_OK;
+    CollectState = CZ_STATE_COLLECTING;
+    CollectStartTick = HAL_GetTick();
+    if (TimeoutSeconds == 0U)
+        CollectTimeoutMs = COLLECT_DEFAULT_TIMEOUT_MS;
+    else
+        CollectTimeoutMs = (uint32_t)TimeoutSeconds * 1000UL;
+    Motor_RunForward();
+    Protocol_SendStatusFrame(CZ_CODE2_STATUS);
+}
+
+static void TerminalAck_Task(void)
+{
+    uint32_t now;
+
+    if (TerminalPending == 0U)
+        return;
+
+    now = HAL_GetTick();
+    if ((now - TerminalLastSendTick) < TERMINAL_RESEND_INTERVAL_MS)
+        return;
+
+    if (TerminalResendCount >= TERMINAL_RESEND_TIMES)
     {
-        Motor2RetryCount = 0U;
-        Motor2StopRequested = 0U;
-        Motor2_RunForward();
+        /* 三次终态重发仍未收到Android ACK时，释放本地终态等待，避免永久锁死下一次收珠。 */
+        TerminalPending = 0U;
+        return;
     }
-    Motor2RemainingReportPending = 1U;
+
+    TerminalResendCount++;
+    TerminalFrame[1] = TerminalResendCount;
+    Protocol_FillCrc(TerminalFrame);
+    TerminalLastSendTick = now;
+    Protocol_TransmitToAndroid(TerminalFrame, CZ_FRAME_LEN);
 }
 
-static void Motor2_Task(void)
+static void Collect_Task(void)
 {
     uint32_t now = HAL_GetTick();
 
-    if (Motor2StopRequested != 0U)
+    if (CountReportPending != 0U)
     {
-        Motor2_Stop(0U);
-        Motor2RemainingReportPending = 1U;
+        CountReportPending = 0U;
+        Protocol_SendCountChanged();
+    }
+
+    if (FinishRequestPending != 0U)
+    {
+        Collect_Finish(FinishReasonPending);
         return;
     }
 
-    if (Motor2State == MOTOR2_STATE_BUSY)
+    if (CollectState != CZ_STATE_COLLECTING)
+        return;
+
+    if ((now - CollectStartTick) >= CollectTimeoutMs)
     {
-        if ((now - Motor2RuntimeTick) > MOTOR2_TIMEOUT_MS)
+        Collect_Finish(CZ_FINISH_SESSION_TIMEOUT);
+        return;
+    }
+
+    if (MotorState == MOTOR_STATE_FORWARD)
+    {
+        if ((now - MotorRuntimeTick) > COLLECT_NO_PULSE_TIMEOUT_MS)
         {
-            /* 超时后先断电1ms，再按原球盘策略反转300ms。 */
-            Motor2_LosePower();
-            Motor2PhaseTick = now;
-            Motor2State = MOTOR2_STATE_REVERSE_DELAY;
+            /* 长时间没有有效光眼脉冲时，先断电1ms，再短反转排障。 */
+            Motor_LosePower();
+            MotorPhaseTick = now;
+            MotorState = MOTOR_STATE_REVERSE_DELAY;
         }
     }
-    else if (Motor2State == MOTOR2_STATE_REVERSE_DELAY)
+    else if (MotorState == MOTOR_STATE_REVERSE_DELAY)
     {
-        if ((now - Motor2PhaseTick) >= MOTOR2_REVERSE_DELAY_MS)
+        if ((now - MotorPhaseTick) >= COLLECT_REVERSE_DELAY_MS)
         {
-            Motor2_RunReverse();
-            Motor2PhaseTick = now;
-            Motor2State = MOTOR2_STATE_REVERSING;
+            Motor_RunReverse();
+            MotorPhaseTick = now;
+            MotorState = MOTOR_STATE_REVERSE;
         }
     }
-    else if (Motor2State == MOTOR2_STATE_REVERSING)
+    else if (MotorState == MOTOR_STATE_REVERSE)
     {
-        if ((now - Motor2PhaseTick) > MOTOR2_REVERSE_MS)
+        if ((now - MotorPhaseTick) > COLLECT_REVERSE_MS)
         {
-            if (Motor2RetryCount < MOTOR2_RETRY_TIMES)
+            if (MotorRetryCount < COLLECT_RETRY_TIMES)
             {
-                Motor2RetryCount++;
-                Motor2_RunForward();
+                MotorRetryCount++;
+                Motor_RunForward();
             }
             else
             {
-                Motor2_Brake();
-                Motor2State = MOTOR2_STATE_IDLE;
-                Motor2TimeoutReportPending = 1U;
+                Collect_Fault(CZ_RESULT_JAM);
             }
         }
     }
 }
 
-void Comm_HoolleOutput2IRQ(void)
+static void Protocol_HandleTerminalAck(const uint8_t *Frame)
 {
-    if (HAL_GPIO_ReadPin(HoolleOutput2_GPIO_Port, HoolleOutput2_Pin) == GPIO_PIN_RESET)
+    if ((TerminalPending != 0U) && (Frame[2] == TerminalFrameID) && (Frame[4] == TerminalCode2))
+        TerminalPending = 0U;
+}
+
+static void Protocol_HandleStartCollect(const uint8_t *Frame)
+{
+    uint16_t maximum = (uint16_t)(((uint16_t)Frame[5] << 8U) | Frame[6]);
+    uint16_t timeout = (uint16_t)(((uint16_t)Frame[7] << 8U) | Frame[8]);
+
+    if ((maximum == 0U) || (timeout == 0U))
     {
-        /* 光眼低电平开始：使用1MHz TIM2统计脉宽，并重置无出珠超时。 */
-        __HAL_TIM_SET_COUNTER(&htim2, 0U);
-        Motor2PulseStarted = 1U;
-        Motor2RuntimeTick = HAL_GetTick();
+        Protocol_SendAckEcho(Frame, CZ_RESULT_PARAM_INVALID);
         return;
     }
 
-    if (Motor2PulseStarted == 0U)
-        return;
-
-    Motor2PulseStarted = 0U;
-    if (__HAL_TIM_GET_COUNTER(&htim2) <= MOTOR2_VALID_PULSE_US)
-        return;
-
-    if (Motor2RemainingCount > 0U)
+    if ((CollectState == CZ_STATE_COLLECTING) || (TerminalPending != 0U))
     {
-        Motor2RemainingCount--;
-        Motor2RetryCount = 0U;
-        Motor2RemainingReportPending = 1U;
-        if (Motor2RemainingCount == 0U)
-        {
-            /* 中断里只置请求，PWM寄存器操作放回主循环执行。 */
-            Motor2StopRequested = 1U;
-        }
-    }
-}
-
-static void Relay_SendLocalFrame(uint8_t Code2, uint16_t Value)
-{
-    uint8_t data[RELAY_FRAME_LEN] = {0};
-    uint16_t crc;
-    RelayTxID++;
-    data[0] = Mesg_Head;
-    data[2] = RelayTxID;
-    data[3] = Relay_to_Android;
-    data[4] = Code2;
-    data[7] = (uint8_t)(Value >> 8U);
-    data[8] = (uint8_t)Value;
-    crc = CRC16_calculate(data, 11U);
-    data[11] = (uint8_t)(crc >> 8U);
-    data[12] = (uint8_t)crc;
-    data[13] = Mesg_Tail;
-    Relay_TransmitToAndroid(data, RELAY_FRAME_LEN);
-}
-
-static void Motor2_ReportTask(void)
-{
-    uint16_t remaining;
-    if (RelayMode != RELAY_MODE_NORMAL)
-        return;
-
-    if (Motor2RemainingReportPending != 0U)
-    {
-        Motor2RemainingReportPending = 0U;
-        remaining = Motor2RemainingCount;
-        Relay_SendLocalFrame(Motor2Remaining, remaining);
-    }
-    if (Motor2TimeoutReportPending != 0U)
-    {
-        Motor2TimeoutReportPending = 0U;
-        remaining = Motor2RemainingCount;
-        Relay_SendLocalFrame(Motor2Timeout, remaining);
-    }
-}
-
-static uint8_t Relay_IsBootRequest(const uint8_t *Frame)
-{
-    uint32_t data;
-    if ((Frame[3] != Android_to_Board) || (Frame[4] != BoardRestart))
-        return 0U;
-    data = ((uint32_t)Frame[5] << 24U) | ((uint32_t)Frame[6] << 16U) |
-           ((uint32_t)Frame[7] << 8U) | (uint32_t)Frame[8];
-    return (data == OTA_REQUEST_MAGIC) ? 1U : 0U;
-}
-
-static void Relay_EnterRawMode(void)
-{
-    /* BOTA帧已经先转给主板；后续Bootloader流量全部按原始字节透明转发。 */
-    Motor2_StopForRawMode();
-    RelayMode = RELAY_MODE_RAW;
-    RawModeEnterTick = HAL_GetTick();
-    RawProbeIndex = 0U;
-    AndroidFrameIndex = 0U;
-}
-
-static void Relay_HandleLocalFrame(const uint8_t *Frame)
-{
-    uint16_t num;
-    if ((Frame[4] != Motor2Output) && (Frame[4] != Motor2Stop))
-    {
-        /* Code1属于转发板但功能码未知时不下发给原主板，避免协议串扰。 */
+        Protocol_SendAckEcho(Frame, CZ_RESULT_BUSY);
         return;
     }
 
-    /* 与原主板ACK行为一致：合法命令先原样回发，再做去重判断。 */
-    Relay_TransmitToAndroid(Frame, RELAY_FRAME_LEN);
-    if (LocalDedupe_IsRepeat(Frame[2], Frame[4]) != 0U)
-        return;
+    Protocol_SendAckEcho(Frame, CZ_RESULT_OK);
+    Collect_Start(maximum, timeout);
+}
 
-    if (Frame[4] == Motor2Output)
+static void Protocol_HandleStopCollect(const uint8_t *Frame)
+{
+    uint8_t stop_reason = Frame[5];
+
+    Protocol_SendAckEcho(Frame, CZ_RESULT_OK);
+    if (CollectState == CZ_STATE_COLLECTING)
     {
-        num = (uint16_t)(((uint16_t)Frame[7] << 8U) | Frame[8]);
-        Motor2_AddOutput(num);
+        CollectState = CZ_STATE_STOPPING;
+        if (stop_reason == 0U)
+            Collect_Finish(CZ_FINISH_ANDROID_STOP);
+        else
+            Collect_Finish(stop_reason);
     }
     else
     {
-        Motor2_Stop(1U);
+        Protocol_SendStatusFrame(CZ_CODE2_STATUS);
     }
 }
 
-static void Relay_HandleAndroidFrame(const uint8_t *Frame)
+static void Protocol_HandleClearFault(const uint8_t *Frame)
 {
-    if (Frame[3] == Android_to_Relay)
+    uint8_t reset_type = Frame[5];
+
+    Protocol_SendAckEcho(Frame, CZ_RESULT_OK);
+    Motor_StopOutput();
+    TerminalPending = 0U;
+    CurrentErrorCode = CZ_RESULT_OK;
+    CollectState = CZ_STATE_IDLE;
+    FinishRequestPending = 0U;
+    CountReportPending = 0U;
+
+    if (reset_type == 0x01U)
+        CollectActualQuantity = 0U;
+
+    Protocol_SendStatusFrame(CZ_CODE2_STATUS);
+}
+
+static void Protocol_HandleAndroidFrame(const uint8_t *Frame)
+{
+    if (Frame[3] != Android_to_Board)
+        return;
+
+    if (Frame[9] == CZ_ACK_ECHO)
     {
-        Relay_HandleLocalFrame(Frame);
+        Protocol_HandleTerminalAck(Frame);
         return;
     }
 
-    if ((Frame[3] == Android_to_Board) && (Frame[4] == StopAllDevice))
+    switch (Frame[4])
     {
-        /* 原0xFF仍原样发给主板，同时本地停止第二组吐珠电机。 */
-        Motor2_Stop(0U);
+    case CZ_CODE2_START_COLLECT:
+    case CZ_CODE2_STOP_COLLECT:
+    case CZ_CODE2_CLEAR_FAULT:
+        if (CommandDedupe_IsRepeat(Frame[2], Frame[4]) != 0U)
+        {
+            Protocol_SendAckEcho(Frame, CZ_RESULT_DUPLICATE_ACCEPTED);
+            return;
+        }
+        break;
+    default:
+        break;
     }
 
-    Relay_TransmitToMainBoard(Frame, RELAY_FRAME_LEN);
-    if (Relay_IsBootRequest(Frame) != 0U)
-        Relay_EnterRawMode();
+    switch (Frame[4])
+    {
+    case CZ_CODE2_START_COLLECT:
+        Protocol_HandleStartCollect(Frame);
+        break;
+    case CZ_CODE2_STOP_COLLECT:
+        Protocol_HandleStopCollect(Frame);
+        break;
+    case CZ_CODE2_STATUS:
+        Protocol_SendStatusFrame(CZ_CODE2_STATUS);
+        break;
+    case CZ_CODE2_CLEAR_FAULT:
+        Protocol_HandleClearFault(Frame);
+        break;
+    case CZ_CODE2_HEARTBEAT:
+        Protocol_SendStatusFrame(CZ_CODE2_HEARTBEAT);
+        break;
+    default:
+        Protocol_SendAckEcho(Frame, CZ_RESULT_UNKNOWN_CODE2);
+        break;
+    }
 }
 
-static void Relay_ProcessAndroidNormal(void)
+static void Protocol_HandleInvalidAndroidFrame(const uint8_t *Frame)
+{
+    if ((Frame[0] == Mesg_Head) && (Frame[13] == Mesg_Tail) && (Frame[3] == Android_to_Board))
+        Protocol_SendAckEcho(Frame, CZ_RESULT_CRC_ERROR);
+}
+
+static void Protocol_ProcessAndroidRx(void)
 {
     uint8_t data;
     uint16_t process_count = 0U;
 
-    while ((process_count < UART_FORWARD_CHUNK) && (ByteQueue_Pop(&AndroidRxQueue, &data) != 0U))
+    while ((process_count < UART_PROCESS_CHUNK) && (ByteQueue_Pop(&AndroidRxQueue, &data) != 0U))
     {
         process_count++;
         if (AndroidFrameIndex == 0U)
@@ -437,111 +617,67 @@ static void Relay_ProcessAndroidNormal(void)
                 AndroidFrame[0] = data;
                 AndroidFrameIndex = 1U;
             }
-            else
-            {
-                Relay_TransmitToMainBoard(&data, 1U);
-            }
             continue;
         }
 
         AndroidFrame[AndroidFrameIndex++] = data;
-        if (AndroidFrameIndex >= RELAY_FRAME_LEN)
+        if (AndroidFrameIndex >= CZ_FRAME_LEN)
         {
-            if (Relay_FrameVerify(AndroidFrame) != 0U)
-                Relay_HandleAndroidFrame(AndroidFrame);
+            if (Protocol_FrameVerify(AndroidFrame) != 0U)
+                Protocol_HandleAndroidFrame(AndroidFrame);
             else
-                /* 非法或非本协议数据也必须原样转发，保证透明性。 */
-                Relay_TransmitToMainBoard(AndroidFrame, RELAY_FRAME_LEN);
-
+                Protocol_HandleInvalidAndroidFrame(AndroidFrame);
             AndroidFrameIndex = 0U;
-            if (RelayMode == RELAY_MODE_RAW)
-                break;
         }
     }
 }
 
-static void Relay_ProbeRawMainByte(uint8_t Data)
+void Comm_HoolleOutput2IRQ(void)
 {
-    uint8_t next_head = 0U;
-    uint8_t i;
+    if (HAL_GPIO_ReadPin(HoolleOutput2_GPIO_Port, HoolleOutput2_Pin) == GPIO_PIN_RESET)
+    {
+        /* 光眼低电平开始：使用1MHz TIM2统计脉宽，并重置收珠无脉冲超时。 */
+        __HAL_TIM_SET_COUNTER(&htim2, 0U);
+        CollectPulseStarted = 1U;
+        MotorRuntimeTick = HAL_GetTick();
+        return;
+    }
 
-    if ((HAL_GetTick() - RawModeEnterTick) < RAW_EXIT_MIN_TIME_MS)
+    if (CollectPulseStarted == 0U)
         return;
 
-    if (RawProbeIndex == 0U)
+    CollectPulseStarted = 0U;
+    if (__HAL_TIM_GET_COUNTER(&htim2) <= COLLECT_PULSE_VALID_US)
+        return;
+
+    if (CollectState == CZ_STATE_COLLECTING)
     {
-        if (Data == Mesg_Head)
+        if (CollectActualQuantity < CollectMaximumQuantity)
         {
-            RawProbeFrame[0] = Data;
-            RawProbeIndex = 1U;
+            CollectActualQuantity++;
+            CountReportPending = 1U;
+            MotorRetryCount = 0U;
+            MotorRuntimeTick = HAL_GetTick();
         }
-        return;
-    }
 
-    RawProbeFrame[RawProbeIndex++] = Data;
-    if (RawProbeIndex < RELAY_FRAME_LEN)
-        return;
-
-    if ((Relay_FrameVerify(RawProbeFrame) != 0U) && (RawProbeFrame[3] == Board_to_Android))
-    {
-        /* 主板APP恢复并重新发出正常14字节帧后，退出Bootloader透明模式。 */
-        RelayMode = RELAY_MODE_NORMAL;
-        RawProbeIndex = 0U;
-        return;
-    }
-
-    for (i = 1U; i < RELAY_FRAME_LEN; i++)
-    {
-        if (RawProbeFrame[i] == Mesg_Head)
+        if (CollectActualQuantity >= CollectMaximumQuantity)
         {
-            next_head = i;
-            break;
+            FinishReasonPending = CZ_FINISH_REACH_MAX;
+            FinishRequestPending = 1U;
         }
-    }
-
-    if (next_head == 0U)
-        RawProbeIndex = 0U;
-    else
-    {
-        RawProbeIndex = (uint8_t)(RELAY_FRAME_LEN - next_head);
-        memmove(RawProbeFrame, &RawProbeFrame[next_head], RawProbeIndex);
-    }
-}
-
-static void Relay_ProcessMainBoardNormal(void)
-{
-    uint8_t data[UART_FORWARD_CHUNK];
-    uint16_t len = ByteQueue_Read(&MainBoardRxQueue, data, sizeof(data));
-    if (len > 0U)
-        Relay_TransmitToAndroid(data, len);
-}
-
-static void Relay_ProcessRaw(void)
-{
-    uint8_t data[UART_FORWARD_CHUNK];
-    uint16_t len;
-    uint16_t i;
-
-    len = ByteQueue_Read(&AndroidRxQueue, data, sizeof(data));
-    if (len > 0U)
-        Relay_TransmitToMainBoard(data, len);
-
-    len = ByteQueue_Read(&MainBoardRxQueue, data, sizeof(data));
-    if (len > 0U)
-    {
-        Relay_TransmitToAndroid(data, len);
-        for (i = 0U; i < len; i++)
-            Relay_ProbeRawMainByte(data[i]);
     }
 }
 
 uint8_t Comm_SendMesg_FillData(Tx_HandleTypeDef *TxHandle, uint8_t code_1, uint8_t code_2, uint32_t data, uint8_t expandCode)
 {
-    uint8_t frame[RELAY_FRAME_LEN] = {0};
-    uint16_t crc;
+    uint8_t frame[CZ_FRAME_LEN];
     UART_HandleTypeDef *huart = &huart3;
 
     LegacyTxID++;
+    if (LegacyTxID == 0U)
+        LegacyTxID = 1U;
+
+    memset(frame, 0, sizeof(frame));
     frame[0] = Mesg_Head;
     frame[2] = LegacyTxID;
     frame[3] = code_1;
@@ -550,21 +686,20 @@ uint8_t Comm_SendMesg_FillData(Tx_HandleTypeDef *TxHandle, uint8_t code_1, uint8
     frame[6] = (uint8_t)(data >> 16U);
     frame[7] = (uint8_t)(data >> 8U);
     frame[8] = (uint8_t)data;
+    frame[9] = CZ_ACK_NONE;
     frame[10] = expandCode;
-    crc = CRC16_calculate(frame, 11U);
-    frame[11] = (uint8_t)(crc >> 8U);
-    frame[12] = (uint8_t)crc;
+    Protocol_FillCrc(frame);
     frame[13] = Mesg_Tail;
 
-    if ((TxHandle != NULL) && (TxHandle->huart != NULL))
+    if ((TxHandle != 0) && (TxHandle->huart != 0))
         huart = TxHandle->huart;
-    (void)HAL_UART_Transmit(huart, frame, RELAY_FRAME_LEN, 100U);
+    (void)HAL_UART_Transmit(huart, frame, CZ_FRAME_LEN, 100U);
     return LegacyTxID;
 }
 
 uint8_t Comm_SendMesg_FillData_withResend(Tx_HandleTypeDef *TxHandle, uint8_t code_1, uint8_t code_2, uint32_t data, uint8_t expandCode, ListHandle_t *List)
 {
-    /* 旧控台重发接口已不参与新转发逻辑，仅保留链接兼容。 */
+    /* 旧控台重发接口已不参与新存珠协议，仅保留链接兼容。 */
     (void)List;
     return Comm_SendMesg_FillData(TxHandle, code_1, code_2, data, expandCode);
 }
@@ -575,62 +710,51 @@ void MesgDeal_Task(void) {}
 void CommInit(void)
 {
     memset(&AndroidRxQueue, 0, sizeof(AndroidRxQueue));
-    memset(&MainBoardRxQueue, 0, sizeof(MainBoardRxQueue));
-    memset(LocalDedupe, 0, sizeof(LocalDedupe));
-    RelayMode = RELAY_MODE_NORMAL;
+    memset(CommandDedupe, 0, sizeof(CommandDedupe));
     AndroidFrameIndex = 0U;
-    RawProbeIndex = 0U;
+    BoardTxID = 0U;
+    LegacyTxID = 0U;
 
-    /* 保留旧控台全局Tx对象，默认指向安卓侧串口，防止旧文件链接失败。 */
     memset(&Tx, 0, sizeof(Tx));
     memset(&Rx, 0, sizeof(Rx));
     Tx.huart = &huart3;
 
-    Motor2RemainingCount = 0U;
-    Motor2RetryCount = 0U;
-    Motor2PulseStarted = 0U;
-    Motor2StopRequested = 0U;
-    Motor2RemainingReportPending = 0U;
-    Motor2TimeoutReportPending = 0U;
-    Motor2State = MOTOR2_STATE_IDLE;
+    CollectMaximumQuantity = 0U;
+    CollectActualQuantity = 0U;
+    CollectPulseStarted = 0U;
+    CountReportPending = 0U;
+    FinishRequestPending = 0U;
+    FinishReasonPending = CZ_FINISH_REACH_MAX;
+    CollectTimeoutMs = COLLECT_DEFAULT_TIMEOUT_MS;
+    CollectState = CZ_STATE_IDLE;
+    CurrentErrorCode = CZ_RESULT_OK;
+    MotorRetryCount = 0U;
+    MotorState = MOTOR_STATE_IDLE;
+    TerminalPending = 0U;
+    TerminalResendCount = 0U;
 
-    /* TIM2为1MHz光眼脉宽计时；TIM3_CH1/CH2驱动SS6285L。 */
+    /* TIM2为1MHz光眼脉宽计时；TIM3_CH1/CH2驱动电机。 */
     (void)HAL_TIM_Base_Start(&htim2);
     (void)HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
     (void)HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
-    Motor2_LosePower();
+    Motor_LosePower();
 
-    /* USART2接原球盘主板，USART3接安卓板。 */
-    (void)HAL_UART_Receive_IT(&huart2, &MainBoardRxByte, 1U);
+    /* USART3：PB10/PB11连接Android，协议固定115200 8N1。 */
     (void)HAL_UART_Receive_IT(&huart3, &AndroidRxByte, 1U);
+
+    Protocol_SendStatusFrame(CZ_CODE2_BOARD_BOOT);
 }
 
 void CommTask(void)
 {
-    if (RelayMode == RELAY_MODE_RAW)
-    {
-        Relay_ProcessRaw();
-        return;
-    }
-
-    Relay_ProcessMainBoardNormal();
-    Relay_ProcessAndroidNormal();
-    /* BOTA命令可能在处理安卓帧时切换为RAW，切换后禁止发送任何本地协议帧。 */
-    if (RelayMode == RELAY_MODE_RAW)
-        return;
-
-    Motor2_Task();
-    Motor2_ReportTask();
+    Protocol_ProcessAndroidRx();
+    Collect_Task();
+    TerminalAck_Task();
 }
 
 void Comm_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if (huart == &huart2)
-    {
-        (void)ByteQueue_Push(&MainBoardRxQueue, MainBoardRxByte);
-        (void)HAL_UART_Receive_IT(&huart2, &MainBoardRxByte, 1U);
-    }
-    else if (huart == &huart3)
+    if (huart == &huart3)
     {
         (void)ByteQueue_Push(&AndroidRxQueue, AndroidRxByte);
         (void)HAL_UART_Receive_IT(&huart3, &AndroidRxByte, 1U);
@@ -640,13 +764,8 @@ void Comm_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 void Comm_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     uint32_t error_code;
-    uint8_t *rx_byte = NULL;
 
-    if (huart == &huart2)
-        rx_byte = &MainBoardRxByte;
-    else if (huart == &huart3)
-        rx_byte = &AndroidRxByte;
-    else
+    if (huart != &huart3)
         return;
 
     error_code = huart->ErrorCode;
@@ -658,6 +777,6 @@ void Comm_UART_ErrorCallback(UART_HandleTypeDef *huart)
     if (huart->RxState == HAL_UART_STATE_READY)
     {
         huart->ErrorCode = HAL_UART_ERROR_NONE;
-        (void)HAL_UART_Receive_IT(huart, rx_byte, 1U);
+        (void)HAL_UART_Receive_IT(&huart3, &AndroidRxByte, 1U);
     }
 }
