@@ -1,96 +1,221 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/chuzhu_page_bg"
+    android:fillViewport="true"
     tools:context=".MainActivity">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:paddingStart="20dp"
+        android:paddingTop="18dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="24dp">
 
         <TextView
             android:id="@+id/text_title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="存珠机调试首页"
-            android:textSize="24sp"
+            android:text="存珠机控制台"
+            android:textColor="@color/chuzhu_text_main"
+            android:textSize="26sp"
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/text_activation_state"
-            style="@style/DebugText" />
-
-        <TextView
-            android:id="@+id/text_device_no"
-            style="@style/DebugText" />
-
-        <TextView
-            android:id="@+id/text_mqtt_state"
-            style="@style/DebugText" />
-
-        <TextView
-            android:id="@+id/text_serial_state"
-            style="@style/DebugText" />
-
-        <TextView
-            android:id="@+id/text_running_status"
-            style="@style/DebugText" />
-
-        <TextView
-            android:id="@+id/text_operation_no"
-            style="@style/DebugText" />
-
-        <TextView
-            android:id="@+id/text_maximum_quantity"
-            style="@style/DebugText" />
-
-        <TextView
-            android:id="@+id/text_actual_quantity"
-            style="@style/DebugText" />
-
-        <TextView
-            android:id="@+id/text_last_error"
-            style="@style/DebugText" />
-
-        <Button
-            android:id="@+id/button_open_serial"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="打开串口" />
+            android:layout_marginTop="4dp"
+            android:text="/dev/ttyS5 · MQTT · collect_marbles 联调"
+            android:textColor="@color/chuzhu_text_sub"
+            android:textSize="14sp" />
 
-        <Button
-            android:id="@+id/button_close_serial"
+        <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="关闭串口" />
+            android:layout_marginTop="16dp"
+            app:cardBackgroundColor="@color/chuzhu_card_bg"
+            app:cardCornerRadius="18dp"
+            app:cardElevation="2dp"
+            app:strokeColor="#14000000"
+            app:strokeWidth="1dp">
 
-        <Button
-            android:id="@+id/button_sim_start"
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    style="@style/DebugSectionTitle"
+                    android:text="设备连接" />
+
+                <TextView
+                    android:id="@+id/text_activation_state"
+                    style="@style/DebugText" />
+
+                <TextView
+                    android:id="@+id/text_device_no"
+                    style="@style/DebugText" />
+
+                <TextView
+                    android:id="@+id/text_mqtt_state"
+                    style="@style/DebugText" />
+
+                <TextView
+                    android:id="@+id/text_serial_state"
+                    style="@style/DebugText" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="模拟开始收珠" />
+            android:layout_marginTop="12dp"
+            app:cardBackgroundColor="@color/chuzhu_card_bg"
+            app:cardCornerRadius="18dp"
+            app:cardElevation="2dp"
+            app:strokeColor="#14000000"
+            app:strokeWidth="1dp">
 
-        <Button
-            android:id="@+id/button_sim_add"
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    style="@style/DebugSectionTitle"
+                    android:text="存珠任务" />
+
+                <TextView
+                    android:id="@+id/text_running_status"
+                    style="@style/DebugText" />
+
+                <TextView
+                    android:id="@+id/text_operation_no"
+                    style="@style/DebugText" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/text_maximum_quantity"
+                        style="@style/DebugText"
+                        android:layout_width="0dp"
+                        android:layout_weight="1" />
+
+                    <TextView
+                        android:id="@+id/text_actual_quantity"
+                        style="@style/DebugText"
+                        android:layout_width="0dp"
+                        android:layout_marginStart="12dp"
+                        android:layout_weight="1" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="模拟增加 1 颗" />
+            android:layout_marginTop="12dp"
+            app:cardBackgroundColor="@color/chuzhu_error_bg"
+            app:cardCornerRadius="18dp"
+            app:cardElevation="0dp">
 
-        <Button
-            android:id="@+id/button_sim_finish"
+            <TextView
+                android:id="@+id/text_last_error"
+                style="@style/DebugText"
+                android:padding="16dp"
+                android:textColor="@color/chuzhu_error_text" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="模拟结束收珠" />
+            android:layout_marginTop="18dp"
+            android:text="本地调试操作"
+            android:textColor="@color/chuzhu_text_sub"
+            android:textSize="14sp"
+            android:textStyle="bold" />
 
-        <Button
-            android:id="@+id/button_report_status"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="上报当前状态" />
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_open_serial"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="打开串口" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_close_serial"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:text="关闭串口" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_sim_start"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="模拟开始" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_sim_add"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:text="+1 颗" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_sim_finish"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="模拟结束" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_report_status"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:text="上报状态" />
+        </LinearLayout>
     </LinearLayout>
 
 </ScrollView>
