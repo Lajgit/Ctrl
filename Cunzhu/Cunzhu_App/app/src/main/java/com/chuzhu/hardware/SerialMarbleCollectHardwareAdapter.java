@@ -2,8 +2,10 @@ package com.chuzhu.hardware;
 
 import android.content.Context;
 
+import com.chuzhu.AppConfig;
 import com.chuzhu.serial.BoardEvent;
 import com.chuzhu.serial.BoardEventListener;
+import com.chuzhu.serial.BoardFrameCodec;
 import com.chuzhu.serial.BoardSerialPort;
 import com.pinball.xiaoda.device.sdk.hardware.CollectRequest;
 import com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult;
@@ -54,7 +56,12 @@ public final class SerialMarbleCollectHardwareAdapter
         }
         CountDownLatch latch = new CountDownLatch(1);
         blockingLatch = latch;
-        boolean started = startCollect(request.getMaximumQuantity(), null);
+        blockingResult = null;
+        boolean started = startCollect(
+                request.getMaximumQuantity(),
+                request.getSessionTimeoutSeconds(),
+                null
+        );
         if (!started) {
             blockingLatch = null;
             return HardwareExecutionResult.failed(
@@ -80,11 +87,15 @@ public final class SerialMarbleCollectHardwareAdapter
     }
 
     public boolean startCollect(int maximumQuantity, Listener listener) {
+        return startCollect(maximumQuantity, AppConfig.DEFAULT_COLLECT_TIMEOUT_SECONDS, listener);
+    }
+
+    public boolean startCollect(int maximumQuantity, int sessionTimeoutSeconds, Listener listener) {
         synchronized (lock) {
             if (collecting) {
                 return false;
             }
-            if (maximumQuantity <= 0) {
+            if (maximumQuantity <= 0 || sessionTimeoutSeconds <= 0) {
                 return false;
             }
             if (!serialPort.isOpen()) {
@@ -93,13 +104,18 @@ public final class SerialMarbleCollectHardwareAdapter
             collecting = true;
             localDebugSession = false;
             actualQuantity = 0;
+            blockingResult = null;
             this.listener = listener;
-            byte[] frame = serialPort.getCodec().buildStartCollectFrame(maximumQuantity);
-            /*
-             * 待存珠机控制板新串口协议确认后替换。
-             * 当前 frame 为空时只建立会话，不伪造数量、不自动成功。
-             */
-            return serialPort.write(frame);
+            byte[] frame = serialPort.getCodec().buildStartCollectFrame(
+                    maximumQuantity,
+                    sessionTimeoutSeconds
+            );
+            boolean written = serialPort.write(frame);
+            if (!written) {
+                collecting = false;
+                this.listener = null;
+            }
+            return written;
         }
     }
 
@@ -130,6 +146,7 @@ public final class SerialMarbleCollectHardwareAdapter
             collecting = true;
             localDebugSession = true;
             actualQuantity = 0;
+            blockingResult = null;
             this.listener = listener;
             return true;
         }
@@ -189,11 +206,16 @@ public final class SerialMarbleCollectHardwareAdapter
         if (event == null) {
             return;
         }
-        /*
-         * 待存珠机控制板新串口协议确认后替换。
-         * 当前 BoardFrameCodec 只广播 RAW，不按旧协议解释业务事件。
-         */
-        if (BoardEvent.TYPE_COUNT_CHANGED.equals(event.type)) {
+        if (event.requiresAck) {
+            /*
+             * 0x21 收珠结束和 0x22 故障是控制板关键终态帧，Android 必须回 ACK echo。
+             * 控制板未收到 ACK 时可用相同 ID、递增 ResendID 重发，Android 侧按终态幂等处理。
+             */
+            serialPort.write(serialPort.getCodec().buildAckFrame(event, BoardFrameCodec.RESULT_OK));
+        }
+        if (BoardEvent.TYPE_ACK.equals(event.type)) {
+            handleCommandAck(event);
+        } else if (BoardEvent.TYPE_COUNT_CHANGED.equals(event.type)) {
             onBoardCountChanged(event.actualQuantity);
         } else if (BoardEvent.TYPE_FINISHED.equals(event.type)) {
             onBoardFinished(event.actualQuantity);
@@ -206,6 +228,14 @@ public final class SerialMarbleCollectHardwareAdapter
     public void onSerialError(String message, Throwable error) {
         if (collecting) {
             fail("SERIAL_ERROR", message);
+        }
+    }
+
+    private void handleCommandAck(BoardEvent event) {
+        if (event.code2 == BoardFrameCodec.CODE2_START_COLLECT
+                && event.expandCode != BoardFrameCodec.RESULT_OK
+                && event.expandCode != BoardFrameCodec.RESULT_DUPLICATE_ACCEPTED) {
+            fail(event.errorCode, "控制板拒绝开始收珠：" + event.errorMessage);
         }
     }
 
