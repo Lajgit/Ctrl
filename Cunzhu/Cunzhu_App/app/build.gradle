@@ -30,6 +30,13 @@ android {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
     }
+
+    packaging {
+        resources {
+            // SDK 内置 MQTT 与宿主 Paho 可能同时携带 bundle.properties，打包时只保留一份即可。
+            pickFirsts += ['bundle.properties']
+        }
+    }
 }
 
 dependencies {
@@ -40,6 +47,11 @@ dependencies {
     implementation files('libs/xiaoda-device-sdk-0.3.0.jar')
     implementation files('libs/xiaoda-device-mqtt-0.3.0.jar')
     implementation files('libs/xiaoda-device-hardware-0.3.0.jar')
+
+    // SDK 0.3.0 内置 Paho 在当前 APK 中缺少 tcp NetworkModule 服务注册，
+    // 存珠机先使用宿主 Paho 建立 MQTT 连接，业务编解码仍保留 SDK 接口。
+    implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
+
     testImplementation libs.junit
     androidTestImplementation libs.espresso.core
     androidTestImplementation libs.ext.junit
