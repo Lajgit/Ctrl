@@ -7,7 +7,14 @@ import android.util.Log;
 import com.chuzhu.AppConfig;
 import com.chuzhu.data.PendingOutboxStore;
 import com.pinball.xiaoda.device.sdk.core.MqttCredential;
-import com.pinball.xiaoda.device.sdk.mqtt.paho.PahoMqttTransport;
+
+import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
+import org.eclipse.paho.client.mqttv3.MqttCallbackExtended;
+import org.eclipse.paho.client.mqttv3.MqttClient;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
+import org.eclipse.paho.client.mqttv3.MqttException;
+import org.eclipse.paho.client.mqttv3.MqttMessage;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -19,17 +26,25 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 存珠机 MQTT 连接管理。
+ *
+ * <p>日志中的 “no NetworkModule installed for scheme tcp” 来自 SDK 0.3.0 内置
+ * Paho 的 ServiceLoader 网络模块注册缺失。本类改为使用宿主 Paho MqttClient 连接，
+ * 避免 tcp:// Broker 初始化失败；命令处理、状态上报和 SDK 数据模型保持不变。</p>
  */
 public final class MqttManager {
 
     private static final String TAG = "CunzhuMqtt";
+    private static final int MQTT_MAX_INFLIGHT = 32;
+    private static final int MQTT_INFLIGHT_HIGH_WATERMARK = 28;
+    private static final int MQTT_REASON_CODE_MAX_INFLIGHT = 32202;
     private static volatile MqttManager instance;
 
     private final Context context;
     private final ScheduledExecutorService executor =
             Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean connecting = new AtomicBoolean(false);
-    private final PahoMqttTransport transport = new PahoMqttTransport();
+    private final AtomicBoolean reconnectScheduled = new AtomicBoolean(false);
+    private MqttClient client;
     private MqttCredential credential;
     private ScheduledFuture<?> heartbeatTask;
 
@@ -57,19 +72,44 @@ public final class MqttManager {
         executor.execute(this::connectInternal);
     }
 
-    private void connectInternal() {
+    private synchronized void connectInternal() {
         if (!connecting.compareAndSet(false, true)) {
             return;
         }
         try {
-            transport.connect(credential, new TransportListener());
-            transport.subscribe(credential.getCommandSubscribeTopic(), credential.getQos());
-            broadcastStatus("mqtt", "MQTT 已连接");
-            DepositCommandHandler.get(context).recoverUnfinishedSession();
-            flushPending();
-            new HeartbeatReporter(context).report();
-            new DeviceStatusReporter(context).report();
-            startHeartbeatLoop();
+            MqttCredential current = credential;
+            if (current == null) {
+                broadcastStatus("mqtt", "MQTT 凭证不可用");
+                return;
+            }
+            if (client != null && client.isConnected()) {
+                afterConnected(current);
+                return;
+            }
+
+            closeOldClient();
+            broadcastStatus("mqtt", "正在连接 MQTT：" + current.getBrokerUrl());
+            client = new MqttClient(
+                    current.getBrokerUrl(),
+                    current.getClientId(),
+                    new MemoryPersistence()
+            );
+
+            MqttConnectOptions options = new MqttConnectOptions();
+            options.setCleanSession(true);
+            options.setAutomaticReconnect(true);
+            options.setConnectionTimeout(10);
+            options.setKeepAliveInterval(Math.max(20, current.getHeartbeatIntervalSeconds()));
+            options.setMaxInflight(MQTT_MAX_INFLIGHT);
+            options.setUserName(current.getUsername());
+            String password = current.getPassword();
+            if (password != null) {
+                options.setPassword(password.toCharArray());
+            }
+
+            client.setCallback(new CallbackImpl());
+            client.connect(options);
+            afterConnected(current);
         } catch (Throwable error) {
             Log.e(TAG, "MQTT 连接失败", error);
             broadcastStatus("mqtt", "MQTT 连接失败：" + messageOf(error));
@@ -79,8 +119,19 @@ public final class MqttManager {
         }
     }
 
-    public boolean isConnected() {
-        return transport.isConnected();
+    private void afterConnected(MqttCredential current) {
+        ensureSubscribed(current);
+        broadcastStatus("mqtt", "MQTT 已连接");
+        reconnectScheduled.set(false);
+        DepositCommandHandler.get(context).recoverUnfinishedSession();
+        flushPending();
+        new HeartbeatReporter(context).report();
+        new DeviceStatusReporter(context).report();
+        startHeartbeatLoop();
+    }
+
+    public synchronized boolean isConnected() {
+        return client != null && client.isConnected();
     }
 
     public synchronized void close() {
@@ -88,10 +139,7 @@ public final class MqttManager {
             heartbeatTask.cancel(true);
             heartbeatTask = null;
         }
-        try {
-            transport.disconnect();
-        } catch (Throwable ignored) {
-        }
+        closeOldClient();
         broadcastStatus("mqtt", "MQTT 已断开");
     }
 
@@ -115,19 +163,35 @@ public final class MqttManager {
         return topic == null ? "" : topic;
     }
 
-    public boolean publish(String topic, String payload) {
-        if (topic == null || topic.isEmpty() || !isConnected()) {
+    public synchronized boolean publish(String topic, String payload) {
+        if (topic == null || topic.isEmpty() || client == null || !client.isConnected()) {
             return false;
         }
+        int qos = credential == null ? 1 : credential.getQos();
+        int normalizedQos = Math.max(0, Math.min(2, qos));
         try {
-            int qos = credential == null ? 1 : credential.getQos();
-            transport.publish(
-                    topic,
-                    payload == null ? new byte[0] : payload.getBytes(StandardCharsets.UTF_8),
-                    qos,
-                    false
+            if (normalizedQos > 0) {
+                IMqttDeliveryToken[] pendingTokens = client.getPendingDeliveryTokens();
+                int pendingCount = pendingTokens == null ? 0 : pendingTokens.length;
+                if (pendingCount >= MQTT_INFLIGHT_HIGH_WATERMARK) {
+                    Log.w(TAG, "MQTT 在途消息过多，稍后重放 outbox：pending=" + pendingCount);
+                    return false;
+                }
+            }
+            MqttMessage message = new MqttMessage(
+                    payload == null ? new byte[0] : payload.getBytes(StandardCharsets.UTF_8)
             );
+            message.setQos(normalizedQos);
+            message.setRetained(false);
+            client.publish(topic, message);
             return true;
+        } catch (MqttException error) {
+            if (error.getReasonCode() == MQTT_REASON_CODE_MAX_INFLIGHT) {
+                Log.w(TAG, "MQTT 在途窗口已满，等待下次心跳重放 outbox");
+            } else {
+                Log.e(TAG, "MQTT 上报失败 topic=" + topic, error);
+            }
+            return false;
         } catch (Throwable error) {
             Log.e(TAG, "MQTT 上报失败 topic=" + topic, error);
             return false;
@@ -143,7 +207,18 @@ public final class MqttManager {
         }
     }
 
-    private void startHeartbeatLoop() {
+    private synchronized void ensureSubscribed(MqttCredential current) {
+        try {
+            if (client != null && client.isConnected() && current != null) {
+                client.subscribe(current.getCommandSubscribeTopic(), current.getQos());
+            }
+        } catch (Throwable error) {
+            Log.e(TAG, "MQTT 订阅失败", error);
+            broadcastStatus("mqtt", "MQTT 订阅失败：" + messageOf(error));
+        }
+    }
+
+    private synchronized void startHeartbeatLoop() {
         if (heartbeatTask != null && !heartbeatTask.isCancelled()) {
             return;
         }
@@ -163,7 +238,30 @@ public final class MqttManager {
     }
 
     private void scheduleReconnect() {
-        executor.schedule(this::connectInternal, 5, TimeUnit.SECONDS);
+        if (!reconnectScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        executor.schedule(() -> {
+            reconnectScheduled.set(false);
+            connectInternal();
+        }, 5, TimeUnit.SECONDS);
+    }
+
+    private synchronized void closeOldClient() {
+        if (client == null) {
+            return;
+        }
+        try {
+            if (client.isConnected()) {
+                client.disconnect();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            client.close();
+        } catch (Throwable ignored) {
+        }
+        client = null;
     }
 
     private void broadcastStatus(String key, String value) {
@@ -178,22 +276,43 @@ public final class MqttManager {
         if (error == null) {
             return "未知错误";
         }
-        String message = error.getMessage();
-        return message == null || message.trim().isEmpty()
-                ? error.getClass().getSimpleName()
-                : message;
+        Throwable cursor = error;
+        String message = "";
+        while (cursor != null) {
+            if (cursor.getMessage() != null && !cursor.getMessage().trim().isEmpty()) {
+                message = cursor.getMessage().trim();
+            }
+            cursor = cursor.getCause();
+        }
+        return message.isEmpty() ? error.getClass().getSimpleName() : message;
     }
 
-    private final class TransportListener implements com.pinball.xiaoda.device.sdk.client.MqttTransport.MessageListener {
+    private final class CallbackImpl implements MqttCallbackExtended {
         @Override
-        public void onMessage(String topic, byte[] payload) {
+        public void connectComplete(boolean reconnect, String serverURI) {
+            executor.execute(() -> {
+                MqttCredential current = credential;
+                if (current != null) {
+                    afterConnected(current);
+                }
+            });
+        }
+
+        @Override
+        public void connectionLost(Throwable cause) {
+            broadcastStatus("mqtt", "MQTT 已断开：" + messageOf(cause));
+            scheduleReconnect();
+        }
+
+        @Override
+        public void messageArrived(String topic, MqttMessage message) {
+            byte[] payload = message == null ? new byte[0] : message.getPayload();
             DepositCommandHandler.get(context).handle(topic, payload);
         }
 
         @Override
-        public void onConnectionLost(Throwable cause) {
-            broadcastStatus("mqtt", "MQTT 已断开：" + messageOf(cause));
-            scheduleReconnect();
+        public void deliveryComplete(IMqttDeliveryToken token) {
+            // 第一阶段 outbox 仅做重放保底，业务清理由 command_result_ack 接入后再实现。
         }
     }
 }
