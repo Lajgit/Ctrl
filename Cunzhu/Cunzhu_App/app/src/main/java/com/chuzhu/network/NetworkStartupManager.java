@@ -76,8 +76,9 @@ public final class NetworkStartupManager {
     /**
      * 判断设备是否存在可优先尝试的历史 WiFi。
      *
-     * <p>首先使用本 APP 曾经成功联网的事实；其次在系统权限允许时读取系统保存网络。
-     * 普通 Android 10+ 三方 APP 读取 configuredNetworks 可能被系统限制，因此必须捕获异常。</p>
+     * <p>首先使用本 APP 曾经成功通过 WiFi 访问互联网的事实；其次在系统权限允许时读取
+     * 系统保存网络。Android 10+ 普通三方 APP 可能无法读取 configuredNetworks，所以
+     * “返回 false”只代表 APP 无法确认，不代表系统一定没有保存网络。</p>
      */
     @SuppressWarnings("deprecation")
     public boolean hasSavedWifiInformation() {
@@ -91,7 +92,7 @@ public final class NetworkStartupManager {
             List<WifiConfiguration> configured = wifiManager.getConfiguredNetworks();
             return configured != null && !configured.isEmpty();
         } catch (SecurityException error) {
-            Log.w(TAG, "系统限制读取已保存 WiFi，回退到 APP 联网记录");
+            Log.w(TAG, "系统限制读取已保存 WiFi，回退到系统自动重连");
             return false;
         } catch (Throwable error) {
             Log.w(TAG, "读取已保存 WiFi 失败", error);
@@ -110,44 +111,70 @@ public final class NetworkStartupManager {
             return PrepareResult.online("网络已连接");
         }
         if (needsNearbyWifiPermission()) {
-            return PrepareResult.needPermission("需要 WiFi 权限后才能检查已保存网络");
-        }
-        if (!hasSavedWifiInformation()) {
-            return PrepareResult.needWifiUi("未检测到已保存的 WiFi，请连接网络");
+            return PrepareResult.needPermission("需要 WiFi 权限后才能检查并恢复网络");
         }
         if (wifiManager == null) {
             return PrepareResult.needWifiUi("系统 WiFi 服务不可用");
         }
 
+        boolean savedWifiKnown = hasSavedWifiInformation();
         try {
-            if (!wifiManager.isWifiEnabled()) {
+            if (wifiManager.isWifiEnabled()) {
                 /*
-                 * Android 10+ 普通三方 APP 调用 setWifiEnabled 会返回 false；
-                 * 量产系统应用/定制 ROM 若允许则可直接开启。失败时由前台打开系统 WiFi 面板。
+                 * 即使普通三方 APP 无权读取 configuredNetworks，也先给 Android 自己的
+                 * 已保存网络自动重连留出时间。这样不会把“列表不可见”误判成“从未配网”。
                  */
-                boolean enabled = wifiManager.setWifiEnabled(true);
-                Log.i(TAG, "尝试开启 WiFi，result=" + enabled);
-                if (!enabled) {
-                    return PrepareResult.needWifiUi("系统未允许 APP 自动打开 WiFi，请手动开启");
+                triggerReconnect();
+                if (waitForInternet(waitSeconds)) {
+                    return PrepareResult.online(
+                            savedWifiKnown ? "已自动连接保存的 WiFi" : "系统已自动恢复 WiFi 网络"
+                    );
                 }
+                return PrepareResult.needWifiUi(
+                        savedWifiKnown
+                                ? "已尝试连接保存的 WiFi，但仍无法访问互联网"
+                                : "未自动连接到可用 WiFi，请选择网络"
+                );
             }
 
-            try {
-                wifiManager.reconnect();
-            } catch (Throwable error) {
-                Log.w(TAG, "触发系统 WiFi 自动重连失败，将继续等待网络", error);
+            if (!savedWifiKnown) {
+                /* WiFi 已关闭且 APP 无法确认历史网络时，不盲等，直接让用户进入系统面板。 */
+                return PrepareResult.needWifiUi("未检测到可恢复的 WiFi，请连接网络");
             }
 
+            /*
+             * Android 10+ 普通三方 APP 调用 setWifiEnabled 会返回 false；量产系统应用/
+             * 定制 ROM 若允许则可直接开启。失败时必须回退系统 WiFi 面板，不能循环重试。
+             */
+            boolean enabled = wifiManager.setWifiEnabled(true);
+            Log.i(TAG, "检测到历史 WiFi，尝试开启 WiFi，result=" + enabled);
+            if (!enabled) {
+                return PrepareResult.needWifiUi("系统未允许 APP 自动打开 WiFi，请手动开启");
+            }
+
+            /* 给 WiFi 状态机一点启动时间，再触发系统保存网络重连。 */
+            sleepQuietly(1500L);
+            triggerReconnect();
             if (waitForInternet(waitSeconds)) {
-                return PrepareResult.online("已自动连接保存的 WiFi");
+                return PrepareResult.online("已自动打开并连接保存的 WiFi");
             }
-            return PrepareResult.needWifiUi("已尝试连接保存的 WiFi，但仍无法访问互联网");
+            return PrepareResult.needWifiUi("已打开 WiFi，但保存的网络未能联网，请重新选择网络");
         } catch (SecurityException error) {
             Log.w(TAG, "自动打开/连接 WiFi 被系统拒绝", error);
             return PrepareResult.needWifiUi("系统限制 APP 自动连接 WiFi，请手动连接");
         } catch (Throwable error) {
             Log.e(TAG, "自动连接保存 WiFi 失败", error);
             return PrepareResult.needWifiUi("自动连接 WiFi 失败，请手动连接");
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void triggerReconnect() {
+        try {
+            boolean result = wifiManager.reconnect();
+            Log.i(TAG, "触发系统 WiFi 自动重连，result=" + result);
+        } catch (Throwable error) {
+            Log.w(TAG, "触发系统 WiFi 自动重连失败，将继续等待网络", error);
         }
     }
 
@@ -163,14 +190,21 @@ public final class NetworkStartupManager {
             } else {
                 stableCount = 0;
             }
-            try {
-                Thread.sleep(1000L);
-            } catch (InterruptedException error) {
-                Thread.currentThread().interrupt();
+            if (!sleepQuietly(1000L)) {
                 return false;
             }
         }
         return false;
+    }
+
+    private static boolean sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+            return true;
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private void rememberValidatedWifi(NetworkCapabilities capabilities) {
