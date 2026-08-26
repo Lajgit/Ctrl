@@ -14,7 +14,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.Settings;
 import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
@@ -36,6 +35,7 @@ import com.chuzhu.member.MemberDepositRepository;
 import com.chuzhu.member.QrCodeUtil;
 import com.chuzhu.mqtt.MqttManager;
 import com.chuzhu.network.NetworkStartupManager;
+import com.chuzhu.network.WifiConfigActivity;
 import com.chuzhu.serial.BoardSerialPort;
 import com.google.android.material.button.MaterialButton;
 
@@ -156,7 +156,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         if (wifiPanelOpening) {
-            /* 系统 WiFi 面板返回后，稍等 DHCP/网络验证完成再继续。 */
+            /* WiFi 配置页或系统网络页返回后，稍等 DHCP/网络验证完成再继续。 */
             mainHandler.postDelayed(() -> {
                 wifiPanelOpening = false;
                 ensureNetworkBeforeDeviceFlow(false);
@@ -196,8 +196,8 @@ public class MainActivity extends AppCompatActivity {
         if (granted) {
             ensureNetworkBeforeDeviceFlow(false);
         } else {
-            /* 拒绝附近 WiFi 权限时仍允许用户通过系统 WiFi 面板联网。 */
-            openWifiPanel("WiFi 权限未授予，请在系统界面连接网络");
+            /* 拒绝附近 WiFi 权限时仍进入触屏配网页，配网页会继续引导系统联网确认。 */
+            openWifiPanel("WiFi 权限未授予，请输入 WiFi 并按提示完成系统确认");
         }
     }
 
@@ -320,7 +320,7 @@ public class MainActivity extends AppCompatActivity {
         }
         networkStatusMessage = network.hasSavedWifiInformation()
                 ? "正在尝试连接已保存 WiFi"
-                : "未保存 WiFi，准备打开网络设置";
+                : "未保存 WiFi，准备打开配网页";
         refreshStatus();
 
         worker.execute(() -> {
@@ -370,18 +370,13 @@ public class MainActivity extends AppCompatActivity {
         networkStatusMessage = reason == null ? "请连接 WiFi" : reason;
         refreshStatus();
 
-        Intent panel = new Intent(Settings.Panel.ACTION_WIFI);
-        if (panel.resolveActivity(getPackageManager()) == null) {
-            panel = new Intent(Settings.ACTION_WIFI_SETTINGS);
-        }
-        if (panel.resolveActivity(getPackageManager()) == null) {
-            panel = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
-        }
+        Intent intent = new Intent(this, WifiConfigActivity.class);
+        intent.putExtra(WifiConfigActivity.EXTRA_REASON, networkStatusMessage);
         try {
-            startActivity(panel);
+            startActivity(intent);
         } catch (Throwable error) {
             wifiPanelOpening = false;
-            showError("无法打开系统 WiFi 设置：" + messageOf(error));
+            showError("无法打开存珠机 WiFi 配置界面：" + messageOf(error));
         }
     }
 
