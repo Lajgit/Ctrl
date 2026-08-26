@@ -2,12 +2,17 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-    <color name="chuzhu_page_bg">#F3F7FB</color>
-    <color name="chuzhu_primary">#176B87</color>
-    <color name="chuzhu_primary_dark">#0B4C5F</color>
+    <color name="chuzhu_page_bg">#EAF8FF</color>
+    <color name="chuzhu_primary">#0887CF</color>
+    <color name="chuzhu_primary_dark">#00649D</color>
+    <color name="chuzhu_accent">#FFC247</color>
     <color name="chuzhu_card_bg">#FFFFFFFF</color>
-    <color name="chuzhu_text_main">#172026</color>
-    <color name="chuzhu_text_sub">#60717D</color>
+    <color name="chuzhu_panel_blue">#0C78B8</color>
+    <color name="chuzhu_panel_blue_dark">#075B90</color>
+    <color name="chuzhu_text_main">#08324A</color>
+    <color name="chuzhu_text_sub">#51788D</color>
+    <color name="chuzhu_success">#16A34A</color>
+    <color name="chuzhu_warning">#B7791F</color>
     <color name="chuzhu_error_bg">#FFF4F1</color>
     <color name="chuzhu_error_text">#B3261E</color>
 </resources>
