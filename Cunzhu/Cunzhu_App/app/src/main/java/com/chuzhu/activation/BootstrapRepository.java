@@ -23,6 +23,8 @@ import java.lang.reflect.Method;
 public final class BootstrapRepository {
 
     private static final String TAG = "CunzhuBootstrap";
+    private static volatile String verifiedDeviceNo = "";
+    private static volatile int verifiedDeviceType = -1;
 
     private final Context context;
     private final DeviceAppClient appClient;
@@ -51,6 +53,19 @@ public final class BootstrapRepository {
         );
     }
 
+    /** 当前进程是否已经用最新启动流程确认本机为纯存珠机。 */
+    public static boolean isMarbleDepositMachineVerified(Context context) {
+        String deviceNo = DeviceUtil.requireDeviceNo(context.getApplicationContext());
+        return deviceNo.equals(verifiedDeviceNo)
+                && verifiedDeviceType == AppConfig.DEVICE_TYPE_MARBLE_DEPOSIT_MACHINE;
+    }
+
+    /** MQTT 凭证重新刷新时清除进程内 bootstrap 缓存，要求重新校验。 */
+    public static void invalidate() {
+        verifiedDeviceNo = "";
+        verifiedDeviceType = -1;
+    }
+
     /**
      * 同步读取 bootstrap 并强校验本机是 MARBLE_DEPOSIT_MACHINE(deviceType=3)。
      * HTTP 调用必须放后台线程。
@@ -75,11 +90,14 @@ public final class BootstrapRepository {
         }
         int deviceType = ((Number) rawType).intValue();
         if (deviceType != AppConfig.DEVICE_TYPE_MARBLE_DEPOSIT_MACHINE) {
+            invalidate();
             throw new IllegalStateException(
                     "设备类型不匹配：bootstrap deviceType=" + deviceType
                             + "，存珠机要求=" + AppConfig.DEVICE_TYPE_MARBLE_DEPOSIT_MACHINE
             );
         }
+        verifiedDeviceNo = DeviceUtil.requireDeviceNo(context);
+        verifiedDeviceType = deviceType;
         Log.i(TAG, "bootstrap 设备类型校验通过：deviceType=" + deviceType);
         return deviceType;
     }
