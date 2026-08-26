@@ -29,9 +29,12 @@ public final class MemberDepositRepository {
 
     private static final String TAG = "CunzhuMemberApi";
     private static final long CREATE_SESSION_RETRY_INTERVAL_MS = 30_000L;
+    private static final long COOLDOWN_LOG_INTERVAL_MS = 5_000L;
+    private static final Object CREATE_SESSION_LOCK = new Object();
 
     private static volatile boolean apiVerifiedLogged;
     private static volatile long nextCreateSessionAllowedAt;
+    private static volatile long lastCooldownLogAt;
     private static volatile String lastCreateSessionError = "";
 
     private final Context context;
@@ -114,30 +117,48 @@ public final class MemberDepositRepository {
     }
 
     private Object createSessionRaw() throws Exception {
-        long now = System.currentTimeMillis();
-        long retryAt = nextCreateSessionAllowedAt;
-        if (retryAt > now) {
-            long waitSeconds = Math.max(1L, (retryAt - now + 999L) / 1000L);
-            throw new IllegalStateException(
-                    "会员存珠二维码创建失败，" + waitSeconds
-                            + " 秒后再重试；上次错误：" + safe(lastCreateSessionError, "平台暂不可用")
-            );
+        synchronized (CREATE_SESSION_LOCK) {
+            waitForCreateSessionRetryWindow();
+            Log.i(TAG, "请求创建会员存珠 Session：deviceNo=" + deviceNo
+                    + "，baseUrl=" + AppConfig.ACTIVATION_BASE_URL
+                    + "，appVersion=" + DeviceUtil.getAppVersion(context)
+                    + "，boardVersion=" + DeviceUtil.getBoardVersion());
+            try {
+                Object session = invoke("createMemberDepositSession", new Object[0], false);
+                nextCreateSessionAllowedAt = 0L;
+                lastCreateSessionError = "";
+                return session;
+            } catch (Exception error) {
+                lastCreateSessionError = diagnosticMessage(error);
+                nextCreateSessionAllowedAt = System.currentTimeMillis() + CREATE_SESSION_RETRY_INTERVAL_MS;
+                Log.e(TAG, "创建会员存珠 Session 被平台拒绝：deviceNo=" + deviceNo
+                        + "，error=" + lastCreateSessionError, error);
+                throw error;
+            }
         }
-        Log.i(TAG, "请求创建会员存珠 Session：deviceNo=" + deviceNo
-                + "，baseUrl=" + AppConfig.ACTIVATION_BASE_URL
-                + "，appVersion=" + DeviceUtil.getAppVersion(context)
-                + "，boardVersion=" + DeviceUtil.getBoardVersion());
-        try {
-            Object session = invoke("createMemberDepositSession", new Object[0], false);
-            nextCreateSessionAllowedAt = 0L;
-            lastCreateSessionError = "";
-            return session;
-        } catch (Exception error) {
-            lastCreateSessionError = diagnosticMessage(error);
-            nextCreateSessionAllowedAt = System.currentTimeMillis() + CREATE_SESSION_RETRY_INTERVAL_MS;
-            Log.e(TAG, "创建会员存珠 Session 被平台拒绝：deviceNo=" + deviceNo
-                    + "，error=" + lastCreateSessionError, error);
-            throw error;
+    }
+
+    private void waitForCreateSessionRetryWindow() throws InterruptedException {
+        long retryAt = nextCreateSessionAllowedAt;
+        long now = System.currentTimeMillis();
+        if (retryAt <= now) {
+            return;
+        }
+        long waitMs = retryAt - now;
+        long waitSeconds = Math.max(1L, (waitMs + 999L) / 1000L);
+        if (now - lastCooldownLogAt >= COOLDOWN_LOG_INTERVAL_MS) {
+            lastCooldownLogAt = now;
+            Log.w(TAG, "会员存珠二维码创建冷却中：" + waitSeconds
+                    + " 秒后再请求平台；上次错误="
+                    + safe(lastCreateSessionError, "平台暂不可用"));
+        }
+        /*
+         * MainActivity 可能因状态广播排队多个自动创建任务。
+         * 这里不再快速抛本地异常，而是让后台线程等待冷却窗口，保证最多约 30 秒请求一次平台。
+         */
+        Thread.sleep(waitMs);
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("会员存珠二维码创建任务已取消");
         }
     }
 
