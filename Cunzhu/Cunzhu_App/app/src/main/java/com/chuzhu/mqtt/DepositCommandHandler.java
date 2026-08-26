@@ -9,6 +9,7 @@ import com.chuzhu.data.ActivationStore;
 import com.chuzhu.data.CommandStore;
 import com.chuzhu.data.DepositSession;
 import com.chuzhu.data.HardwareSessionStore;
+import com.chuzhu.data.MemberDepositStore;
 import com.chuzhu.device.DeviceStateRepository;
 import com.chuzhu.device.DeviceUtil;
 import com.chuzhu.hardware.SerialMarbleCollectHardwareAdapter;
@@ -26,11 +27,13 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * collect_marbles 指令处理器。
+ * 纯存珠机 MQTT 指令处理器。
  */
 public final class DepositCommandHandler {
 
     private static final String TAG = "CunzhuDeposit";
+    private static final String CMD_MEMBER_DEPOSIT_SESSION_BOUND = "member_deposit_session_bound";
+    private static final String CMD_COMMAND_RESULT_ACK = "command_result_ack";
     private static volatile DepositCommandHandler instance;
 
     private final Context context;
@@ -79,6 +82,16 @@ public final class DepositCommandHandler {
         );
         String messageId = decoded.messageId();
         String commandType = decoded.commandType();
+
+        if (CMD_MEMBER_DEPOSIT_SESSION_BOUND.equals(commandType)) {
+            handleMemberSessionBound(decoded);
+            return;
+        }
+        if (CMD_COMMAND_RESULT_ACK.equals(commandType)) {
+            handleCommandResultAck(decoded);
+            return;
+        }
+
         if (commandStore.hasCommand(messageId)) {
             resultReporter.replay(messageId);
             return;
@@ -92,6 +105,25 @@ public final class DepositCommandHandler {
             return;
         }
         processCollect(decoded.command, decoded.envelope);
+    }
+
+    private void handleMemberSessionBound(DepositCommandCodec.Decoded decoded) {
+        String targetDeviceNo = decoded.deviceNo();
+        if (!targetDeviceNo.isEmpty() && !targetDeviceNo.equals(DeviceUtil.requireDeviceNo(context))) {
+            Log.w(TAG, "忽略非本机会员绑定事件 deviceNo=" + targetDeviceNo);
+            return;
+        }
+        new MemberDepositStore(context).applyBoundCommand(decoded.envelope);
+        Log.i(TAG, "会员存珠扫码绑定事件已更新到设备屏UI");
+    }
+
+    private void handleCommandResultAck(DepositCommandCodec.Decoded decoded) {
+        /*
+         * 第一阶段 outbox 仍为 SharedPreferences 简化实现，暂不删除业务记录。
+         * 这里先保证 command_result_ack 不会误判为不支持命令并回 failed。
+         */
+        new MemberDepositStore(context).setMessage("平台已返回 command_result_ack");
+        Log.i(TAG, "收到 command_result_ack：messageId=" + decoded.messageId());
     }
 
     private void processCollect(DeviceMqttCommand<?> command, JSONObject envelope) {
@@ -149,7 +181,14 @@ public final class DepositCommandHandler {
         commandStore.saveCommand(messageId, envelope);
         resultReporter.reportAck(command);
 
-        boolean started = hardware.startCollect(maximumQuantity, new HardwareListener(command, session));
+        int timeoutSeconds = data.getSessionTimeoutSeconds() == null
+                ? AppConfig.DEFAULT_COLLECT_TIMEOUT_SECONDS
+                : Math.max(1, data.getSessionTimeoutSeconds());
+        boolean started = hardware.startCollect(
+                maximumQuantity,
+                timeoutSeconds,
+                new HardwareListener(command, session)
+        );
         if (!started) {
             finishFailed(command, session, "COLLECT_START_FAILED", "启动收珠硬件失败", 0);
             return;
@@ -158,10 +197,8 @@ public final class DepositCommandHandler {
         session.updatedAt = System.currentTimeMillis();
         sessionStore.save(session);
         DeviceStateRepository.get(context).markCollecting();
+        new MemberDepositStore(context).setMessage("收珠机构已启动，请投入弹珠");
         new DeviceStatusReporter(context).report();
-        int timeoutSeconds = data.getSessionTimeoutSeconds() == null
-                ? AppConfig.DEFAULT_COLLECT_TIMEOUT_SECONDS
-                : Math.max(1, data.getSessionTimeoutSeconds());
         executor.schedule(
                 () -> onCollectTimeout(command.getMessageId(), timeoutSeconds),
                 timeoutSeconds,
@@ -199,6 +236,7 @@ public final class DepositCommandHandler {
                 System.currentTimeMillis()
         );
         resultReporter.reportTerminal(terminal, command.getMessageId());
+        new MemberDepositStore(context).setMessage("收珠完成，已上报平台：" + actual + " 颗");
         DeviceStateRepository.get(context).markIdle();
         new DeviceStatusReporter(context).report();
     }
@@ -230,6 +268,7 @@ public final class DepositCommandHandler {
                 System.currentTimeMillis()
         );
         resultReporter.reportTerminal(terminal, command.getMessageId());
+        new MemberDepositStore(context).setMessage("收珠失败：" + errorMessage);
         DeviceStateRepository.get(context).markFault(errorMessage);
         new DeviceStatusReporter(context).report();
     }
@@ -246,7 +285,7 @@ public final class DepositCommandHandler {
         } else if (DeviceMqttCommandTypes.REDEMPTION_RESPONSE.equals(type)) {
             reason = "存珠机第一阶段拒绝取珠/核销相关命令";
         } else {
-            reason = "存珠机第一阶段只处理 collect_marbles";
+            reason = "存珠机第一阶段只处理会员存珠白名单命令";
         }
         if (decoded.command != null) {
             reject(decoded.command, "COMMAND_NOT_SUPPORTED", reason);
