@@ -1,15 +1,19 @@
 package com.chuzhu.network;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.util.Log;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -77,6 +81,18 @@ public final class WifiConfigActivity extends AppCompatActivity {
     }
 
     @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event != null && event.getAction() == MotionEvent.ACTION_DOWN) {
+            View focused = getCurrentFocus();
+            if (focused instanceof EditText && isTouchOutsideView(focused, event)) {
+                hideKeyboard(focused);
+                focused.clearFocus();
+            }
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         hideSystemUi();
@@ -127,6 +143,7 @@ public final class WifiConfigActivity extends AppCompatActivity {
     }
 
     private void connectWifi() {
+        hideKeyboard(getCurrentFocus());
         String ssid = ssidInput.getText().toString().trim();
         String password = passwordInput.getText().toString();
         if (ssid.isEmpty()) {
@@ -179,6 +196,7 @@ public final class WifiConfigActivity extends AppCompatActivity {
     }
 
     private void clearWifi() {
+        hideKeyboard(getCurrentFocus());
         new NetworkStartupManager(this).clearWifiCredential();
         ssidInput.setText("");
         passwordInput.setText("");
@@ -218,6 +236,27 @@ public final class WifiConfigActivity extends AppCompatActivity {
                 | (visible ? InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
                 : InputType.TYPE_TEXT_VARIATION_PASSWORD));
         passwordInput.setSelection(passwordInput.getText().length());
+    }
+
+    private boolean isTouchOutsideView(View view, MotionEvent event) {
+        Rect rect = new Rect();
+        view.getGlobalVisibleRect(rect);
+        return !rect.contains((int) event.getRawX(), (int) event.getRawY());
+    }
+
+    private void hideKeyboard(View anchor) {
+        if (anchor == null) {
+            anchor = getWindow().getDecorView();
+        }
+        try {
+            InputMethodManager manager =
+                    (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (manager != null) {
+                manager.hideSoftInputFromWindow(anchor.getWindowToken(), 0);
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "隐藏软键盘失败", error);
+        }
     }
 
     private void hideSystemUi() {
