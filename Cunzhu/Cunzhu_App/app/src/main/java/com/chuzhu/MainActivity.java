@@ -41,6 +41,7 @@ import com.google.android.material.button.MaterialButton;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -87,6 +88,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean wifiPermissionRequested;
     private volatile boolean bootstrapVerified;
     private volatile boolean bootstrapRejected;
+    private volatile boolean destroyed;
     private ConnectivityManager.NetworkCallback networkCallback;
 
     private String mqttStatusMessage = "未连接";
@@ -100,7 +102,7 @@ public class MainActivity extends AppCompatActivity {
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent == null) {
+            if (!isUiAlive() || intent == null) {
                 return;
             }
             if (AppConfig.ACTION_NETWORK_REQUIRED.equals(intent.getAction())) {
@@ -126,6 +128,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        destroyed = false;
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
@@ -158,6 +161,9 @@ public class MainActivity extends AppCompatActivity {
         if (wifiPanelOpening) {
             /* WiFi 配置页或系统网络页返回后，稍等 DHCP/网络验证完成再继续。 */
             mainHandler.postDelayed(() -> {
+                if (!isUiAlive()) {
+                    return;
+                }
                 wifiPanelOpening = false;
                 ensureNetworkBeforeDeviceFlow(false);
             }, 1000L);
@@ -176,6 +182,8 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
+        mainHandler.removeCallbacksAndMessages(null);
         worker.shutdownNow();
         qrWorker.shutdownNow();
         super.onDestroy();
@@ -188,7 +196,7 @@ public class MainActivity extends AppCompatActivity {
             int[] grantResults
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != REQUEST_NEARBY_WIFI_PERMISSION) {
+        if (!isUiAlive() || requestCode != REQUEST_NEARBY_WIFI_PERMISSION) {
             return;
         }
         boolean granted = grantResults.length > 0
@@ -238,13 +246,13 @@ public class MainActivity extends AppCompatActivity {
                 if (capabilities != null
                         && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                         && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-                    mainHandler.post(MainActivity.this::onValidatedNetworkAvailable);
+                    postToMainIfAlive(MainActivity.this::onValidatedNetworkAvailable);
                 }
             }
 
             @Override
             public void onLost(Network network) {
-                mainHandler.post(() -> {
+                postToMainIfAlive(() -> {
                     if (!new NetworkStartupManager(MainActivity.this).hasValidatedInternet()) {
                         networkStatusMessage = "网络已断开";
                         autoSessionRequested = false;
@@ -278,7 +286,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void checkValidatedNetworkAsync() {
-        mainHandler.post(() -> {
+        postToMainIfAlive(() -> {
             if (new NetworkStartupManager(this).hasValidatedInternet()) {
                 onValidatedNetworkAvailable();
             }
@@ -286,6 +294,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void onValidatedNetworkAvailable() {
+        if (!isUiAlive()) {
+            return;
+        }
         networkStatusMessage = "网络已连接";
         wifiPanelOpening = false;
         ensureNetworkBeforeDeviceFlow(false);
@@ -293,6 +304,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void ensureNetworkBeforeDeviceFlow(boolean requestedByService) {
+        if (!isUiAlive()) {
+            return;
+        }
         NetworkStartupManager network = new NetworkStartupManager(this);
         if (network.hasValidatedInternet()) {
             networkStatusMessage = "网络已连接";
@@ -323,11 +337,11 @@ public class MainActivity extends AppCompatActivity {
                 : "未保存 WiFi，准备打开配网页";
         refreshStatus();
 
-        worker.execute(() -> {
+        executeWorker("联网检查", () -> {
             NetworkStartupManager.PrepareResult result =
                     new NetworkStartupManager(this)
                             .prepareBeforeActivation(SAVED_WIFI_WAIT_SECONDS);
-            mainHandler.post(() -> {
+            postToMainIfAlive(() -> {
                 networkCheckRunning.set(false);
                 networkStatusMessage = result.message;
                 if (result.isOnline()) {
@@ -351,7 +365,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void onNetworkReady() {
-        if (!new NetworkStartupManager(this).hasValidatedInternet()) {
+        if (!isUiAlive() || !new NetworkStartupManager(this).hasValidatedInternet()) {
             return;
         }
         if (!deviceServiceStarted) {
@@ -363,7 +377,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void openWifiPanel(String reason) {
-        if (wifiPanelOpening || isFinishing() || isDestroyed()) {
+        if (!isUiAlive() || wifiPanelOpening) {
             return;
         }
         wifiPanelOpening = true;
@@ -414,6 +428,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void maybeRestoreOrCreateSession() {
+        if (!isUiAlive()) {
+            return;
+        }
         if (!new NetworkStartupManager(this).hasValidatedInternet()) {
             autoSessionRequested = false;
             return;
@@ -452,15 +469,16 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void verifyBootstrapIfNeeded() {
-        if (bootstrapVerified || bootstrapRejected
+        if (!isUiAlive()
+                || bootstrapVerified || bootstrapRejected
                 || !bootstrapCheckRunning.compareAndSet(false, true)) {
             return;
         }
         memberStore.setMessage("正在校验存珠机设备类型");
-        worker.execute(() -> {
+        executeWorker("bootstrap 校验", () -> {
             try {
                 new BootstrapRepository(this).requireMarbleDepositMachine();
-                mainHandler.post(() -> {
+                postToMainIfAlive(() -> {
                     bootstrapCheckRunning.set(false);
                     bootstrapVerified = true;
                     bootstrapRejected = false;
@@ -470,7 +488,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             } catch (Throwable error) {
                 Log.e(TAG, "bootstrap 存珠机类型校验失败", error);
-                mainHandler.post(() -> {
+                postToMainIfAlive(() -> {
                     bootstrapCheckRunning.set(false);
                     bootstrapVerified = false;
                     bootstrapRejected = true;
@@ -481,6 +499,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void refreshMemberSession() {
+        if (!isUiAlive()) {
+            return;
+        }
         if (!bootstrapVerified) {
             bootstrapRejected = false;
             verifyBootstrapIfNeeded();
@@ -491,6 +512,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void requestSession(boolean forceNew) {
+        if (!isUiAlive()) {
+            return;
+        }
         if (!new NetworkStartupManager(this).hasValidatedInternet()) {
             autoSessionRequested = false;
             showError("网络未连接，不能创建会员存珠二维码");
@@ -514,7 +538,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         memberStore.setMessage(forceNew ? "正在刷新二维码" : "正在恢复或创建二维码");
-        worker.execute(() -> {
+        executeWorker("会员存珠 Session", () -> {
             try {
                 MemberDepositRepository repository = new MemberDepositRepository(this);
                 if (forceNew) {
@@ -541,6 +565,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void cancelCurrentSession() {
+        if (!isUiAlive()) {
+            return;
+        }
         MemberDepositStore.Snapshot snapshot = memberStore.load();
         if (!snapshot.hasSession()) {
             memberStore.clearSession();
@@ -554,7 +581,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         memberStore.setMessage("正在返回待机");
-        worker.execute(() -> {
+        executeWorker("取消会员存珠 Session", () -> {
             try {
                 new MemberDepositRepository(this).cancelSession(snapshot.sessionId);
             } catch (Throwable error) {
@@ -564,11 +591,14 @@ public class MainActivity extends AppCompatActivity {
             }
             memberStore.clearSession();
             autoSessionRequested = false;
-            mainHandler.post(this::maybeRestoreOrCreateSession);
+            postToMainIfAlive(this::maybeRestoreOrCreateSession);
         });
     }
 
     private void startMemberDeposit() {
+        if (!isUiAlive()) {
+            return;
+        }
         MemberDepositStore.Snapshot snapshot = memberStore.load();
         if (!new NetworkStartupManager(this).hasValidatedInternet()) {
             showError("网络未连接，不能开始存珠");
@@ -588,7 +618,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         String requestNo = memberStore.loadOrCreateClientRequestNo(snapshot.sessionId);
-        worker.execute(() -> {
+        executeWorker("开始会员存珠", () -> {
             try {
                 MemberDepositRepository.OperationSnapshot operation =
                         new MemberDepositRepository(this).startMemberDeposit(requestNo, snapshot.sessionId);
@@ -601,7 +631,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateRuntimeMessage(String key, String value) {
-        if (value == null || value.trim().isEmpty()) {
+        if (!isUiAlive() || value == null || value.trim().isEmpty()) {
             return;
         }
         String text = value.trim();
@@ -612,7 +642,7 @@ public class MainActivity extends AppCompatActivity {
                 bootstrapVerified = false;
                 bootstrapRejected = false;
                 autoSessionRequested = false;
-                mainHandler.post(this::maybeRestoreOrCreateSession);
+                postToMainIfAlive(this::maybeRestoreOrCreateSession);
             }
         } else if ("service".equals(key)) {
             serviceStatusMessage = text;
@@ -627,6 +657,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void refreshStatus() {
+        if (!isUiAlive()) {
+            return;
+        }
         MemberDepositStore.Snapshot member = memberStore.load();
         ActivationStore activationStore = new ActivationStore(this);
         DeviceStateRepository stateRepository = DeviceStateRepository.get(this);
@@ -698,6 +731,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateQr(boolean internet, MemberDepositStore.Snapshot member, boolean collecting) {
+        if (!isUiAlive()) {
+            return;
+        }
         if (!internet) {
             qrImage.setVisibility(View.GONE);
             qrPlaceholderText.setVisibility(View.VISIBLE);
@@ -750,10 +786,10 @@ public class MainActivity extends AppCompatActivity {
         qrPlaceholderText.setText("正在生成二维码");
 
         /* 二维码编码和 Bitmap 构建全部放后台线程，避免 RK3566 UI 连续丢帧。 */
-        qrWorker.execute(() -> {
+        executeQrWorker("会员存珠二维码", () -> {
             try {
                 Bitmap bitmap = QrCodeUtil.create(qrContent, 420);
-                mainHandler.post(() -> {
+                postToMainIfAlive(() -> {
                     MemberDepositStore.Snapshot current = memberStore.load();
                     qrGeneratingContent = "";
                     if (!qrContent.equals(current.qrContent) || current.isBound()) {
@@ -766,7 +802,7 @@ public class MainActivity extends AppCompatActivity {
                 });
             } catch (Throwable error) {
                 Log.e(TAG, "二维码生成失败", error);
-                mainHandler.post(() -> {
+                postToMainIfAlive(() -> {
                     qrGeneratingContent = "";
                     qrImage.setVisibility(View.GONE);
                     qrPlaceholderText.setVisibility(View.VISIBLE);
@@ -843,11 +879,56 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showError(String message) {
-        memberStore.setMessage(message);
-        mainHandler.post(() -> {
+        if (memberStore != null) {
+            memberStore.setMessage(message);
+        }
+        postToMainIfAlive(() -> {
             lastRuntimeMessage = message;
             refreshStatus();
         });
+    }
+
+    private boolean isUiAlive() {
+        return !destroyed && !isFinishing() && !isDestroyed();
+    }
+
+    private void postToMainIfAlive(Runnable action) {
+        if (action == null || destroyed) {
+            return;
+        }
+        mainHandler.post(() -> {
+            if (isUiAlive()) {
+                action.run();
+            }
+        });
+    }
+
+    private void executeWorker(String name, Runnable action) {
+        execute(worker, name, action);
+    }
+
+    private void executeQrWorker(String name, Runnable action) {
+        execute(qrWorker, name, action);
+    }
+
+    private void execute(ExecutorService executor, String name, Runnable action) {
+        if (executor == null || action == null || destroyed) {
+            return;
+        }
+        try {
+            executor.execute(() -> {
+                if (destroyed) {
+                    return;
+                }
+                action.run();
+            });
+        } catch (RejectedExecutionException error) {
+            /*
+             * 页面跳转/销毁后，旧的 MQTT/bootstrap 回调可能仍然到达。
+             * 这类回调不能再向已关闭线程池投递任务，否则会在主线程崩溃。
+             */
+            Log.w(TAG, "页面已销毁，忽略后台任务：" + name, error);
+        }
     }
 
     private static String describeMemberStatus(String status) {
