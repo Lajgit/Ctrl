@@ -48,6 +48,9 @@ dependencies {
     implementation files('libs/xiaoda-device-mqtt-0.3.0.jar')
     implementation files('libs/xiaoda-device-hardware-0.3.0.jar')
 
+    // 设备屏本地生成会员扫码二维码，二维码内容来自 createMemberDepositSession 返回的 qrContent。
+    implementation 'com.google.zxing:core:3.5.3'
+
     // SDK 0.3.0 内置 Paho 在当前 APK 中缺少 tcp NetworkModule 服务注册，
     // 存珠机先使用宿主 Paho 建立 MQTT 连接，业务编解码仍保留 SDK 接口。
     implementation 'org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5'
