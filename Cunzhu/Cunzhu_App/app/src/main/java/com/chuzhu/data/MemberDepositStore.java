@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 
 import com.chuzhu.AppConfig;
+import com.chuzhu.member.MemberQrRefreshScheduler;
 
 import org.json.JSONObject;
 
@@ -51,6 +52,16 @@ public final class MemberDepositStore {
     }
 
     public synchronized Snapshot load() {
+        Snapshot snapshot = loadWithoutScheduling();
+        /*
+         * 页面恢复、广播刷新、进程内重建时都可能只读取本地 Session 而不会重新 save。
+         * 因此读取到等待扫码二维码时也要确保 refreshAfterSeconds 自动刷新任务存在。
+         */
+        MemberQrRefreshScheduler.schedule(context, snapshot);
+        return snapshot;
+    }
+
+    public synchronized Snapshot loadWithoutScheduling() {
         SharedPreferences pref = preferences();
         return new Snapshot(
                 pref.getString(KEY_SESSION_ID, ""),
@@ -94,6 +105,7 @@ public final class MemberDepositStore {
         editor.putLong(KEY_UPDATED_AT, System.currentTimeMillis());
         editor.apply();
         broadcast();
+        MemberQrRefreshScheduler.schedule(context, loadWithoutScheduling());
     }
 
     public synchronized void applyBoundCommand(JSONObject envelope) {
@@ -101,7 +113,7 @@ public final class MemberDepositStore {
         if (data == null) {
             return;
         }
-        Snapshot old = load();
+        Snapshot old = loadWithoutScheduling();
         String sessionId = firstString(data, "sessionId", "memberDepositSessionId");
         if (sessionId.isEmpty()) {
             sessionId = old.sessionId;
@@ -129,7 +141,7 @@ public final class MemberDepositStore {
     }
 
     public synchronized String loadOrCreateClientRequestNo(String sessionId) {
-        Snapshot old = load();
+        Snapshot old = loadWithoutScheduling();
         if (!old.clientRequestNo.isEmpty() && old.sessionId.equals(sessionId)) {
             return old.clientRequestNo;
         }
@@ -142,6 +154,7 @@ public final class MemberDepositStore {
                 .putLong(KEY_UPDATED_AT, System.currentTimeMillis())
                 .apply();
         broadcast();
+        MemberQrRefreshScheduler.cancel();
         return requestNo;
     }
 
@@ -154,6 +167,7 @@ public final class MemberDepositStore {
                 .putLong(KEY_UPDATED_AT, System.currentTimeMillis())
                 .apply();
         broadcast();
+        MemberQrRefreshScheduler.cancel();
     }
 
     public synchronized void setMessage(String message) {
@@ -163,7 +177,7 @@ public final class MemberDepositStore {
          * 如果相同文案仍持续广播，会形成“写状态 -> 广播 -> 再写同状态”的消息风暴，
          * 在 RK3566 上表现为连续 Skipped frames。相同值直接返回，只广播真实状态变化。
          */
-        if (next.equals(load().message)) {
+        if (next.equals(loadWithoutScheduling().message)) {
             return;
         }
         preferences().edit()
@@ -176,6 +190,7 @@ public final class MemberDepositStore {
     public synchronized void clearSession() {
         preferences().edit().clear().apply();
         broadcast();
+        MemberQrRefreshScheduler.cancel();
     }
 
     private SharedPreferences preferences() {
