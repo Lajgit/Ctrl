@@ -35,6 +35,10 @@
             android:exported="false"
             android:launchMode="singleTask" />
         <activity
+            android:name=".network.WifiConfigActivity"
+            android:exported="false"
+            android:launchMode="singleTask" />
+        <activity
             android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
