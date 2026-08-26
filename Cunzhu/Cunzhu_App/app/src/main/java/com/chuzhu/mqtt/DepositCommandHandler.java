@@ -4,12 +4,14 @@ import android.content.Context;
 import android.util.Log;
 
 import com.chuzhu.AppConfig;
+import com.chuzhu.activation.BootstrapRepository;
 import com.chuzhu.activation.SdkCredentialStore;
 import com.chuzhu.data.ActivationStore;
 import com.chuzhu.data.CommandStore;
 import com.chuzhu.data.DepositSession;
 import com.chuzhu.data.HardwareSessionStore;
 import com.chuzhu.data.MemberDepositStore;
+import com.chuzhu.data.PendingOutboxStore;
 import com.chuzhu.device.DeviceStateRepository;
 import com.chuzhu.device.DeviceUtil;
 import com.chuzhu.hardware.SerialMarbleCollectHardwareAdapter;
@@ -108,6 +110,10 @@ public final class DepositCommandHandler {
     }
 
     private void handleMemberSessionBound(DepositCommandCodec.Decoded decoded) {
+        if (decoded.command == null) {
+            Log.w(TAG, "忽略未通过 SDK Codec 校验的会员绑定事件：" + messageOf(decoded.error));
+            return;
+        }
         String targetDeviceNo = decoded.deviceNo();
         if (!targetDeviceNo.isEmpty() && !targetDeviceNo.equals(DeviceUtil.requireDeviceNo(context))) {
             Log.w(TAG, "忽略非本机会员绑定事件 deviceNo=" + targetDeviceNo);
@@ -118,12 +124,49 @@ public final class DepositCommandHandler {
     }
 
     private void handleCommandResultAck(DepositCommandCodec.Decoded decoded) {
-        /*
-         * 第一阶段 outbox 仍为 SharedPreferences 简化实现，暂不删除业务记录。
-         * 这里先保证 command_result_ack 不会误判为不支持命令并回 failed。
-         */
-        new MemberDepositStore(context).setMessage("平台已返回 command_result_ack");
-        Log.i(TAG, "收到 command_result_ack：messageId=" + decoded.messageId());
+        if (decoded.command == null) {
+            Log.w(TAG, "忽略未通过 SDK Codec 校验的 command_result_ack：" + messageOf(decoded.error));
+            return;
+        }
+        JSONObject data = dataOf(decoded.envelope);
+        if (data == null) {
+            Log.w(TAG, "command_result_ack 缺少 data，保留 outbox");
+            return;
+        }
+
+        String sourceMessageId = firstString(data, "sourceMessageId", "messageId");
+        String eventNo = firstString(data, "eventNo");
+        String resultStatus = firstString(data, "resultStatus", "status");
+        boolean recorded = data.optBoolean("recorded", false);
+        boolean retryable = data.optBoolean("retryable", true);
+
+        if (!recorded || retryable) {
+            new MemberDepositStore(context).setMessage(
+                    retryable ? "平台要求重试业务回执" : "平台尚未确认业务回执"
+            );
+            Log.w(TAG, "command_result_ack 未确认清理：recorded=" + recorded
+                    + "，retryable=" + retryable
+                    + "，sourceMessageId=" + sourceMessageId
+                    + "，eventNo=" + eventNo);
+            return;
+        }
+        if (sourceMessageId.isEmpty() || eventNo.isEmpty() || resultStatus.isEmpty()) {
+            Log.w(TAG, "command_result_ack 缺少 receiptKey 字段，保留 outbox");
+            return;
+        }
+
+        int removed = new PendingOutboxStore(context).removeConfirmed(
+                sourceMessageId,
+                eventNo,
+                resultStatus
+        );
+        new MemberDepositStore(context).setMessage(
+                removed > 0 ? "平台已确认业务回执" : "平台已确认回执，本地未找到对应待发送记录"
+        );
+        Log.i(TAG, "command_result_ack 已处理：sourceMessageId=" + sourceMessageId
+                + "，eventNo=" + eventNo
+                + "，resultStatus=" + resultStatus
+                + "，removed=" + removed);
     }
 
     private void processCollect(DeviceMqttCommand<?> command, JSONObject envelope) {
@@ -140,10 +183,22 @@ public final class DepositCommandHandler {
             reject(command, "DEVICE_NOT_ACTIVATED", "设备尚未激活");
             return;
         }
-        if (!MqttManager.get(context).isConnected()) {
-            reject(command, "MQTT_NOT_CONNECTED", "MQTT 未连接");
+        if (!MqttManager.get(context).isConnected() || !MqttManager.get(context).isSubscribed()) {
+            reject(command, "MQTT_NOT_CONNECTED", "MQTT 未完成连接和命令订阅");
             return;
         }
+
+        /*
+         * 物理执行前再次读取 bootstrap 校验 deviceType=3，避免 UI 门禁被绕过后仍能驱动收珠机构。
+         * 这是存珠业务白名单之外的第二道设备类型防线。
+         */
+        try {
+            new BootstrapRepository(context).requireMarbleDepositMachine();
+        } catch (Throwable error) {
+            reject(command, "DEVICE_TYPE_NOT_ALLOWED", "bootstrap 存珠机校验失败：" + messageOf(error));
+            return;
+        }
+
         if (!BoardSerialPort.get(context).isOpen()) {
             reject(command, "SERIAL_NOT_OPEN", "控制板串口未打开");
             return;
@@ -157,12 +212,18 @@ public final class DepositCommandHandler {
         int maximumQuantity = data.getMaximumQuantity() == null
                 ? 0
                 : data.getMaximumQuantity();
+        int timeoutSeconds = data.getSessionTimeoutSeconds() == null
+                ? 0
+                : data.getSessionTimeoutSeconds();
         if (messageId == null || messageId.trim().isEmpty()
                 || command.getDeviceNo() == null
                 || !command.getDeviceNo().equals(DeviceUtil.requireDeviceNo(context))
                 || maximumQuantity <= 0
+                || timeoutSeconds <= 0
                 || data.getOperationNo() == null
-                || data.getOperationNo().trim().isEmpty()) {
+                || data.getOperationNo().trim().isEmpty()
+                || data.getOperationToken() == null
+                || data.getOperationToken().trim().isEmpty()) {
             reject(command, "COMMAND_INVALID", "collect_marbles 字段不完整");
             return;
         }
@@ -181,9 +242,6 @@ public final class DepositCommandHandler {
         commandStore.saveCommand(messageId, envelope);
         resultReporter.reportAck(command);
 
-        int timeoutSeconds = data.getSessionTimeoutSeconds() == null
-                ? AppConfig.DEFAULT_COLLECT_TIMEOUT_SECONDS
-                : Math.max(1, data.getSessionTimeoutSeconds());
         boolean started = hardware.startCollect(
                 maximumQuantity,
                 timeoutSeconds,
@@ -220,6 +278,16 @@ public final class DepositCommandHandler {
     }
 
     private void finishSuccess(DeviceMqttCommand<?> command, DepositSession session, int actual) {
+        if (actual < 0 || actual > session.maximumQuantity) {
+            finishFailed(
+                    command,
+                    session,
+                    "ACTUAL_QUANTITY_INVALID",
+                    "控制板实际收珠数量超出授权范围",
+                    Math.max(0, actual)
+            );
+            return;
+        }
         session.actualQuantity = actual;
         session.state = DepositSession.STATE_FINISHED;
         session.updatedAt = System.currentTimeMillis();
@@ -237,6 +305,7 @@ public final class DepositCommandHandler {
         );
         resultReporter.reportTerminal(terminal, command.getMessageId());
         new MemberDepositStore(context).setMessage("收珠完成，已上报平台：" + actual + " 颗");
+        /* MCU 的 0x21 终态在电机停止后才产生，因此此处具备真实机构停止事实。 */
         DeviceStateRepository.get(context).markIdle();
         new DeviceStatusReporter(context).report();
     }
@@ -248,7 +317,8 @@ public final class DepositCommandHandler {
             String errorMessage,
             int actual
     ) {
-        session.actualQuantity = actual;
+        int safeActual = Math.max(0, Math.min(actual, session.maximumQuantity));
+        session.actualQuantity = safeActual;
         session.state = "COLLECT_TIMEOUT".equals(errorCode)
                 || "SERIAL_ERROR".equals(errorCode)
                 ? DepositSession.STATE_FAULT
@@ -262,7 +332,7 @@ public final class DepositCommandHandler {
                 command,
                 command.getMessageId() + "-terminal",
                 false,
-                actual,
+                safeActual,
                 errorCode,
                 errorMessage,
                 System.currentTimeMillis()
@@ -281,11 +351,11 @@ public final class DepositCommandHandler {
             reason = "存珠机拒绝售珠机出珠命令";
         } else if (DeviceMqttCommandTypes.SYNC_CASH_CONFIGURATION.equals(type)
                 || DeviceMqttCommandTypes.CASH_EVENT_RESPONSE.equals(type)) {
-            reason = "存珠机第一阶段拒绝现金相关命令";
+            reason = "存珠机拒绝现金相关命令";
         } else if (DeviceMqttCommandTypes.REDEMPTION_RESPONSE.equals(type)) {
-            reason = "存珠机第一阶段拒绝取珠/核销相关命令";
+            reason = "存珠机拒绝取珠/核销相关命令";
         } else {
-            reason = "存珠机第一阶段只处理会员存珠白名单命令";
+            reason = "存珠机只处理会员存珠白名单命令";
         }
         if (decoded.command != null) {
             reject(decoded.command, "COMMAND_NOT_SUPPORTED", reason);
@@ -328,14 +398,42 @@ public final class DepositCommandHandler {
         }
     }
 
+    private static JSONObject dataOf(JSONObject envelope) {
+        if (envelope == null) {
+            return null;
+        }
+        JSONObject data = envelope.optJSONObject("data");
+        return data == null ? envelope : data;
+    }
+
+    private static String firstString(JSONObject json, String... keys) {
+        if (json == null || keys == null) {
+            return "";
+        }
+        for (String key : keys) {
+            if (key != null && json.has(key) && !json.isNull(key)) {
+                String value = String.valueOf(json.opt(key)).trim();
+                if (!value.isEmpty() && !"null".equalsIgnoreCase(value)) {
+                    return value;
+                }
+            }
+        }
+        return "";
+    }
+
     private static String messageOf(Throwable error) {
         if (error == null) {
             return "未知错误";
         }
-        String message = error.getMessage();
-        return message == null || message.trim().isEmpty()
-                ? error.getClass().getSimpleName()
-                : message;
+        Throwable cursor = error;
+        String message = "";
+        while (cursor != null) {
+            if (cursor.getMessage() != null && !cursor.getMessage().trim().isEmpty()) {
+                message = cursor.getMessage().trim();
+            }
+            cursor = cursor.getCause();
+        }
+        return message.isEmpty() ? error.getClass().getSimpleName() : message;
     }
 
     private final class HardwareListener implements SerialMarbleCollectHardwareAdapter.Listener {
@@ -350,6 +448,13 @@ public final class DepositCommandHandler {
 
         @Override
         public void onCountChanged(int actualQuantity) {
+            if (actualQuantity < 0 || actualQuantity > session.maximumQuantity) {
+                hardware.onBoardFault(
+                        "ACTUAL_QUANTITY_INVALID",
+                        "控制板计数超出本次最大允许数量"
+                );
+                return;
+            }
             session.actualQuantity = actualQuantity;
             session.updatedAt = System.currentTimeMillis();
             sessionStore.save(session);
