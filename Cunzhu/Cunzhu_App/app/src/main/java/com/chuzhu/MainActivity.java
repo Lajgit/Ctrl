@@ -26,6 +26,7 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
+import com.chuzhu.activation.BootstrapRepository;
 import com.chuzhu.data.ActivationStore;
 import com.chuzhu.data.DepositSession;
 import com.chuzhu.data.MemberDepositStore;
@@ -45,8 +46,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 纯存珠机正式会员存珠首页。
  *
- * <p>启动顺序固定为：联网检查 -> 激活/重新激活 -> MQTT 连接并订阅 -> 恢复/创建会员 Session。
- * 无网络时绝不能提前进入 enroll/reactivate 或会员存珠 HTTP。</p>
+ * <p>启动顺序固定为：联网检查 -> 激活/重新激活 -> MQTT 连接并订阅 -> bootstrap 校验
+ * deviceType=3 -> 恢复/创建会员 Session。无网络时绝不能提前进入 enroll/reactivate 或
+ * 会员存珠 HTTP。</p>
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -74,6 +76,7 @@ public class MainActivity extends AppCompatActivity {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService qrWorker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean networkCheckRunning = new AtomicBoolean(false);
+    private final AtomicBoolean bootstrapCheckRunning = new AtomicBoolean(false);
 
     private MemberDepositStore memberStore;
     private boolean receiverRegistered;
@@ -82,6 +85,8 @@ public class MainActivity extends AppCompatActivity {
     private boolean deviceServiceStarted;
     private boolean wifiPanelOpening;
     private boolean wifiPermissionRequested;
+    private volatile boolean bootstrapVerified;
+    private volatile boolean bootstrapRejected;
     private ConnectivityManager.NetworkCallback networkCallback;
 
     private String mqttStatusMessage = "未连接";
@@ -432,6 +437,13 @@ public class MainActivity extends AppCompatActivity {
             memberStore.setMessage("设备已激活，正在等待 MQTT 就绪");
             return;
         }
+        if (bootstrapRejected) {
+            return;
+        }
+        if (!bootstrapVerified) {
+            verifyBootstrapIfNeeded();
+            return;
+        }
         if (autoSessionRequested) {
             return;
         }
@@ -444,7 +456,41 @@ public class MainActivity extends AppCompatActivity {
         requestSession(false);
     }
 
+    private void verifyBootstrapIfNeeded() {
+        if (bootstrapVerified || bootstrapRejected
+                || !bootstrapCheckRunning.compareAndSet(false, true)) {
+            return;
+        }
+        memberStore.setMessage("正在校验存珠机设备类型");
+        worker.execute(() -> {
+            try {
+                new BootstrapRepository(this).requireMarbleDepositMachine();
+                mainHandler.post(() -> {
+                    bootstrapCheckRunning.set(false);
+                    bootstrapVerified = true;
+                    bootstrapRejected = false;
+                    autoSessionRequested = false;
+                    refreshStatus();
+                    maybeRestoreOrCreateSession();
+                });
+            } catch (Throwable error) {
+                Log.e(TAG, "bootstrap 存珠机类型校验失败", error);
+                mainHandler.post(() -> {
+                    bootstrapCheckRunning.set(false);
+                    bootstrapVerified = false;
+                    bootstrapRejected = true;
+                    showError("设备类型校验失败，已关闭营业：" + messageOf(error));
+                });
+            }
+        });
+    }
+
     private void refreshMemberSession() {
+        if (!bootstrapVerified) {
+            bootstrapRejected = false;
+            verifyBootstrapIfNeeded();
+            return;
+        }
         autoSessionRequested = true;
         requestSession(true);
     }
@@ -464,6 +510,12 @@ public class MainActivity extends AppCompatActivity {
         if (!MqttManager.get(this).isConnected() || !MqttManager.get(this).isSubscribed()) {
             autoSessionRequested = false;
             showError("MQTT 尚未就绪，暂不能创建会员存珠二维码");
+            return;
+        }
+        if (!bootstrapVerified) {
+            autoSessionRequested = false;
+            showError("尚未通过存珠机设备类型校验");
+            verifyBootstrapIfNeeded();
             return;
         }
         memberStore.setMessage(forceNew ? "正在刷新二维码" : "正在恢复或创建二维码");
@@ -528,6 +580,10 @@ public class MainActivity extends AppCompatActivity {
             ensureNetworkBeforeDeviceFlow(false);
             return;
         }
+        if (!bootstrapVerified) {
+            showError("设备类型尚未通过存珠机校验，不能开始存珠");
+            return;
+        }
         if (!snapshot.isBound()) {
             showError("请先让会员扫码绑定后再开始存珠");
             return;
@@ -557,6 +613,9 @@ public class MainActivity extends AppCompatActivity {
         if ("mqtt".equals(key)) {
             mqttStatusMessage = text;
             if (text.contains("已订阅")) {
+                /* 新 MQTT 凭证和订阅已就绪后重新读取 bootstrap，不依赖旧运行缓存。 */
+                bootstrapVerified = false;
+                bootstrapRejected = false;
                 autoSessionRequested = false;
                 mainHandler.post(this::maybeRestoreOrCreateSession);
             }
@@ -605,6 +664,7 @@ public class MainActivity extends AppCompatActivity {
         deviceStatusText.setText("设备：" + describeRunningStatus(runningStatus)
                 + " · 网络 " + (internet ? "已连接" : networkStatusMessage)
                 + " · MQTT " + (mqttConnected ? (mqttSubscribed ? "已订阅" : "已连接") : mqttStatusMessage)
+                + " · 类型 " + (bootstrapVerified ? "存珠机" : (bootstrapRejected ? "校验失败" : "待校验"))
                 + " · 串口 " + (serialOpen ? "已打开" : serialStatusMessage)
                 + " · " + serviceStatusMessage);
 
@@ -629,6 +689,7 @@ public class MainActivity extends AppCompatActivity {
                 && activated
                 && mqttConnected
                 && mqttSubscribed
+                && bootstrapVerified
                 && serialOpen
                 && member.isBound()
                 && !collecting
@@ -636,8 +697,9 @@ public class MainActivity extends AppCompatActivity {
                 && !MemberDepositStore.STATUS_STARTING.equals(member.status);
         startButton.setEnabled(canStart);
         startButton.setText(collecting ? "正在收珠" : "开始存珠");
-        refreshButton.setEnabled(internet && activated && mqttConnected && mqttSubscribed && !collecting);
-        cancelButton.setEnabled(internet && !collecting && member.hasSession());
+        refreshButton.setEnabled(internet && activated && mqttConnected
+                && mqttSubscribed && bootstrapVerified && !collecting);
+        cancelButton.setEnabled(internet && bootstrapVerified && !collecting && member.hasSession());
     }
 
     private void updateQr(boolean internet, MemberDepositStore.Snapshot member, boolean collecting) {
@@ -645,6 +707,12 @@ public class MainActivity extends AppCompatActivity {
             qrImage.setVisibility(View.GONE);
             qrPlaceholderText.setVisibility(View.VISIBLE);
             qrPlaceholderText.setText("网络未连接\n请连接 WiFi");
+            return;
+        }
+        if (bootstrapRejected) {
+            qrImage.setVisibility(View.GONE);
+            qrPlaceholderText.setVisibility(View.VISIBLE);
+            qrPlaceholderText.setText("设备类型校验失败\n已关闭营业");
             return;
         }
         if (collecting) {
@@ -665,7 +733,7 @@ public class MainActivity extends AppCompatActivity {
             qrImage.setImageBitmap(null);
             qrImage.setVisibility(View.GONE);
             qrPlaceholderText.setVisibility(View.VISIBLE);
-            qrPlaceholderText.setText("正在获取二维码");
+            qrPlaceholderText.setText(bootstrapVerified ? "正在获取二维码" : "正在校验设备配置");
             return;
         }
         if (member.qrContent.equals(lastQrContent) && qrImage.getDrawable() != null) {
@@ -726,6 +794,12 @@ public class MainActivity extends AppCompatActivity {
         if (!activated) {
             return "等待激活";
         }
+        if (bootstrapRejected) {
+            return "不可营业";
+        }
+        if (!bootstrapVerified) {
+            return "校验设备";
+        }
         if (collecting) {
             return "收珠中";
         }
@@ -741,6 +815,12 @@ public class MainActivity extends AppCompatActivity {
     private String mainHint(boolean internet, MemberDepositStore.Snapshot member, boolean collecting) {
         if (!internet) {
             return "请连接 WiFi，联网后设备会自动继续初始化";
+        }
+        if (bootstrapRejected) {
+            return "平台设备类型不是存珠机，请检查设备档案";
+        }
+        if (!bootstrapVerified) {
+            return "正在校验平台设备类型与存珠能力";
         }
         if (collecting) {
             return "请投入弹珠，系统正在计数";
