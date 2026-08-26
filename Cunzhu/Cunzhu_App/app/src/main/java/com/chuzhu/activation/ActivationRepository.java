@@ -172,6 +172,8 @@ public final class ActivationRepository {
             throw new IllegalStateException("激活响应未包含完整 MQTT 凭证");
         }
         MqttCredential credential = credentialManager.replaceFrom(activation);
+        /* 新 MQTT 凭证生效后，旧凭证下取得的 bootstrap 结果必须失效并重新校验。 */
+        BootstrapRepository.invalidate();
         activationStore.markActivated(credential.getDeviceNo());
         running.set(false);
         if (pollRunnable != null) {
