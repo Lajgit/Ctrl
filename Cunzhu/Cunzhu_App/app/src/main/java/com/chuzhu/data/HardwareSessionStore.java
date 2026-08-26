@@ -23,6 +23,26 @@ public final class HardwareSessionStore {
         if (session == null) {
             return;
         }
+
+        /*
+         * actualQuantity 是“已确认收珠数”，不能持久化负数或超过本次 maximumQuantity 的
+         * 诊断原值。异常帧的原始 observedQuantity 只允许留在诊断日志；本地业务快照继续保留
+         * 最近一次合法可信数量，避免 UI 或恢复流程把越界值误认为已确认事实。
+         */
+        if (session.actualQuantity < 0
+                || (session.maximumQuantity > 0
+                && session.actualQuantity > session.maximumQuantity)) {
+            DepositSession previous = load();
+            if (previous != null
+                    && previous.actualQuantity >= 0
+                    && (session.maximumQuantity <= 0
+                    || previous.actualQuantity <= session.maximumQuantity)) {
+                session.actualQuantity = previous.actualQuantity;
+            } else {
+                session.actualQuantity = 0;
+            }
+        }
+
         preferences().edit()
                 .putString(KEY_SESSION, session.toJson().toString())
                 .commit();
