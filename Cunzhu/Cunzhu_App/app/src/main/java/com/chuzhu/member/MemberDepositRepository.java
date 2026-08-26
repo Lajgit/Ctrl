@@ -28,15 +28,22 @@ import java.lang.reflect.Method;
 public final class MemberDepositRepository {
 
     private static final String TAG = "CunzhuMemberApi";
+    private static final long CREATE_SESSION_RETRY_INTERVAL_MS = 30_000L;
+
+    private static volatile boolean apiVerifiedLogged;
+    private static volatile long nextCreateSessionAllowedAt;
+    private static volatile String lastCreateSessionError = "";
 
     private final Context context;
+    private final String deviceNo;
     private final DeviceAppClient appClient;
 
     public MemberDepositRepository(Context context) throws Exception {
         this.context = context.getApplicationContext();
+        this.deviceNo = DeviceUtil.requireDeviceNo(this.context);
         DeviceSdkConfig config = DeviceSdkConfig.builder()
                 .apiBaseUrl(AppConfig.ACTIVATION_BASE_URL)
-                .deviceNo(DeviceUtil.requireDeviceNo(this.context))
+                .deviceNo(deviceNo)
                 .connectTimeoutMillis(10_000)
                 .readTimeoutMillis(15_000)
                 .build();
@@ -62,13 +69,13 @@ public final class MemberDepositRepository {
     public MemberDepositStore.Snapshot currentOrCreateSession() throws Exception {
         Object current = invoke("currentMemberDepositSession", new Object[0], false);
         if (current == null) {
-            current = invoke("createMemberDepositSession", new Object[0], false);
+            current = createSessionRaw();
         }
         return toSession(current, "等待会员扫码");
     }
 
     public MemberDepositStore.Snapshot createSession() throws Exception {
-        return toSession(invoke("createMemberDepositSession", new Object[0], false), "等待会员扫码");
+        return toSession(createSessionRaw(), "等待会员扫码");
     }
 
     public void cancelSession(String sessionId) throws Exception {
@@ -106,13 +113,44 @@ public final class MemberDepositRepository {
         );
     }
 
+    private Object createSessionRaw() throws Exception {
+        long now = System.currentTimeMillis();
+        long retryAt = nextCreateSessionAllowedAt;
+        if (retryAt > now) {
+            long waitSeconds = Math.max(1L, (retryAt - now + 999L) / 1000L);
+            throw new IllegalStateException(
+                    "会员存珠二维码创建失败，" + waitSeconds
+                            + " 秒后再重试；上次错误：" + safe(lastCreateSessionError, "平台暂不可用")
+            );
+        }
+        Log.i(TAG, "请求创建会员存珠 Session：deviceNo=" + deviceNo
+                + "，baseUrl=" + AppConfig.ACTIVATION_BASE_URL
+                + "，appVersion=" + DeviceUtil.getAppVersion(context)
+                + "，boardVersion=" + DeviceUtil.getBoardVersion());
+        try {
+            Object session = invoke("createMemberDepositSession", new Object[0], false);
+            nextCreateSessionAllowedAt = 0L;
+            lastCreateSessionError = "";
+            return session;
+        } catch (Exception error) {
+            lastCreateSessionError = diagnosticMessage(error);
+            nextCreateSessionAllowedAt = System.currentTimeMillis() + CREATE_SESSION_RETRY_INTERVAL_MS;
+            Log.e(TAG, "创建会员存珠 Session 被平台拒绝：deviceNo=" + deviceNo
+                    + "，error=" + lastCreateSessionError, error);
+            throw error;
+        }
+    }
+
     private void verifyMemberDepositApi() throws Exception {
         requireMethod("currentMemberDepositSession", 0);
         requireMethod("createMemberDepositSession", 0);
         requireMethod("cancelMemberDepositSession", 1);
         requireMethod("startMemberDeposit", 2);
         requireMethod("queryMemberDeposit", 1);
-        Log.i(TAG, "会员存珠 DeviceAppClient API 校验通过");
+        if (!apiVerifiedLogged) {
+            apiVerifiedLogged = true;
+            Log.i(TAG, "会员存珠 DeviceAppClient API 校验通过");
+        }
     }
 
     private void requireMethod(String name, int argCount) throws Exception {
@@ -229,6 +267,30 @@ public final class MemberDepositRepository {
             }
         }
         return null;
+    }
+
+    private static String diagnosticMessage(Throwable error) {
+        if (error == null) {
+            return "未知错误";
+        }
+        StringBuilder builder = new StringBuilder(error.getClass().getSimpleName());
+        String message = error.getMessage();
+        if (message != null && !message.trim().isEmpty()) {
+            builder.append(": ").append(message.trim());
+        }
+        Throwable cause = error.getCause();
+        while (cause != null && cause != error) {
+            builder.append(" <- ").append(cause.getClass().getSimpleName());
+            if (cause.getMessage() != null && !cause.getMessage().trim().isEmpty()) {
+                builder.append(": ").append(cause.getMessage().trim());
+            }
+            cause = cause.getCause();
+        }
+        return builder.toString();
+    }
+
+    private static String safe(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value.trim();
     }
 
     public static final class OperationSnapshot {
