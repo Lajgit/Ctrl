@@ -157,8 +157,17 @@ public final class MemberDepositStore {
     }
 
     public synchronized void setMessage(String message) {
+        String next = safe(message);
+        /*
+         * ACTION_MEMBER_DEPOSIT_SESSION 的接收方也可能重新检查启动条件。
+         * 如果相同文案仍持续广播，会形成“写状态 -> 广播 -> 再写同状态”的消息风暴，
+         * 在 RK3566 上表现为连续 Skipped frames。相同值直接返回，只广播真实状态变化。
+         */
+        if (next.equals(load().message)) {
+            return;
+        }
         preferences().edit()
-                .putString(KEY_MESSAGE, safe(message))
+                .putString(KEY_MESSAGE, next)
                 .putLong(KEY_UPDATED_AT, System.currentTimeMillis())
                 .apply();
         broadcast();
