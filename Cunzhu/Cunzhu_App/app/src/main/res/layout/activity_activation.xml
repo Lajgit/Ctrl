@@ -1,39 +1,130 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:background="@color/chuzhu_page_bg"
+    android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:paddingStart="26dp"
+        android:paddingTop="24dp"
+        android:paddingEnd="26dp"
+        android:paddingBottom="28dp">
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="存珠机注册激活"
-            android:textSize="24sp"
+            android:textColor="@color/chuzhu_primary_dark"
+            android:textSize="28sp"
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/text_activation_device"
-            style="@style/DebugText" />
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="请用平台管理端扫描认领二维码，认领完成后设备会自动进入存珠首页"
+            android:textColor="@color/chuzhu_text_sub"
+            android:textSize="15sp" />
 
-        <TextView
-            android:id="@+id/text_activation_status"
-            style="@style/DebugText" />
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            app:cardBackgroundColor="@color/chuzhu_panel_blue"
+            app:cardCornerRadius="18dp"
+            app:cardElevation="2dp">
 
-        <TextView
-            android:id="@+id/text_activation_claim_code"
-            style="@style/DebugText" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:padding="18dp">
 
-        <TextView
-            android:id="@+id/text_activation_qr"
-            style="@style/DebugText" />
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@color/white"
+                    android:padding="16dp">
 
-        <TextView
-            android:id="@+id/text_activation_error"
-            style="@style/DebugText" />
+                    <ImageView
+                        android:id="@+id/image_activation_qr"
+                        android:layout_width="240dp"
+                        android:layout_height="240dp"
+                        android:layout_gravity="center"
+                        android:adjustViewBounds="true"
+                        android:background="@color/white"
+                        android:contentDescription="设备认领二维码"
+                        android:scaleType="fitCenter" />
+
+                    <TextView
+                        android:id="@+id/text_activation_qr_placeholder"
+                        android:layout_width="match_parent"
+                        android:layout_height="240dp"
+                        android:gravity="center"
+                        android:text="等待平台返回认领二维码"
+                        android:textColor="@color/chuzhu_text_sub"
+                        android:textSize="16sp" />
+                </FrameLayout>
+
+                <TextView
+                    android:id="@+id/text_activation_claim_code"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:gravity="center"
+                    android:text="认领码：等待平台返回"
+                    android:textColor="@color/white"
+                    android:textSize="20sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            app:cardBackgroundColor="@color/chuzhu_card_bg"
+            app:cardCornerRadius="18dp"
+            app:cardElevation="1dp"
+            app:strokeColor="#1A0887CF"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    style="@style/DebugSectionTitle"
+                    android:text="设备信息" />
+
+                <TextView
+                    android:id="@+id/text_activation_device"
+                    style="@style/DebugText"
+                    android:text="deviceNo: -" />
+
+                <TextView
+                    android:id="@+id/text_activation_status"
+                    style="@style/DebugText"
+                    android:text="激活状态: 等待注册激活" />
+
+                <TextView
+                    android:id="@+id/text_activation_qr"
+                    style="@style/DebugText"
+                    android:text="认领二维码内容: 等待平台返回" />
+
+                <TextView
+                    android:id="@+id/text_activation_error"
+                    style="@style/DebugText"
+                    android:text="错误: 无" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
     </LinearLayout>
 </ScrollView>
