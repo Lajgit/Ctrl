@@ -1,14 +1,21 @@
 package com.chuzhu;
 
+import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
+import android.util.Log;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -19,7 +26,6 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
-import com.chuzhu.activation.ActivationActivity;
 import com.chuzhu.data.ActivationStore;
 import com.chuzhu.data.DepositSession;
 import com.chuzhu.data.MemberDepositStore;
@@ -28,13 +34,25 @@ import com.chuzhu.device.DeviceStateRepository;
 import com.chuzhu.member.MemberDepositRepository;
 import com.chuzhu.member.QrCodeUtil;
 import com.chuzhu.mqtt.MqttManager;
+import com.chuzhu.network.NetworkStartupManager;
 import com.chuzhu.serial.BoardSerialPort;
 import com.google.android.material.button.MaterialButton;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
+/**
+ * 纯存珠机正式会员存珠首页。
+ *
+ * <p>启动顺序固定为：联网检查 -> 激活/重新激活 -> MQTT 连接并订阅 -> 恢复/创建会员 Session。
+ * 无网络时绝不能提前进入 enroll/reactivate 或会员存珠 HTTP。</p>
+ */
 public class MainActivity extends AppCompatActivity {
+
+    private static final String TAG = "CunzhuMain";
+    private static final int REQUEST_NEARBY_WIFI_PERMISSION = 0x41;
+    private static final int SAVED_WIFI_WAIT_SECONDS = 15;
 
     private TextView headerStatusText;
     private TextView mainHintText;
@@ -54,19 +72,42 @@ public class MainActivity extends AppCompatActivity {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService qrWorker = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean networkCheckRunning = new AtomicBoolean(false);
+
     private MemberDepositStore memberStore;
     private boolean receiverRegistered;
+    private boolean networkCallbackRegistered;
     private boolean autoSessionRequested;
+    private boolean deviceServiceStarted;
+    private boolean wifiPanelOpening;
+    private boolean wifiPermissionRequested;
+    private ConnectivityManager.NetworkCallback networkCallback;
+
     private String mqttStatusMessage = "未连接";
     private String serviceStatusMessage = "服务尚未上报状态";
     private String serialStatusMessage = "串口未上报状态";
+    private String networkStatusMessage = "正在检查网络";
     private String lastRuntimeMessage = "";
     private String lastQrContent = "";
+    private String qrGeneratingContent = "";
 
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent != null && AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())) {
+            if (intent == null) {
+                return;
+            }
+            if (AppConfig.ACTION_NETWORK_REQUIRED.equals(intent.getAction())) {
+                String reason = intent.getStringExtra("reason");
+                if (reason != null && !reason.trim().isEmpty()) {
+                    networkStatusMessage = reason.trim();
+                }
+                ensureNetworkBeforeDeviceFlow(true);
+                refreshStatus();
+                return;
+            }
+            if (AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())) {
                 updateRuntimeMessage(
                         intent.getStringExtra("key"),
                         intent.getStringExtra("value")
@@ -90,28 +131,32 @@ public class MainActivity extends AppCompatActivity {
         memberStore = new MemberDepositStore(this);
         bindViews();
         bindButtons();
-        startDeviceService();
-        if (!new ActivationStore(this).isActivated()) {
-            startActivity(new Intent(this, ActivationActivity.class));
-        }
         refreshStatus();
+
+        /* 首屏先过联网门禁，不能像旧代码一样直接启动 DeviceService 去请求激活接口。 */
+        ensureNetworkBeforeDeviceFlow(false);
     }
 
     @Override
     protected void onStart() {
         super.onStart();
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(AppConfig.ACTION_SERVICE_STATUS);
-        filter.addAction(AppConfig.ACTION_DEPOSIT_STATE);
-        filter.addAction(AppConfig.ACTION_MEMBER_DEPOSIT_SESSION);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(statusReceiver, filter);
-        }
-        receiverRegistered = true;
+        registerStatusReceiver();
+        registerNetworkCallback();
         refreshStatus();
+        ensureNetworkBeforeDeviceFlow(false);
         maybeRestoreOrCreateSession();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (wifiPanelOpening) {
+            /* 系统 WiFi 面板返回后，稍等 DHCP/网络验证完成再继续。 */
+            mainHandler.postDelayed(() -> {
+                wifiPanelOpening = false;
+                ensureNetworkBeforeDeviceFlow(false);
+            }, 1000L);
+        }
     }
 
     @Override
@@ -120,13 +165,219 @@ public class MainActivity extends AppCompatActivity {
             unregisterReceiver(statusReceiver);
             receiverRegistered = false;
         }
+        unregisterNetworkCallback();
         super.onStop();
     }
 
     @Override
     protected void onDestroy() {
         worker.shutdownNow();
+        qrWorker.shutdownNow();
         super.onDestroy();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode,
+            String[] permissions,
+            int[] grantResults
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQUEST_NEARBY_WIFI_PERMISSION) {
+            return;
+        }
+        boolean granted = grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        if (granted) {
+            ensureNetworkBeforeDeviceFlow(false);
+        } else {
+            /* 拒绝附近 WiFi 权限时仍允许用户通过系统 WiFi 面板联网。 */
+            openWifiPanel("WiFi 权限未授予，请在系统界面连接网络");
+        }
+    }
+
+    private void registerStatusReceiver() {
+        if (receiverRegistered) {
+            return;
+        }
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(AppConfig.ACTION_SERVICE_STATUS);
+        filter.addAction(AppConfig.ACTION_DEPOSIT_STATE);
+        filter.addAction(AppConfig.ACTION_MEMBER_DEPOSIT_SESSION);
+        filter.addAction(AppConfig.ACTION_NETWORK_REQUIRED);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(statusReceiver, filter);
+        }
+        receiverRegistered = true;
+    }
+
+    private void registerNetworkCallback() {
+        if (networkCallbackRegistered) {
+            return;
+        }
+        ConnectivityManager manager =
+                (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (manager == null) {
+            return;
+        }
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                checkValidatedNetworkAsync();
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                if (capabilities != null
+                        && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    mainHandler.post(MainActivity.this::onValidatedNetworkAvailable);
+                }
+            }
+
+            @Override
+            public void onLost(Network network) {
+                mainHandler.post(() -> {
+                    if (!new NetworkStartupManager(MainActivity.this).hasValidatedInternet()) {
+                        networkStatusMessage = "网络已断开";
+                        autoSessionRequested = false;
+                        refreshStatus();
+                    }
+                });
+            }
+        };
+        try {
+            manager.registerDefaultNetworkCallback(networkCallback);
+            networkCallbackRegistered = true;
+        } catch (Throwable error) {
+            Log.w(TAG, "注册网络监听失败", error);
+        }
+    }
+
+    private void unregisterNetworkCallback() {
+        if (!networkCallbackRegistered || networkCallback == null) {
+            return;
+        }
+        ConnectivityManager manager =
+                (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        try {
+            if (manager != null) {
+                manager.unregisterNetworkCallback(networkCallback);
+            }
+        } catch (Throwable ignored) {
+        }
+        networkCallbackRegistered = false;
+        networkCallback = null;
+    }
+
+    private void checkValidatedNetworkAsync() {
+        mainHandler.post(() -> {
+            if (new NetworkStartupManager(this).hasValidatedInternet()) {
+                onValidatedNetworkAvailable();
+            }
+        });
+    }
+
+    private void onValidatedNetworkAvailable() {
+        networkStatusMessage = "网络已连接";
+        wifiPanelOpening = false;
+        ensureNetworkBeforeDeviceFlow(false);
+        refreshStatus();
+    }
+
+    private void ensureNetworkBeforeDeviceFlow(boolean requestedByService) {
+        NetworkStartupManager network = new NetworkStartupManager(this);
+        if (network.hasValidatedInternet()) {
+            networkStatusMessage = "网络已连接";
+            onNetworkReady();
+            return;
+        }
+
+        if (network.needsNearbyWifiPermission()) {
+            networkStatusMessage = "等待 WiFi 权限";
+            if (!wifiPermissionRequested) {
+                wifiPermissionRequested = true;
+                requestPermissions(
+                        new String[]{Manifest.permission.NEARBY_WIFI_DEVICES},
+                        REQUEST_NEARBY_WIFI_PERMISSION
+                );
+            } else if (requestedByService) {
+                openWifiPanel("请连接 WiFi 后再激活设备");
+            }
+            refreshStatus();
+            return;
+        }
+
+        if (!networkCheckRunning.compareAndSet(false, true)) {
+            return;
+        }
+        networkStatusMessage = network.hasSavedWifiInformation()
+                ? "正在尝试连接已保存 WiFi"
+                : "未保存 WiFi，准备打开网络设置";
+        refreshStatus();
+
+        worker.execute(() -> {
+            NetworkStartupManager.PrepareResult result =
+                    new NetworkStartupManager(this)
+                            .prepareBeforeActivation(SAVED_WIFI_WAIT_SECONDS);
+            mainHandler.post(() -> {
+                networkCheckRunning.set(false);
+                networkStatusMessage = result.message;
+                if (result.isOnline()) {
+                    onNetworkReady();
+                } else if (result.needsPermission()) {
+                    if (!wifiPermissionRequested) {
+                        wifiPermissionRequested = true;
+                        requestPermissions(
+                                new String[]{Manifest.permission.NEARBY_WIFI_DEVICES},
+                                REQUEST_NEARBY_WIFI_PERMISSION
+                        );
+                    } else {
+                        openWifiPanel(result.message);
+                    }
+                } else {
+                    openWifiPanel(result.message);
+                }
+                refreshStatus();
+            });
+        });
+    }
+
+    private void onNetworkReady() {
+        if (!new NetworkStartupManager(this).hasValidatedInternet()) {
+            return;
+        }
+        if (!deviceServiceStarted) {
+            deviceServiceStarted = true;
+            startDeviceService();
+        }
+        /* 已激活设备也要等待 reactivate 后的新凭证和 MQTT 订阅完成。 */
+        maybeRestoreOrCreateSession();
+    }
+
+    private void openWifiPanel(String reason) {
+        if (wifiPanelOpening || isFinishing() || isDestroyed()) {
+            return;
+        }
+        wifiPanelOpening = true;
+        networkStatusMessage = reason == null ? "请连接 WiFi" : reason;
+        refreshStatus();
+
+        Intent panel = new Intent(Settings.Panel.ACTION_WIFI);
+        if (panel.resolveActivity(getPackageManager()) == null) {
+            panel = new Intent(Settings.ACTION_WIFI_SETTINGS);
+        }
+        if (panel.resolveActivity(getPackageManager()) == null) {
+            panel = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
+        }
+        try {
+            startActivity(panel);
+        } catch (Throwable error) {
+            wifiPanelOpening = false;
+            showError("无法打开系统 WiFi 设置：" + messageOf(error));
+        }
     }
 
     private void bindViews() {
@@ -163,7 +414,22 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void maybeRestoreOrCreateSession() {
+        if (!new NetworkStartupManager(this).hasValidatedInternet()) {
+            autoSessionRequested = false;
+            return;
+        }
         if (!new ActivationStore(this).isActivated()) {
+            autoSessionRequested = false;
+            memberStore.setMessage("设备尚未完成激活");
+            return;
+        }
+        if (!MqttManager.get(this).isConnected() || !MqttManager.get(this).isSubscribed()) {
+            /*
+             * DeviceAppClient 的 HMAC 密钥来自 reactivate 后的新 MQTT password。
+             * 必须等 MQTT 使用新凭证完成连接和命令订阅，再创建会员 Session。
+             */
+            autoSessionRequested = false;
+            memberStore.setMessage("设备已激活，正在等待 MQTT 就绪");
             return;
         }
         if (autoSessionRequested) {
@@ -184,8 +450,20 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void requestSession(boolean forceNew) {
+        if (!new NetworkStartupManager(this).hasValidatedInternet()) {
+            autoSessionRequested = false;
+            showError("网络未连接，不能创建会员存珠二维码");
+            ensureNetworkBeforeDeviceFlow(false);
+            return;
+        }
         if (!new ActivationStore(this).isActivated()) {
+            autoSessionRequested = false;
             showError("设备未激活，不能创建会员存珠二维码");
+            return;
+        }
+        if (!MqttManager.get(this).isConnected() || !MqttManager.get(this).isSubscribed()) {
+            autoSessionRequested = false;
+            showError("MQTT 尚未就绪，暂不能创建会员存珠二维码");
             return;
         }
         memberStore.setMessage(forceNew ? "正在刷新二维码" : "正在恢复或创建二维码");
@@ -206,8 +484,10 @@ public class MainActivity extends AppCompatActivity {
                     throw new IllegalStateException("平台未返回有效会员存珠 Session");
                 }
                 memberStore.saveSession(session);
+                Log.i(TAG, "会员存珠 Session 已恢复/创建，status=" + session.status);
             } catch (Throwable error) {
                 autoSessionRequested = false;
+                Log.e(TAG, "创建会员存珠二维码失败", error);
                 showError("创建会员存珠二维码失败：" + messageOf(error));
             }
         });
@@ -217,15 +497,23 @@ public class MainActivity extends AppCompatActivity {
         MemberDepositStore.Snapshot snapshot = memberStore.load();
         if (!snapshot.hasSession()) {
             memberStore.clearSession();
+            autoSessionRequested = false;
             refreshStatus();
+            return;
+        }
+        if (!new NetworkStartupManager(this).hasValidatedInternet()) {
+            showError("网络未连接，暂不能取消会员存珠会话");
+            ensureNetworkBeforeDeviceFlow(false);
             return;
         }
         memberStore.setMessage("正在返回待机");
         worker.execute(() -> {
             try {
                 new MemberDepositRepository(this).cancelSession(snapshot.sessionId);
-            } catch (Throwable ignored) {
-                // 取消失败不阻塞设备本地回到待扫码界面，下次会重新创建或恢复服务端 Session。
+            } catch (Throwable error) {
+                Log.w(TAG, "取消会员存珠 Session 失败，本地保留现场", error);
+                showError("取消会话失败：" + messageOf(error));
+                return;
             }
             memberStore.clearSession();
             autoSessionRequested = false;
@@ -235,6 +523,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void startMemberDeposit() {
         MemberDepositStore.Snapshot snapshot = memberStore.load();
+        if (!new NetworkStartupManager(this).hasValidatedInternet()) {
+            showError("网络未连接，不能开始存珠");
+            ensureNetworkBeforeDeviceFlow(false);
+            return;
+        }
         if (!snapshot.isBound()) {
             showError("请先让会员扫码绑定后再开始存珠");
             return;
@@ -250,6 +543,7 @@ public class MainActivity extends AppCompatActivity {
                         new MemberDepositRepository(this).startMemberDeposit(requestNo, snapshot.sessionId);
                 memberStore.markWaitingCommand(operation.operationNo, operation.referenceNo);
             } catch (Throwable error) {
+                Log.e(TAG, "开始会员存珠失败", error);
                 showError("开始存珠失败：" + messageOf(error));
             }
         });
@@ -262,10 +556,16 @@ public class MainActivity extends AppCompatActivity {
         String text = value.trim();
         if ("mqtt".equals(key)) {
             mqttStatusMessage = text;
+            if (text.contains("已订阅")) {
+                autoSessionRequested = false;
+                mainHandler.post(this::maybeRestoreOrCreateSession);
+            }
         } else if ("service".equals(key)) {
             serviceStatusMessage = text;
         } else if ("serial".equals(key)) {
             serialStatusMessage = text;
+        } else if ("network".equals(key)) {
+            networkStatusMessage = text;
         }
         if (text.contains("失败") || text.contains("错误") || text.contains("断开")) {
             lastRuntimeMessage = text;
@@ -278,15 +578,17 @@ public class MainActivity extends AppCompatActivity {
         DeviceStateRepository stateRepository = DeviceStateRepository.get(this);
         DepositSession hardwareSession = stateRepository.getSession();
         int runningStatus = stateRepository.getRunningStatus();
+        boolean internet = new NetworkStartupManager(this).hasValidatedInternet();
         boolean activated = activationStore.isActivated();
         boolean mqttConnected = MqttManager.get(this).isConnected();
+        boolean mqttSubscribed = MqttManager.get(this).isSubscribed();
         boolean serialOpen = BoardSerialPort.get(this).isOpen();
         boolean collecting = runningStatus == AppConfig.STATUS_COLLECTING
                 || (hardwareSession != null && DepositSession.STATE_COLLECTING.equals(hardwareSession.state));
 
-        headerStatusText.setText(headerStatus(activated, member, collecting));
-        mainHintText.setText(mainHint(member, collecting));
-        updateQr(member, collecting);
+        headerStatusText.setText(headerStatus(internet, activated, member, collecting));
+        mainHintText.setText(mainHint(internet, member, collecting));
+        updateQr(internet, member, collecting);
 
         memberNoText.setText("会员：" + memberName(member));
         memberBalanceText.setText("余额：" + emptyAsDash(member.availableQuantity) + " " + member.unitName);
@@ -301,7 +603,8 @@ public class MainActivity extends AppCompatActivity {
                 : member.operationNo;
         operationText.setText("业务单号：" + emptyAsDash(operationNo));
         deviceStatusText.setText("设备：" + describeRunningStatus(runningStatus)
-                + " · MQTT " + (mqttConnected ? "已连接" : mqttStatusMessage)
+                + " · 网络 " + (internet ? "已连接" : networkStatusMessage)
+                + " · MQTT " + (mqttConnected ? (mqttSubscribed ? "已订阅" : "已连接") : mqttStatusMessage)
                 + " · 串口 " + (serialOpen ? "已打开" : serialStatusMessage)
                 + " · " + serviceStatusMessage);
 
@@ -322,8 +625,10 @@ public class MainActivity extends AppCompatActivity {
             errorText.setText("最后错误：" + error);
         }
 
-        boolean canStart = activated
+        boolean canStart = internet
+                && activated
                 && mqttConnected
+                && mqttSubscribed
                 && serialOpen
                 && member.isBound()
                 && !collecting
@@ -331,11 +636,17 @@ public class MainActivity extends AppCompatActivity {
                 && !MemberDepositStore.STATUS_STARTING.equals(member.status);
         startButton.setEnabled(canStart);
         startButton.setText(collecting ? "正在收珠" : "开始存珠");
-        refreshButton.setEnabled(activated && !collecting);
-        cancelButton.setEnabled(!collecting && member.hasSession());
+        refreshButton.setEnabled(internet && activated && mqttConnected && mqttSubscribed && !collecting);
+        cancelButton.setEnabled(internet && !collecting && member.hasSession());
     }
 
-    private void updateQr(MemberDepositStore.Snapshot member, boolean collecting) {
+    private void updateQr(boolean internet, MemberDepositStore.Snapshot member, boolean collecting) {
+        if (!internet) {
+            qrImage.setVisibility(View.GONE);
+            qrPlaceholderText.setVisibility(View.VISIBLE);
+            qrPlaceholderText.setText("网络未连接\n请连接 WiFi");
+            return;
+        }
         if (collecting) {
             qrImage.setVisibility(View.GONE);
             qrPlaceholderText.setVisibility(View.VISIBLE);
@@ -350,31 +661,70 @@ public class MainActivity extends AppCompatActivity {
         }
         if (!member.hasQrContent()) {
             lastQrContent = "";
+            qrGeneratingContent = "";
             qrImage.setImageBitmap(null);
             qrImage.setVisibility(View.GONE);
             qrPlaceholderText.setVisibility(View.VISIBLE);
             qrPlaceholderText.setText("正在获取二维码");
             return;
         }
-        try {
-            if (!member.qrContent.equals(lastQrContent)) {
-                Bitmap bitmap = QrCodeUtil.create(member.qrContent, 420);
-                qrImage.setImageBitmap(bitmap);
-                lastQrContent = member.qrContent;
-            }
+        if (member.qrContent.equals(lastQrContent) && qrImage.getDrawable() != null) {
             qrImage.setVisibility(View.VISIBLE);
             qrPlaceholderText.setVisibility(View.GONE);
-        } catch (Throwable error) {
+            return;
+        }
+        if (member.qrContent.equals(qrGeneratingContent)) {
             qrImage.setVisibility(View.GONE);
             qrPlaceholderText.setVisibility(View.VISIBLE);
-            qrPlaceholderText.setText("二维码生成失败");
-            showError("二维码生成失败：" + messageOf(error));
+            qrPlaceholderText.setText("正在生成二维码");
+            return;
         }
+
+        final String qrContent = member.qrContent;
+        qrGeneratingContent = qrContent;
+        qrImage.setVisibility(View.GONE);
+        qrPlaceholderText.setVisibility(View.VISIBLE);
+        qrPlaceholderText.setText("正在生成二维码");
+
+        /* 二维码编码和 Bitmap 构建全部放后台线程，避免 RK3566 UI 连续丢帧。 */
+        qrWorker.execute(() -> {
+            try {
+                Bitmap bitmap = QrCodeUtil.create(qrContent, 420);
+                mainHandler.post(() -> {
+                    MemberDepositStore.Snapshot current = memberStore.load();
+                    qrGeneratingContent = "";
+                    if (!qrContent.equals(current.qrContent) || current.isBound()) {
+                        return;
+                    }
+                    qrImage.setImageBitmap(bitmap);
+                    lastQrContent = qrContent;
+                    qrImage.setVisibility(View.VISIBLE);
+                    qrPlaceholderText.setVisibility(View.GONE);
+                });
+            } catch (Throwable error) {
+                Log.e(TAG, "二维码生成失败", error);
+                mainHandler.post(() -> {
+                    qrGeneratingContent = "";
+                    qrImage.setVisibility(View.GONE);
+                    qrPlaceholderText.setVisibility(View.VISIBLE);
+                    qrPlaceholderText.setText("二维码生成失败");
+                    showError("二维码生成失败：" + messageOf(error));
+                });
+            }
+        });
     }
 
-    private String headerStatus(boolean activated, MemberDepositStore.Snapshot member, boolean collecting) {
+    private String headerStatus(
+            boolean internet,
+            boolean activated,
+            MemberDepositStore.Snapshot member,
+            boolean collecting
+    ) {
+        if (!internet) {
+            return "等待联网";
+        }
         if (!activated) {
-            return "未激活";
+            return "等待激活";
         }
         if (collecting) {
             return "收珠中";
@@ -388,7 +738,10 @@ public class MainActivity extends AppCompatActivity {
         return "待机";
     }
 
-    private String mainHint(MemberDepositStore.Snapshot member, boolean collecting) {
+    private String mainHint(boolean internet, MemberDepositStore.Snapshot member, boolean collecting) {
+        if (!internet) {
+            return "请连接 WiFi，联网后设备会自动继续初始化";
+        }
         if (collecting) {
             return "请投入弹珠，系统正在计数";
         }
