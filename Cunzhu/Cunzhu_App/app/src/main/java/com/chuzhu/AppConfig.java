@@ -39,4 +39,6 @@ public final class AppConfig {
     public static final String ACTION_BOARD_EVENT = "com.chuzhu.action.BOARD_EVENT";
     public static final String ACTION_DEPOSIT_STATE = "com.chuzhu.action.DEPOSIT_STATE";
     public static final String ACTION_MEMBER_DEPOSIT_SESSION = "com.chuzhu.action.MEMBER_DEPOSIT_SESSION";
+    /** 后台服务发现启动前缺少互联网时，通知前台弹出 WiFi 配置界面。 */
+    public static final String ACTION_NETWORK_REQUIRED = "com.chuzhu.action.NETWORK_REQUIRED";
 }
