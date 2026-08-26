@@ -1,27 +1,36 @@
 package com.chuzhu.member;
 
 import android.content.Context;
+import android.util.Log;
 
 import com.chuzhu.AppConfig;
+import com.chuzhu.activation.SdkCredentialStore;
 import com.chuzhu.data.MemberDepositStore;
 import com.chuzhu.device.DeviceUtil;
+import com.pinball.xiaoda.device.sdk.client.DeviceAppClient;
 import com.pinball.xiaoda.device.sdk.client.DeviceSdkConfig;
 import com.pinball.xiaoda.device.sdk.client.HttpUrlConnectionTransport;
+import com.pinball.xiaoda.device.sdk.core.MqttCredential;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 
 /**
  * 会员存珠设备屏接口仓库。
  *
- * <p>正式 SDK 文档要求纯存珠机使用 DeviceAppClient 的会员存珠 Session/Start/Status API。
- * 当前工程尚未直接引用这些新类型，为避免 0.3.0 SDK 小版本签名差异导致编译失败，
- * 这里通过反射调用公开方法；若 SDK 缺少对应方法，UI 会显示明确错误，不会绕过流程启动硬件。</p>
+ * <p>DeviceAppClient 必须使用当前 MQTT password 作为 HMAC 密钥。之前的实现错误地寻找
+ * 两参数构造函数 DeviceAppClient(config, transport)，而当前 0.3.0 SDK 与设备接入文档实际
+ * 使用的是 DeviceAppClient(config, DeviceSecretProvider, transport)，会导致会员 Session
+ * 接口在运行时初始化失败。</p>
+ *
+ * <p>会员存珠响应 DTO 继续通过只读反射映射，避免把 SDK DTO 直接当作 APP 本地实体；
+ * 但客户端构造与鉴权不再使用反射猜测。</p>
  */
 public final class MemberDepositRepository {
 
+    private static final String TAG = "CunzhuMemberApi";
+
     private final Context context;
-    private final Object appClient;
+    private final DeviceAppClient appClient;
 
     public MemberDepositRepository(Context context) throws Exception {
         this.context = context.getApplicationContext();
@@ -32,26 +41,41 @@ public final class MemberDepositRepository {
                 .readTimeoutMillis(15_000)
                 .build();
         HttpUrlConnectionTransport transport = new HttpUrlConnectionTransport(config);
-        appClient = createAppClient(config, transport);
+        SdkCredentialStore credentialStore = SdkCredentialStore.get(this.context);
+
+        appClient = new DeviceAppClient(
+                config,
+                () -> {
+                    MqttCredential credential = credentialStore.load();
+                    if (credential == null
+                            || credential.getPassword() == null
+                            || credential.getPassword().trim().isEmpty()) {
+                        throw new IllegalStateException("缺少设备屏 API 所需 MQTT 鉴权密钥");
+                    }
+                    return credential.getPassword();
+                },
+                transport
+        );
+        verifyMemberDepositApi();
     }
 
     public MemberDepositStore.Snapshot currentOrCreateSession() throws Exception {
-        Object current = invokeNoArg("currentMemberDepositSession", true);
+        Object current = invoke("currentMemberDepositSession", new Object[0], false);
         if (current == null) {
-            current = invokeNoArg("createMemberDepositSession", false);
+            current = invoke("createMemberDepositSession", new Object[0], false);
         }
         return toSession(current, "等待会员扫码");
     }
 
     public MemberDepositStore.Snapshot createSession() throws Exception {
-        return toSession(invokeNoArg("createMemberDepositSession", false), "等待会员扫码");
+        return toSession(invoke("createMemberDepositSession", new Object[0], false), "等待会员扫码");
     }
 
     public void cancelSession(String sessionId) throws Exception {
         if (sessionId == null || sessionId.trim().isEmpty()) {
             return;
         }
-        invoke("cancelMemberDepositSession", new Object[]{sessionId.trim()}, true);
+        invoke("cancelMemberDepositSession", new Object[]{sessionId.trim()}, false);
     }
 
     public OperationSnapshot startMemberDeposit(String clientRequestNo, String sessionId) throws Exception {
@@ -82,24 +106,22 @@ public final class MemberDepositRepository {
         );
     }
 
-    private static Object createAppClient(
-            DeviceSdkConfig config,
-            HttpUrlConnectionTransport transport
-    ) throws Exception {
-        Class<?> type = Class.forName("com.pinball.xiaoda.device.sdk.client.DeviceAppClient");
-        for (Constructor<?> constructor : type.getConstructors()) {
-            Class<?>[] parameterTypes = constructor.getParameterTypes();
-            if (parameterTypes.length == 2
-                    && parameterTypes[0].isInstance(config)
-                    && parameterTypes[1].isInstance(transport)) {
-                return constructor.newInstance(config, transport);
-            }
-        }
-        throw new NoSuchMethodException("DeviceAppClient(DeviceSdkConfig, HttpUrlConnectionTransport)");
+    private void verifyMemberDepositApi() throws Exception {
+        requireMethod("currentMemberDepositSession", 0);
+        requireMethod("createMemberDepositSession", 0);
+        requireMethod("cancelMemberDepositSession", 1);
+        requireMethod("startMemberDeposit", 2);
+        requireMethod("queryMemberDeposit", 1);
+        Log.i(TAG, "会员存珠 DeviceAppClient API 校验通过");
     }
 
-    private Object invokeNoArg(String name, boolean optional) throws Exception {
-        return invoke(name, new Object[0], optional);
+    private void requireMethod(String name, int argCount) throws Exception {
+        if (findMethod(appClient.getClass(), name, argCount) == null) {
+            throw new NoSuchMethodException(
+                    "当前 xiaoda-device-sdk-0.3.0.jar 缺少会员存珠 API："
+                            + name + "，请核对 2026-08-26 正式联调 SDK 交付包"
+            );
+        }
     }
 
     private Object invoke(String name, Object[] args, boolean optional) throws Exception {
@@ -111,7 +133,17 @@ public final class MemberDepositRepository {
             throw new NoSuchMethodException(name);
         }
         method.setAccessible(true);
-        return method.invoke(appClient, args == null ? new Object[0] : args);
+        try {
+            return method.invoke(appClient, args == null ? new Object[0] : args);
+        } catch (Throwable error) {
+            Throwable cause = error.getCause();
+            if (cause instanceof Exception) {
+                throw (Exception) cause;
+            }
+            throw error instanceof Exception
+                    ? (Exception) error
+                    : new IllegalStateException(error);
+        }
     }
 
     private static Method findMethod(Class<?> type, String name, int argCount) {
