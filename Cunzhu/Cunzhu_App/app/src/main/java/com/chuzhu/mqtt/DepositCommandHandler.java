@@ -188,12 +188,11 @@ public final class DepositCommandHandler {
             return;
         }
 
-        /*
-         * 物理执行前再次读取 bootstrap 校验 deviceType=3，避免 UI 门禁被绕过后仍能驱动收珠机构。
-         * 这是存珠业务白名单之外的第二道设备类型防线。
-         */
+        /* UI 门禁之外，物理执行路径再次校验 bootstrap deviceType=3。 */
         try {
-            new BootstrapRepository(context).requireMarbleDepositMachine();
+            if (!BootstrapRepository.isMarbleDepositMachineVerified(context)) {
+                new BootstrapRepository(context).requireMarbleDepositMachine();
+            }
         } catch (Throwable error) {
             reject(command, "DEVICE_TYPE_NOT_ALLOWED", "bootstrap 存珠机校验失败：" + messageOf(error));
             return;
@@ -271,20 +270,23 @@ public final class DepositCommandHandler {
                 || !DepositSession.STATE_COLLECTING.equals(session.state)) {
             return;
         }
+        /*
+         * APP 等待超时并不能证明机构已经停止，也不能证明最终数量等于当前最后一次计数。
+         * 先让硬件适配器停止当前等待并进入异常，后续 finishFailed 会按“数量不可信”留待人工收口。
+         */
         hardware.onBoardFault(
                 "COLLECT_TIMEOUT",
-                "控制板 " + timeoutSeconds + " 秒内未返回收珠终态"
+                "控制板 " + timeoutSeconds + " 秒内未返回可信收珠终态"
         );
     }
 
     private void finishSuccess(DeviceMqttCommand<?> command, DepositSession session, int actual) {
         if (actual < 0 || actual > session.maximumQuantity) {
-            finishFailed(
-                    command,
+            holdForManualReview(
                     session,
                     "ACTUAL_QUANTITY_INVALID",
-                    "控制板实际收珠数量超出授权范围",
-                    Math.max(0, actual)
+                    "控制板最终数量超出本次授权范围",
+                    actual
             );
             return;
         }
@@ -317,12 +319,22 @@ public final class DepositCommandHandler {
             String errorMessage,
             int actual
     ) {
-        int safeActual = Math.max(0, Math.min(actual, session.maximumQuantity));
-        session.actualQuantity = safeActual;
-        session.state = "COLLECT_TIMEOUT".equals(errorCode)
+        /*
+         * 串口断开、APP 自己等待超时或越界计数都无法确认最终机械状态/最终数量。
+         * 按正式联调基线禁止伪造 failed+0、截断数量或直接回 IDLE，保留 ACK/outbox 等待
+         * Server TIMEOUT/MANUAL_REVIEW 和人工恢复。
+         */
+        if ("COLLECT_TIMEOUT".equals(errorCode)
                 || "SERIAL_ERROR".equals(errorCode)
-                ? DepositSession.STATE_FAULT
-                : DepositSession.STATE_FAILED;
+                || "ACTUAL_QUANTITY_INVALID".equals(errorCode)
+                || actual < 0
+                || actual > session.maximumQuantity) {
+            holdForManualReview(session, errorCode, errorMessage, actual);
+            return;
+        }
+
+        session.actualQuantity = actual;
+        session.state = DepositSession.STATE_FAILED;
         session.errorCode = errorCode;
         session.errorMessage = errorMessage;
         session.updatedAt = System.currentTimeMillis();
@@ -332,7 +344,7 @@ public final class DepositCommandHandler {
                 command,
                 command.getMessageId() + "-terminal",
                 false,
-                safeActual,
+                actual,
                 errorCode,
                 errorMessage,
                 System.currentTimeMillis()
@@ -341,6 +353,26 @@ public final class DepositCommandHandler {
         new MemberDepositStore(context).setMessage("收珠失败：" + errorMessage);
         DeviceStateRepository.get(context).markFault(errorMessage);
         new DeviceStatusReporter(context).report();
+    }
+
+    private void holdForManualReview(
+            DepositSession session,
+            String errorCode,
+            String errorMessage,
+            int observedQuantity
+    ) {
+        session.actualQuantity = observedQuantity;
+        session.state = DepositSession.STATE_FAULT;
+        session.errorCode = errorCode == null ? "QUANTITY_UNCERTAIN" : errorCode;
+        session.errorMessage = errorMessage == null ? "最终收珠数量或机构状态无法确认" : errorMessage;
+        session.updatedAt = System.currentTimeMillis();
+        /* finishedAt 不写：本地明确保留“尚未可靠收口”的事实。 */
+        sessionStore.save(session);
+        String message = "收珠结果待人工确认：" + session.errorMessage;
+        new MemberDepositStore(context).setMessage(message);
+        DeviceStateRepository.get(context).markFault(message);
+        new DeviceStatusReporter(context).report();
+        Log.e(TAG, message + "，observedQuantity=" + observedQuantity);
     }
 
     private void rejectUnsupported(DepositCommandCodec.Decoded decoded) {
