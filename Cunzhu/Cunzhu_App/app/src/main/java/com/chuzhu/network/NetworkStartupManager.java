@@ -232,7 +232,13 @@ public final class NetworkStartupManager {
 
             boolean requestSent = connectByLegacyConfiguration(normalizedSsid, password);
             if (!requestSent) {
-                triggerReconnect();
+                /*
+                 * Android 10+ target>=29 的普通应用 addNetwork 必然返回 -1。
+                 * 这不是密码错误，也不是继续 reconnect 能解决的问题；立即走系统添加网络确认。
+                 */
+                return PrepareResult.needSystemAddNetwork(
+                        "系统拒绝 APP 直接写入 WiFi，请确认添加网络：" + normalizedSsid
+                );
             }
 
             if (waitForInternet(Math.max(waitSeconds, 20))) {
@@ -240,7 +246,7 @@ public final class NetworkStartupManager {
                 return PrepareResult.online("WiFi 已连接：" + normalizedSsid);
             }
             return PrepareResult.needSystemAddNetwork(
-                    "已尝试连接 WiFi，但未获得可用互联网：" + normalizedSsid
+                    "已请求连接 WiFi，但未获得可用互联网：" + normalizedSsid
             );
         } catch (SecurityException error) {
             Log.w(TAG, "连接 WiFi 被系统权限限制", error);
@@ -258,7 +264,7 @@ public final class NetworkStartupManager {
             removeOldConfiguration(ssid);
             int networkId = wifiManager.addNetwork(configuration);
             if (networkId < 0) {
-                Log.w(TAG, "addNetwork 失败，networkId=" + networkId);
+                Log.w(TAG, "addNetwork 被系统拒绝，networkId=" + networkId + "，需要系统添加网络确认");
                 return false;
             }
             wifiManager.disconnect();
