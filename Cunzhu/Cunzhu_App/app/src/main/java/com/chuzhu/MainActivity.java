@@ -25,7 +25,6 @@ import com.chuzhu.data.DepositSession;
 import com.chuzhu.data.MemberDepositStore;
 import com.chuzhu.device.DeviceService;
 import com.chuzhu.device.DeviceStateRepository;
-import com.chuzhu.device.DeviceUtil;
 import com.chuzhu.member.MemberDepositRepository;
 import com.chuzhu.member.QrCodeUtil;
 import com.chuzhu.mqtt.MqttManager;
@@ -58,7 +57,6 @@ public class MainActivity extends AppCompatActivity {
     private MemberDepositStore memberStore;
     private boolean receiverRegistered;
     private boolean autoSessionRequested;
-    private String activationStatusMessage = "等待激活状态";
     private String mqttStatusMessage = "未连接";
     private String serviceStatusMessage = "服务尚未上报状态";
     private String serialStatusMessage = "串口未上报状态";
@@ -69,11 +67,13 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent != null && AppConfig.ACTION_SERVICE_STATUS.equals(intent.getAction())) {
-                String key = intent.getStringExtra("key");
-                String value = intent.getStringExtra("value");
-                updateRuntimeMessage(key, value);
+                updateRuntimeMessage(
+                        intent.getStringExtra("key"),
+                        intent.getStringExtra("value")
+                );
             }
             refreshStatus();
+            maybeRestoreOrCreateSession();
         }
     };
 
@@ -163,22 +163,23 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void maybeRestoreOrCreateSession() {
-        if (autoSessionRequested) {
+        if (!new ActivationStore(this).isActivated()) {
             return;
         }
-        autoSessionRequested = true;
-        if (!new ActivationStore(this).isActivated()) {
-            memberStore.setMessage("设备未激活，暂不创建会员存珠二维码");
+        if (autoSessionRequested) {
             return;
         }
         MemberDepositStore.Snapshot snapshot = memberStore.load();
         if (snapshot.hasSession() && (snapshot.isBound() || snapshot.hasQrContent())) {
+            autoSessionRequested = true;
             return;
         }
+        autoSessionRequested = true;
         requestSession(false);
     }
 
     private void refreshMemberSession() {
+        autoSessionRequested = true;
         requestSession(true);
     }
 
@@ -206,6 +207,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 memberStore.saveSession(session);
             } catch (Throwable error) {
+                autoSessionRequested = false;
                 showError("创建会员存珠二维码失败：" + messageOf(error));
             }
         });
@@ -222,11 +224,12 @@ public class MainActivity extends AppCompatActivity {
         worker.execute(() -> {
             try {
                 new MemberDepositRepository(this).cancelSession(snapshot.sessionId);
-            } catch (Throwable error) {
+            } catch (Throwable ignored) {
                 // 取消失败不阻塞设备本地回到待扫码界面，下次会重新创建或恢复服务端 Session。
             }
             memberStore.clearSession();
-            mainHandler.post(() -> requestSession(false));
+            autoSessionRequested = false;
+            mainHandler.post(this::maybeRestoreOrCreateSession);
         });
     }
 
@@ -259,8 +262,6 @@ public class MainActivity extends AppCompatActivity {
         String text = value.trim();
         if ("mqtt".equals(key)) {
             mqttStatusMessage = text;
-        } else if ("activation".equals(key)) {
-            activationStatusMessage = text;
         } else if ("service".equals(key)) {
             serviceStatusMessage = text;
         } else if ("serial".equals(key)) {
@@ -371,11 +372,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String headerStatus(
-            boolean activated,
-            MemberDepositStore.Snapshot member,
-            boolean collecting
-    ) {
+    private String headerStatus(boolean activated, MemberDepositStore.Snapshot member, boolean collecting) {
         if (!activated) {
             return "未激活";
         }
