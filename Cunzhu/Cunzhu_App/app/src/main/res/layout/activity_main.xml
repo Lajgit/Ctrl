@@ -114,6 +114,17 @@
                         android:textColor="@color/chuzhu_text_sub"
                         android:textSize="16sp" />
                 </FrameLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/button_refresh_session"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="12dp"
+                    android:text="主动刷新二维码"
+                    android:textColor="@color/chuzhu_text_main"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@color/chuzhu_accent" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
@@ -218,29 +229,13 @@
             app:backgroundTint="@color/chuzhu_accent"
             android:textColor="@color/chuzhu_text_main" />
 
-        <LinearLayout
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/button_cancel_session"
+            style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:orientation="horizontal">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/button_refresh_session"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="刷新二维码" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/button_cancel_session"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
-                android:layout_weight="1"
-                android:text="返回待机" />
-        </LinearLayout>
+            android:text="返回待机" />
 
         <TextView
             android:id="@+id/text_last_error"
