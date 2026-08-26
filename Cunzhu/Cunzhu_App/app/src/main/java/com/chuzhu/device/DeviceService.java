@@ -20,18 +20,21 @@ import com.chuzhu.activation.ActivationActivity;
 import com.chuzhu.activation.ActivationRepository;
 import com.chuzhu.data.ActivationStore;
 import com.chuzhu.mqtt.MqttManager;
+import com.chuzhu.network.NetworkStartupManager;
 import com.chuzhu.serial.BoardSerialPort;
 import com.pinball.xiaoda.device.sdk.core.MqttCredential;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 存珠机后台服务，统一启动串口、注册激活和 MQTT。
+ * 存珠机后台服务，统一启动串口、联网门禁、注册激活和 MQTT。
  */
 public final class DeviceService extends Service {
 
     private static final String TAG = "CunzhuService";
     private static final long RETRY_DELAY_MS = 30_000L;
+    private static final long NETWORK_RETRY_DELAY_MS = 10_000L;
+    private static final int SAVED_WIFI_WAIT_SECONDS = 15;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean initializing = new AtomicBoolean(false);
@@ -71,6 +74,25 @@ public final class DeviceService extends Service {
         broadcastStatus("service", "正在初始化存珠机");
         DeviceStateRepository.get(this).reconcileFromStoredSession();
         BoardSerialPort.get(this).open();
+
+        /*
+         * P0：设备激活/重新激活之前必须先确认真正可访问互联网。
+         * 有保存 WiFi 时优先自动打开并等待系统重连；失败后只通知前台打开 WiFi，
+         * 不能在无网络状态直接调用 enroll/reactivate 造成长时间超时和误报激活失败。
+         */
+        NetworkStartupManager network = new NetworkStartupManager(this);
+        NetworkStartupManager.PrepareResult result =
+                network.prepareBeforeActivation(SAVED_WIFI_WAIT_SECONDS);
+        if (!result.isOnline()) {
+            Log.w(TAG, "激活前联网检查未通过：" + result.message);
+            broadcastStatus("network", result.message);
+            broadcastNetworkRequired(result.message, result.needsPermission());
+            updateNotification("等待 WiFi 联网");
+            scheduleRetry(NETWORK_RETRY_DELAY_MS);
+            return;
+        }
+
+        broadcastStatus("network", result.message);
         startActivation();
     }
 
@@ -106,10 +128,22 @@ public final class DeviceService extends Service {
 
             @Override
             public void onError(Exception error) {
+                /* 网络在激活过程中掉线时，不显示成身份/平台激活失败。 */
+                NetworkStartupManager network = new NetworkStartupManager(DeviceService.this);
+                if (!network.hasValidatedInternet()) {
+                    String networkMessage = "设备网络已断开，请重新连接 WiFi";
+                    Log.w(TAG, networkMessage, error);
+                    broadcastStatus("network", networkMessage);
+                    broadcastNetworkRequired(networkMessage, network.needsNearbyWifiPermission());
+                    updateNotification("等待 WiFi 联网");
+                    scheduleRetry(NETWORK_RETRY_DELAY_MS);
+                    return;
+                }
+
                 String message = messageOf(error);
                 broadcastActivation("设备激活失败：" + message, null, null, message);
                 launchActivationActivity(null, null, "设备激活失败", message);
-                scheduleRetry();
+                scheduleRetry(RETRY_DELAY_MS);
             }
         });
     }
@@ -120,12 +154,12 @@ public final class DeviceService extends Service {
         updateNotification("存珠机设备服务运行中");
     }
 
-    private void scheduleRetry() {
+    private void scheduleRetry(long delayMillis) {
         if (destroyed) {
             return;
         }
         mainHandler.removeCallbacks(retryRunnable);
-        mainHandler.postDelayed(retryRunnable, RETRY_DELAY_MS);
+        mainHandler.postDelayed(retryRunnable, Math.max(1000L, delayMillis));
     }
 
     private final Runnable retryRunnable = this::startInitialization;
@@ -168,6 +202,14 @@ public final class DeviceService extends Service {
         intent.setPackage(getPackageName());
         intent.putExtra("key", key);
         intent.putExtra("value", value);
+        sendBroadcast(intent);
+    }
+
+    private void broadcastNetworkRequired(String reason, boolean permissionRequired) {
+        Intent intent = new Intent(AppConfig.ACTION_NETWORK_REQUIRED);
+        intent.setPackage(getPackageName());
+        intent.putExtra("reason", reason);
+        intent.putExtra("permissionRequired", permissionRequired);
         sendBroadcast(intent);
     }
 
@@ -225,9 +267,14 @@ public final class DeviceService extends Service {
         if (error == null) {
             return "未知错误";
         }
-        String message = error.getMessage();
-        return message == null || message.trim().isEmpty()
-                ? error.getClass().getSimpleName()
-                : message;
+        Throwable cursor = error;
+        String message = "";
+        while (cursor != null) {
+            if (cursor.getMessage() != null && !cursor.getMessage().trim().isEmpty()) {
+                message = cursor.getMessage().trim();
+            }
+            cursor = cursor.getCause();
+        }
+        return message.isEmpty() ? error.getClass().getSimpleName() : message;
     }
 }
