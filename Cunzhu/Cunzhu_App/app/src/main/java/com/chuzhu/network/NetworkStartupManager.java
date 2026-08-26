@@ -2,6 +2,7 @@ package com.chuzhu.network;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
@@ -9,26 +10,30 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
+import android.net.wifi.WifiNetworkSuggestion;
 import android.os.Build;
+import android.provider.Settings;
 import android.util.Log;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 存珠机启动联网检查。
+ * 存珠机启动联网检查与 WiFi 凭证连接。
  *
- * <p>启动设备激活前必须先确认存在 VALIDATED 互联网。若系统已经保存过 WiFi，
- * 优先打开 WiFi 并触发系统自动重连；仍无法联网时再交给前台 Activity 打开系统 WiFi 面板。</p>
- *
- * <p>Android 10 以后普通三方应用通常不能直接开关 WiFi、也不能读取系统保存网络列表；
- * RK3566 量产镜像若授予系统级 WiFi 权限可继续使用这些能力。代码对受限场景全部做了
- * 降级处理，不会因为 SecurityException 阻塞设备启动。</p>
+ * <p>正式启动顺序必须是：先联网，再激活/重新激活，再连接 MQTT。这里同时支持两类场景：</p>
+ * <ul>
+ *     <li>量产系统/系统签名允许旧 WiFi API：使用 APP 保存的 SSID/密码自动打开并连接。</li>
+ *     <li>普通 Android 10+ 限制旧 API：保存用户输入，尝试系统自动恢复，失败后引导系统添加网络。</li>
+ * </ul>
  */
 public final class NetworkStartupManager {
 
     private static final String TAG = "CunzhuNetwork";
-    private static final String PREF = "chuzhu_network_startup_v1";
+    private static final String PREF = "chuzhu_network_startup_v2";
     private static final String KEY_WIFI_CONNECTED_BEFORE = "wifi_connected_before";
+    private static final String KEY_SAVED_SSID = "saved_ssid";
+    private static final String KEY_SAVED_PASSWORD = "saved_password";
 
     private final Context context;
     private final ConnectivityManager connectivityManager;
@@ -73,15 +78,48 @@ public final class NetworkStartupManager {
                 != PackageManager.PERMISSION_GRANTED;
     }
 
+    public void saveWifiCredential(String ssid, String password) {
+        if (blank(ssid)) {
+            return;
+        }
+        preferences().edit()
+                .putString(KEY_SAVED_SSID, ssid.trim())
+                .putString(KEY_SAVED_PASSWORD, password == null ? "" : password)
+                .apply();
+    }
+
+    public void clearWifiCredential() {
+        preferences().edit()
+                .remove(KEY_SAVED_SSID)
+                .remove(KEY_SAVED_PASSWORD)
+                .remove(KEY_WIFI_CONNECTED_BEFORE)
+                .apply();
+    }
+
+    public String getSavedSsid() {
+        return preferences().getString(KEY_SAVED_SSID, "");
+    }
+
+    public String getSavedPassword() {
+        return preferences().getString(KEY_SAVED_PASSWORD, "");
+    }
+
+    public boolean hasAppWifiCredential() {
+        return !blank(getSavedSsid());
+    }
+
     /**
      * 判断设备是否存在可优先尝试的历史 WiFi。
      *
-     * <p>首先使用本 APP 曾经成功通过 WiFi 访问互联网的事实；其次在系统权限允许时读取
-     * 系统保存网络。Android 10+ 普通三方 APP 可能无法读取 configuredNetworks，所以
-     * “返回 false”只代表 APP 无法确认，不代表系统一定没有保存网络。</p>
+     * <p>优先使用本 APP 保存的 SSID/密码；其次使用本 APP 曾经通过 WiFi 成功联网的事实；
+     * 最后在系统权限允许时读取 configuredNetworks。Android 10+ 普通三方 APP 可能无法读取
+     * configuredNetworks，因此 false 只代表 APP 无法确认，不代表系统一定没有保存网络。</p>
      */
     @SuppressWarnings("deprecation")
     public boolean hasSavedWifiInformation() {
+        if (hasAppWifiCredential()) {
+            return true;
+        }
         if (preferences().getBoolean(KEY_WIFI_CONNECTED_BEFORE, false)) {
             return true;
         }
@@ -92,7 +130,7 @@ public final class NetworkStartupManager {
             List<WifiConfiguration> configured = wifiManager.getConfiguredNetworks();
             return configured != null && !configured.isEmpty();
         } catch (SecurityException error) {
-            Log.w(TAG, "系统限制读取已保存 WiFi，回退到系统自动重连");
+            Log.w(TAG, "系统限制读取已保存 WiFi，回退到触屏配置");
             return false;
         } catch (Throwable error) {
             Log.w(TAG, "读取已保存 WiFi 失败", error);
@@ -101,7 +139,7 @@ public final class NetworkStartupManager {
     }
 
     /**
-     * 后台线程调用：优先尝试系统已经保存的 WiFi。
+     * 后台线程调用：激活前联网准备。
      *
      * @param waitSeconds 打开/重连后最多等待多少秒
      */
@@ -117,6 +155,10 @@ public final class NetworkStartupManager {
             return PrepareResult.needWifiUi("系统 WiFi 服务不可用");
         }
 
+        if (hasAppWifiCredential()) {
+            return connectWifiWithCredential(getSavedSsid(), getSavedPassword(), waitSeconds);
+        }
+
         boolean savedWifiKnown = hasSavedWifiInformation();
         try {
             if (wifiManager.isWifiEnabled()) {
@@ -125,47 +167,150 @@ public final class NetworkStartupManager {
                  * 已保存网络自动重连留出时间。这样不会把“列表不可见”误判成“从未配网”。
                  */
                 triggerReconnect();
-                if (waitForInternet(waitSeconds)) {
+                if (waitForInternet(Math.min(waitSeconds, 8))) {
                     return PrepareResult.online(
                             savedWifiKnown ? "已自动连接保存的 WiFi" : "系统已自动恢复 WiFi 网络"
                     );
                 }
-                return PrepareResult.needWifiUi(
-                        savedWifiKnown
-                                ? "已尝试连接保存的 WiFi，但仍无法访问互联网"
-                                : "未自动连接到可用 WiFi，请选择网络"
-                );
+                return PrepareResult.needWifiUi("未检测到可用网络，请在设备屏输入 WiFi 名称和密码");
             }
 
             if (!savedWifiKnown) {
-                /* WiFi 已关闭且 APP 无法确认历史网络时，不盲等，直接让用户进入系统面板。 */
-                return PrepareResult.needWifiUi("未检测到可恢复的 WiFi，请连接网络");
+                return PrepareResult.needWifiUi("未保存 WiFi 信息，请在设备屏输入 WiFi 名称和密码");
             }
 
-            /*
-             * Android 10+ 普通三方 APP 调用 setWifiEnabled 会返回 false；量产系统应用/
-             * 定制 ROM 若允许则可直接开启。失败时必须回退系统 WiFi 面板，不能循环重试。
-             */
             boolean enabled = wifiManager.setWifiEnabled(true);
             Log.i(TAG, "检测到历史 WiFi，尝试开启 WiFi，result=" + enabled);
             if (!enabled) {
-                return PrepareResult.needWifiUi("系统未允许 APP 自动打开 WiFi，请手动开启");
+                return PrepareResult.needWifiUi("系统未允许 APP 自动打开 WiFi，请手动输入并连接");
             }
 
-            /* 给 WiFi 状态机一点启动时间，再触发系统保存网络重连。 */
             sleepQuietly(1500L);
             triggerReconnect();
             if (waitForInternet(waitSeconds)) {
                 return PrepareResult.online("已自动打开并连接保存的 WiFi");
             }
-            return PrepareResult.needWifiUi("已打开 WiFi，但保存的网络未能联网，请重新选择网络");
+            return PrepareResult.needWifiUi("已打开 WiFi，但保存的网络未能联网，请重新输入 WiFi");
         } catch (SecurityException error) {
             Log.w(TAG, "自动打开/连接 WiFi 被系统拒绝", error);
-            return PrepareResult.needWifiUi("系统限制 APP 自动连接 WiFi，请手动连接");
+            return PrepareResult.needWifiUi("系统限制 APP 自动连接 WiFi，请在设备屏输入网络信息");
         } catch (Throwable error) {
             Log.e(TAG, "自动连接保存 WiFi 失败", error);
-            return PrepareResult.needWifiUi("自动连接 WiFi 失败，请手动连接");
+            return PrepareResult.needWifiUi("自动连接 WiFi 失败，请重新输入网络信息");
         }
+    }
+
+    /** 使用 APP 保存/用户输入的 SSID 和密码尝试连接。必须在后台线程调用。 */
+    @SuppressWarnings("deprecation")
+    public PrepareResult connectWifiWithCredential(String ssid, String password, int waitSeconds) {
+        if (blank(ssid)) {
+            return PrepareResult.needWifiUi("WiFi 名称不能为空");
+        }
+        if (hasValidatedInternet()) {
+            saveWifiCredential(ssid, password);
+            return PrepareResult.online("网络已连接");
+        }
+        if (needsNearbyWifiPermission()) {
+            return PrepareResult.needPermission("需要 WiFi 权限后才能连接网络");
+        }
+        if (wifiManager == null) {
+            return PrepareResult.needWifiUi("系统 WiFi 服务不可用");
+        }
+
+        String normalizedSsid = ssid.trim();
+        try {
+            if (!wifiManager.isWifiEnabled()) {
+                boolean enabled = wifiManager.setWifiEnabled(true);
+                Log.i(TAG, "尝试开启 WiFi，result=" + enabled);
+                sleepQuietly(1500L);
+                if (!enabled && !wifiManager.isWifiEnabled()) {
+                    return PrepareResult.needSystemAddNetwork(
+                            "系统未允许 APP 自动打开 WiFi，请通过系统确认连接"
+                    );
+                }
+            }
+
+            boolean requestSent = connectByLegacyConfiguration(normalizedSsid, password);
+            if (!requestSent) {
+                triggerReconnect();
+            }
+
+            if (waitForInternet(Math.max(waitSeconds, 20))) {
+                saveWifiCredential(normalizedSsid, password);
+                return PrepareResult.online("WiFi 已连接：" + normalizedSsid);
+            }
+            return PrepareResult.needSystemAddNetwork(
+                    "已尝试连接 WiFi，但未获得可用互联网：" + normalizedSsid
+            );
+        } catch (SecurityException error) {
+            Log.w(TAG, "连接 WiFi 被系统权限限制", error);
+            return PrepareResult.needSystemAddNetwork("系统限制 APP 直接连接 WiFi，请通过系统确认连接");
+        } catch (Throwable error) {
+            Log.e(TAG, "连接 WiFi 失败 ssid=" + normalizedSsid, error);
+            return PrepareResult.needSystemAddNetwork("连接 WiFi 失败，请通过系统确认连接");
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean connectByLegacyConfiguration(String ssid, String password) {
+        try {
+            WifiConfiguration configuration = buildConfiguration(ssid, password);
+            removeOldConfiguration(ssid);
+            int networkId = wifiManager.addNetwork(configuration);
+            if (networkId < 0) {
+                Log.w(TAG, "addNetwork 失败，networkId=" + networkId);
+                return false;
+            }
+            wifiManager.disconnect();
+            boolean enabled = wifiManager.enableNetwork(networkId, true);
+            boolean reconnected = wifiManager.reconnect();
+            Log.i(TAG, "legacy WiFi 连接请求：networkId=" + networkId
+                    + "，enabled=" + enabled + "，reconnect=" + reconnected);
+            return enabled || reconnected;
+        } catch (SecurityException error) {
+            throw error;
+        } catch (Throwable error) {
+            Log.w(TAG, "legacy WiFi 连接接口不可用", error);
+            return false;
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void removeOldConfiguration(String ssid) {
+        try {
+            List<WifiConfiguration> configured = wifiManager.getConfiguredNetworks();
+            if (configured == null) {
+                return;
+            }
+            String quoted = quote(ssid);
+            for (WifiConfiguration item : configured) {
+                if (item != null && quoted.equals(item.SSID)) {
+                    wifiManager.removeNetwork(item.networkId);
+                }
+            }
+            wifiManager.saveConfiguration();
+        } catch (Throwable error) {
+            Log.w(TAG, "清理旧 WiFi 配置失败", error);
+        }
+    }
+
+    private static WifiConfiguration buildConfiguration(String ssid, String password) {
+        WifiConfiguration configuration = new WifiConfiguration();
+        configuration.SSID = quote(ssid);
+        configuration.status = WifiConfiguration.Status.ENABLED;
+        if (blank(password)) {
+            configuration.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+        } else {
+            configuration.preSharedKey = quotePassword(password.trim());
+            configuration.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+            configuration.allowedProtocols.set(WifiConfiguration.Protocol.RSN);
+            configuration.allowedProtocols.set(WifiConfiguration.Protocol.WPA);
+            configuration.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP);
+            configuration.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP);
+            configuration.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP);
+            configuration.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.TKIP);
+        }
+        return configuration;
     }
 
     @SuppressWarnings("deprecation")
@@ -197,6 +342,38 @@ public final class NetworkStartupManager {
         return false;
     }
 
+    /** 构造系统“添加 WiFi 网络”Intent，普通 Android 10+ 需要用户确认后才会保存网络。 */
+    public static Intent buildSystemAddNetworkIntent(Context context, String ssid, String password) {
+        Intent addNetwork = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !blank(ssid)) {
+            try {
+                WifiNetworkSuggestion.Builder builder = new WifiNetworkSuggestion.Builder()
+                        .setSsid(ssid.trim());
+                if (!blank(password)) {
+                    builder.setWpa2Passphrase(password);
+                }
+                ArrayList<WifiNetworkSuggestion> suggestions = new ArrayList<>();
+                suggestions.add(builder.build());
+                addNetwork = new Intent(Settings.ACTION_WIFI_ADD_NETWORKS)
+                        .putParcelableArrayListExtra(Settings.EXTRA_WIFI_NETWORK_LIST, suggestions);
+            } catch (Throwable error) {
+                Log.w(TAG, "构造系统添加 WiFi 网络 Intent 失败", error);
+            }
+        }
+        if (addNetwork != null && addNetwork.resolveActivity(context.getPackageManager()) != null) {
+            return addNetwork;
+        }
+        Intent panel = new Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY);
+        if (panel.resolveActivity(context.getPackageManager()) != null) {
+            return panel;
+        }
+        Intent wifiSettings = new Intent(Settings.ACTION_WIFI_SETTINGS);
+        if (wifiSettings.resolveActivity(context.getPackageManager()) != null) {
+            return wifiSettings;
+        }
+        return new Intent(Settings.ACTION_WIRELESS_SETTINGS);
+    }
+
     private static boolean sleepQuietly(long millis) {
         try {
             Thread.sleep(millis);
@@ -217,10 +394,30 @@ public final class NetworkStartupManager {
         return context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
     }
 
+    private static String quote(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.startsWith("\"") && text.endsWith("\"")) {
+            return text;
+        }
+        return "\"" + text + "\"";
+    }
+
+    private static String quotePassword(String value) {
+        if (value != null && value.matches("[0-9A-Fa-f]{64}")) {
+            return value;
+        }
+        return quote(value);
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
     public static final class PrepareResult {
         public static final int ONLINE = 0;
         public static final int NEED_PERMISSION = 1;
         public static final int NEED_WIFI_UI = 2;
+        public static final int NEED_SYSTEM_ADD_NETWORK = 3;
 
         public final int state;
         public final String message;
@@ -238,6 +435,10 @@ public final class NetworkStartupManager {
             return state == NEED_PERMISSION;
         }
 
+        public boolean needsSystemAddNetwork() {
+            return state == NEED_SYSTEM_ADD_NETWORK;
+        }
+
         private static PrepareResult online(String message) {
             return new PrepareResult(ONLINE, message);
         }
@@ -248,6 +449,10 @@ public final class NetworkStartupManager {
 
         private static PrepareResult needWifiUi(String message) {
             return new PrepareResult(NEED_WIFI_UI, message);
+        }
+
+        private static PrepareResult needSystemAddNetwork(String message) {
+            return new PrepareResult(NEED_SYSTEM_ADD_NETWORK, message);
         }
     }
 }
