@@ -38,4 +38,5 @@ public final class AppConfig {
     public static final String ACTION_SERVICE_STATUS = "com.chuzhu.action.SERVICE_STATUS";
     public static final String ACTION_BOARD_EVENT = "com.chuzhu.action.BOARD_EVENT";
     public static final String ACTION_DEPOSIT_STATE = "com.chuzhu.action.DEPOSIT_STATE";
+    public static final String ACTION_MEMBER_DEPOSIT_SESSION = "com.chuzhu.action.MEMBER_DEPOSIT_SESSION";
 }
