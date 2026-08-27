@@ -13,9 +13,9 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="22dp"
+        android:paddingStart="24dp"
         android:paddingTop="18dp"
-        android:paddingEnd="22dp"
+        android:paddingEnd="24dp"
         android:paddingBottom="24dp">
 
         <LinearLayout
@@ -33,7 +33,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="自助存珠系统"
+                    android:text="自助存珠服务"
                     android:textColor="@color/chuzhu_primary_dark"
                     android:textSize="28sp"
                     android:textStyle="bold" />
@@ -42,9 +42,9 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="SELF SERVICE DEPOSIT MACHINE"
+                    android:text="SELF SERVICE MARBLE DEPOSIT"
                     android:textColor="@color/chuzhu_panel_blue"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
             </LinearLayout>
 
@@ -53,189 +53,311 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:background="@color/chuzhu_accent"
-                android:paddingStart="12dp"
-                android:paddingTop="7dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="7dp"
+                android:paddingStart="14dp"
+                android:paddingTop="8dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="8dp"
                 android:text="初始化"
                 android:textColor="@color/chuzhu_text_main"
                 android:textSize="13sp"
                 android:textStyle="bold" />
         </LinearLayout>
 
-        <com.google.android.material.card.MaterialCardView
+        <!-- 二维码登录页：会员未登录时只展示扫码入口和必要提示。 -->
+        <LinearLayout
+            android:id="@+id/page_qr"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
-            app:cardBackgroundColor="@color/chuzhu_panel_blue"
-            app:cardCornerRadius="18dp"
-            app:cardElevation="2dp">
+            android:orientation="vertical">
 
-            <LinearLayout
+            <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="@color/chuzhu_panel_blue"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:id="@+id/text_main_hint"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center"
-                    android:text="请使用微信扫描二维码"
-                    android:textColor="@color/white"
-                    android:textSize="18sp"
-                    android:textStyle="bold" />
-
-                <FrameLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:background="@color/chuzhu_card_bg"
-                    android:padding="18dp">
-
-                    <ImageView
-                        android:id="@+id/image_qr"
-                        android:layout_width="220dp"
-                        android:layout_height="220dp"
-                        android:layout_gravity="center"
-                        android:adjustViewBounds="true"
-                        android:background="@color/white"
-                        android:contentDescription="会员存珠二维码"
-                        android:scaleType="fitCenter" />
-
-                    <TextView
-                        android:id="@+id/text_qr_placeholder"
-                        android:layout_width="match_parent"
-                        android:layout_height="220dp"
-                        android:gravity="center"
-                        android:text="正在获取二维码"
-                        android:textColor="@color/chuzhu_text_sub"
-                        android:textSize="16sp" />
-                </FrameLayout>
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/button_refresh_session"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="12dp"
-                    android:text="主动刷新二维码"
-                    android:textColor="@color/chuzhu_text_main"
-                    android:textSize="16sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@color/chuzhu_accent" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            app:cardBackgroundColor="@color/chuzhu_card_bg"
-            app:cardCornerRadius="18dp"
-            app:cardElevation="2dp"
-            app:strokeColor="#1A0887CF"
-            app:strokeWidth="1dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    style="@style/DebugSectionTitle"
-                    android:text="会员信息" />
-
-                <TextView
-                    android:id="@+id/text_member_no"
-                    style="@style/DebugText"
-                    android:text="会员：等待扫码" />
+                app:cardBackgroundColor="@color/chuzhu_panel_blue"
+                app:cardCornerRadius="22dp"
+                app:cardElevation="3dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical"
+                    android:paddingStart="24dp"
+                    android:paddingTop="22dp"
+                    android:paddingEnd="24dp"
+                    android:paddingBottom="22dp">
 
                     <TextView
-                        android:id="@+id/text_member_balance"
-                        style="@style/DebugText"
-                        android:layout_width="0dp"
-                        android:layout_weight="1"
-                        android:text="余额：-" />
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="微信扫码登录"
+                        android:textColor="@color/white"
+                        android:textSize="24sp"
+                        android:textStyle="bold" />
 
                     <TextView
-                        android:id="@+id/text_member_limit"
-                        style="@style/DebugText"
-                        android:layout_width="0dp"
-                        android:layout_marginStart="12dp"
-                        android:layout_weight="1"
-                        android:text="上限：-" />
+                        android:id="@+id/text_main_hint"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:gravity="center"
+                        android:text="请使用微信扫描二维码登录会员"
+                        android:textColor="#D9F3FF"
+                        android:textSize="15sp" />
+
+                    <com.google.android.material.card.MaterialCardView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        app:cardBackgroundColor="@color/white"
+                        app:cardCornerRadius="16dp"
+                        app:cardElevation="0dp">
+
+                        <FrameLayout
+                            android:layout_width="316dp"
+                            android:layout_height="316dp"
+                            android:padding="18dp">
+
+                            <ImageView
+                                android:id="@+id/image_qr"
+                                android:layout_width="280dp"
+                                android:layout_height="280dp"
+                                android:layout_gravity="center"
+                                android:adjustViewBounds="true"
+                                android:background="@color/white"
+                                android:contentDescription="会员存珠二维码"
+                                android:scaleType="fitCenter" />
+
+                            <TextView
+                                android:id="@+id/text_qr_placeholder"
+                                android:layout_width="280dp"
+                                android:layout_height="280dp"
+                                android:layout_gravity="center"
+                                android:gravity="center"
+                                android:text="正在获取二维码"
+                                android:textColor="@color/chuzhu_text_sub"
+                                android:textSize="17sp" />
+                        </FrameLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center"
+                        android:text="扫码成功后将自动进入会员存珠页面"
+                        android:textColor="#D9F3FF"
+                        android:textSize="13sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/button_refresh_session"
+                        android:layout_width="260dp"
+                        android:layout_height="50dp"
+                        android:layout_marginTop="14dp"
+                        android:text="刷新二维码"
+                        android:textColor="@color/chuzhu_text_main"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        app:backgroundTint="@color/chuzhu_accent"
+                        app:cornerRadius="14dp" />
                 </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+        </LinearLayout>
 
-                <TextView
-                    android:id="@+id/text_actual_quantity"
-                    style="@style/DebugText"
-                    android:layout_marginTop="8dp"
-                    android:text="本次已确认：0 颗" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <com.google.android.material.card.MaterialCardView
+        <!-- 会员存珠页：扫码绑定后隐藏二维码，只保留会员资料、存珠状态和操作按钮。 -->
+        <LinearLayout
+            android:id="@+id/page_member"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            app:cardBackgroundColor="@color/chuzhu_card_bg"
-            app:cardCornerRadius="18dp"
-            app:cardElevation="1dp">
+            android:layout_marginTop="18dp"
+            android:orientation="vertical"
+            android:visibility="gone">
 
-            <LinearLayout
+            <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:padding="16dp">
+                app:cardBackgroundColor="@color/chuzhu_panel_blue"
+                app:cardCornerRadius="22dp"
+                app:cardElevation="3dp">
 
-                <TextView
-                    style="@style/DebugSectionTitle"
-                    android:text="存珠状态" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="22dp">
 
-                <TextView
-                    android:id="@+id/text_session_state"
-                    style="@style/DebugText"
-                    android:text="会话：未创建" />
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="会员存珠"
+                        android:textColor="@color/white"
+                        android:textSize="24sp"
+                        android:textStyle="bold" />
 
-                <TextView
-                    android:id="@+id/text_operation_no"
-                    style="@style/DebugText"
-                    android:text="业务单号：-" />
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="5dp"
+                        android:gravity="center"
+                        android:text="60 秒无操作将自动退出会员登录"
+                        android:textColor="#D9F3FF"
+                        android:textSize="13sp" />
 
-                <TextView
-                    android:id="@+id/text_device_status"
-                    style="@style/DebugText"
-                    android:text="设备：初始化" />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
+                    <com.google.android.material.card.MaterialCardView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        app:cardBackgroundColor="@color/chuzhu_card_bg"
+                        app:cardCornerRadius="16dp"
+                        app:cardElevation="0dp">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/button_start_deposit"
-            android:layout_width="match_parent"
-            android:layout_height="54dp"
-            android:layout_marginTop="18dp"
-            android:text="开始存珠"
-            android:textSize="18sp"
-            android:textStyle="bold"
-            app:backgroundTint="@color/chuzhu_accent"
-            android:textColor="@color/chuzhu_text_main" />
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:padding="18dp">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/button_cancel_session"
-            style="@style/Widget.Material3.Button.OutlinedButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="返回待机" />
+                            <TextView
+                                android:id="@+id/text_member_no"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center"
+                                android:text="会员：等待扫码"
+                                android:textColor="@color/chuzhu_primary_dark"
+                                android:textSize="21sp"
+                                android:textStyle="bold" />
+
+                            <View
+                                android:layout_width="match_parent"
+                                android:layout_height="1dp"
+                                android:layout_marginTop="14dp"
+                                android:background="#1A0887CF" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:id="@+id/text_member_balance"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:gravity="center"
+                                    android:text="余额：-"
+                                    android:textColor="@color/chuzhu_text_main"
+                                    android:textSize="17sp"
+                                    android:textStyle="bold" />
+
+                                <TextView
+                                    android:id="@+id/text_member_limit"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:gravity="center"
+                                    android:text="可存上限：-"
+                                    android:textColor="@color/chuzhu_text_main"
+                                    android:textSize="17sp"
+                                    android:textStyle="bold" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/text_actual_quantity"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="16dp"
+                                android:gravity="center"
+                                android:text="本次已确认：0 颗"
+                                android:textColor="@color/chuzhu_success"
+                                android:textSize="22sp"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+                    </com.google.android.material.card.MaterialCardView>
+
+                    <TextView
+                        android:id="@+id/text_session_state"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center"
+                        android:text="会话：会员已绑定"
+                        android:textColor="@color/white"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_start_deposit"
+                            android:layout_width="0dp"
+                            android:layout_height="56dp"
+                            android:layout_weight="1.3"
+                            android:text="开始存珠"
+                            android:textColor="@color/chuzhu_text_main"
+                            android:textSize="18sp"
+                            android:textStyle="bold"
+                            app:backgroundTint="@color/chuzhu_accent"
+                            app:cornerRadius="14dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/button_cancel_session"
+                            style="@style/Widget.Material3.Button.OutlinedButton"
+                            android:layout_width="0dp"
+                            android:layout_height="56dp"
+                            android:layout_marginStart="12dp"
+                            android:layout_weight="0.7"
+                            android:text="返回"
+                            android:textColor="@color/white"
+                            android:textSize="17sp"
+                            android:textStyle="bold"
+                            app:cornerRadius="14dp"
+                            app:strokeColor="@color/white"
+                            app:strokeWidth="1dp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                app:cardBackgroundColor="@color/chuzhu_card_bg"
+                app:cardCornerRadius="16dp"
+                app:cardElevation="1dp"
+                app:strokeColor="#1A0887CF"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:id="@+id/text_operation_no"
+                        style="@style/DebugText"
+                        android:layout_marginTop="0dp"
+                        android:text="业务单号：-" />
+
+                    <TextView
+                        android:id="@+id/text_device_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="设备：初始化"
+                        android:textColor="@color/chuzhu_text_sub"
+                        android:textSize="12sp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+        </LinearLayout>
 
         <TextView
             android:id="@+id/text_last_error"
@@ -246,7 +368,8 @@
             android:padding="12dp"
             android:text=""
             android:textColor="@color/chuzhu_error_text"
-            android:textSize="13sp" />
+            android:textSize="13sp"
+            android:visibility="gone" />
     </LinearLayout>
 
 </ScrollView>

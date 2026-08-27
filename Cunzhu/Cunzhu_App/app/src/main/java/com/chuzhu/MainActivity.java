@@ -14,7 +14,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -58,7 +60,10 @@ public class MainActivity extends AppCompatActivity {
     private static final int SAVED_WIFI_WAIT_SECONDS = 15;
     private static final int START_QUERY_MAX_ATTEMPTS = 3;
     private static final long START_QUERY_RETRY_DELAY_MS = 1500L;
+    private static final long MEMBER_IDLE_TIMEOUT_MS = 60_000L;
 
+    private View qrPage;
+    private View memberPage;
     private TextView headerStatusText;
     private TextView mainHintText;
     private ImageView qrImage;
@@ -80,6 +85,7 @@ public class MainActivity extends AppCompatActivity {
     private final ExecutorService qrWorker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean networkCheckRunning = new AtomicBoolean(false);
     private final AtomicBoolean bootstrapCheckRunning = new AtomicBoolean(false);
+    private final Runnable memberIdleTimeoutRunnable = this::handleMemberIdleTimeout;
 
     private MemberDepositStore memberStore;
     private boolean receiverRegistered;
@@ -88,6 +94,9 @@ public class MainActivity extends AppCompatActivity {
     private boolean deviceServiceStarted;
     private boolean wifiPanelOpening;
     private boolean wifiPermissionRequested;
+    private boolean memberPageVisible;
+    private boolean memberLogoutRunning;
+    private long lastMemberInteractionAt;
     private volatile boolean bootstrapVerified;
     private volatile boolean bootstrapRejected;
     private volatile boolean destroyed;
@@ -189,6 +198,28 @@ public class MainActivity extends AppCompatActivity {
         worker.shutdownNow();
         qrWorker.shutdownNow();
         super.onDestroy();
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event != null && event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            /* 会员操作页任意触摸都视为有效操作，重新计算 60 秒无操作退出时间。 */
+            resetMemberIdleTimerFromUser();
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    @Override
+    public void onBackPressed() {
+        MemberDepositStore.Snapshot snapshot = memberStore == null
+                ? null
+                : memberStore.loadWithoutScheduling();
+        if (isMemberLoggedIn(snapshot)) {
+            /* Android 返回键在会员页只退出当前会员，不直接关闭存珠机 APP。 */
+            cancelCurrentSession(false);
+            return;
+        }
+        super.onBackPressed();
     }
 
     @Override
@@ -397,6 +428,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void bindViews() {
+        qrPage = findViewById(R.id.page_qr);
+        memberPage = findViewById(R.id.page_member);
         headerStatusText = findViewById(R.id.text_header_status);
         mainHintText = findViewById(R.id.text_main_hint);
         qrImage = findViewById(R.id.image_qr);
@@ -417,7 +450,7 @@ public class MainActivity extends AppCompatActivity {
     private void bindButtons() {
         startButton.setOnClickListener(v -> startMemberDeposit());
         refreshButton.setOnClickListener(v -> refreshMemberSession());
-        cancelButton.setOnClickListener(v -> cancelCurrentSession());
+        cancelButton.setOnClickListener(v -> cancelCurrentSession(false));
     }
 
     private void startDeviceService() {
@@ -566,34 +599,59 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void cancelCurrentSession() {
-        if (!isUiAlive()) {
+    private void cancelCurrentSession(boolean idleTimeout) {
+        if (!isUiAlive() || memberLogoutRunning) {
             return;
         }
-        MemberDepositStore.Snapshot snapshot = memberStore.load();
-        if (!snapshot.hasSession()) {
+        MemberDepositStore.Snapshot snapshot = memberStore.loadWithoutScheduling();
+        if (!isMemberLoggedIn(snapshot)) {
             memberStore.clearSession();
             autoSessionRequested = false;
             refreshStatus();
+            maybeRestoreOrCreateSession();
+            return;
+        }
+        if (DeviceStateRepository.get(this).getRunningStatus() == AppConfig.STATUS_COLLECTING) {
+            showError("正在收珠，完成后才能退出会员登录");
             return;
         }
         if (!new NetworkStartupManager(this).hasValidatedInternet()) {
-            showError("网络未连接，暂不能取消会员存珠会话");
+            showError("网络未连接，暂不能退出会员登录");
             ensureNetworkBeforeDeviceFlow(false);
+            if (idleTimeout) {
+                lastMemberInteractionAt = SystemClock.elapsedRealtime();
+                scheduleMemberIdleTimeout();
+            }
             return;
         }
-        memberStore.setMessage("正在返回待机");
-        executeWorker("取消会员存珠 Session", () -> {
+
+        memberLogoutRunning = true;
+        cancelMemberIdleTimeout();
+        memberStore.setMessage(idleTimeout ? "60秒无操作，正在退出会员登录" : "正在退出会员登录");
+        executeWorker("退出会员登录", () -> {
             try {
-                new MemberDepositRepository(this).cancelSession(snapshot.sessionId);
+                if (snapshot.hasSession()) {
+                    new MemberDepositRepository(this).cancelSession(snapshot.sessionId);
+                }
             } catch (Throwable error) {
-                Log.w(TAG, "取消会员存珠 Session 失败，本地保留现场", error);
-                showError("取消会话失败：" + messageOf(error));
+                Log.w(TAG, "退出会员登录时取消 Session 失败，本地保留现场", error);
+                postToMainIfAlive(() -> {
+                    memberLogoutRunning = false;
+                    showError("退出会员登录失败：" + messageOf(error));
+                    lastMemberInteractionAt = SystemClock.elapsedRealtime();
+                    scheduleMemberIdleTimeout();
+                });
                 return;
             }
             memberStore.clearSession();
-            autoSessionRequested = false;
-            postToMainIfAlive(this::maybeRestoreOrCreateSession);
+            postToMainIfAlive(() -> {
+                memberLogoutRunning = false;
+                memberPageVisible = false;
+                lastMemberInteractionAt = 0L;
+                autoSessionRequested = false;
+                refreshStatus();
+                maybeRestoreOrCreateSession();
+            });
         });
     }
 
@@ -750,13 +808,14 @@ public class MainActivity extends AppCompatActivity {
         boolean collecting = runningStatus == AppConfig.STATUS_COLLECTING
                 || (hardwareSession != null && DepositSession.STATE_COLLECTING.equals(hardwareSession.state));
 
+        updatePageState(member, collecting);
         headerStatusText.setText(headerStatus(internet, activated, member, collecting));
         mainHintText.setText(mainHint(internet, member, collecting));
         updateQr(internet, member, collecting);
 
         memberNoText.setText("会员：" + memberName(member));
         memberBalanceText.setText("余额：" + emptyAsDash(member.availableQuantity) + " " + member.unitName);
-        memberLimitText.setText("上限：" + emptyAsDash(member.maximumDepositQuantity) + " " + member.unitName);
+        memberLimitText.setText("可存上限：" + emptyAsDash(member.maximumDepositQuantity) + " " + member.unitName);
         int actual = hardwareSession == null ? 0 : hardwareSession.actualQuantity;
         actualQuantityText.setText("本次已确认：" + actual + " 颗");
 
@@ -798,13 +857,87 @@ public class MainActivity extends AppCompatActivity {
                 && serialOpen
                 && member.isBound()
                 && !collecting
+                && !memberLogoutRunning
                 && !MemberDepositStore.STATUS_WAITING_COMMAND.equals(member.status)
                 && !MemberDepositStore.STATUS_STARTING.equals(member.status);
         startButton.setEnabled(canStart);
         startButton.setText(collecting ? "正在收珠" : "开始存珠");
         refreshButton.setEnabled(internet && activated && mqttConnected
-                && mqttSubscribed && bootstrapVerified && !collecting);
-        cancelButton.setEnabled(internet && bootstrapVerified && !collecting && member.hasSession());
+                && mqttSubscribed && bootstrapVerified && !collecting && !memberLogoutRunning);
+        cancelButton.setEnabled(internet && bootstrapVerified && !collecting
+                && !memberLogoutRunning && member.hasSession());
+    }
+
+    private void updatePageState(MemberDepositStore.Snapshot member, boolean collecting) {
+        boolean loggedIn = isMemberLoggedIn(member);
+        qrPage.setVisibility(loggedIn ? View.GONE : View.VISIBLE);
+        memberPage.setVisibility(loggedIn ? View.VISIBLE : View.GONE);
+
+        if (!loggedIn) {
+            memberPageVisible = false;
+            lastMemberInteractionAt = 0L;
+            cancelMemberIdleTimeout();
+            return;
+        }
+
+        if (!memberPageVisible) {
+            memberPageVisible = true;
+            lastMemberInteractionAt = SystemClock.elapsedRealtime();
+        }
+
+        /* 只有“已绑定且尚未开始收珠”的会员页参与 60 秒无操作退出，业务执行期间不强制取消 Session。 */
+        if (member.isBound() && !collecting && !memberLogoutRunning) {
+            scheduleMemberIdleTimeout();
+        } else {
+            cancelMemberIdleTimeout();
+        }
+    }
+
+    private void resetMemberIdleTimerFromUser() {
+        if (!memberPageVisible || memberLogoutRunning || memberStore == null) {
+            return;
+        }
+        MemberDepositStore.Snapshot snapshot = memberStore.loadWithoutScheduling();
+        if (!snapshot.isBound()
+                || DeviceStateRepository.get(this).getRunningStatus() == AppConfig.STATUS_COLLECTING) {
+            return;
+        }
+        lastMemberInteractionAt = SystemClock.elapsedRealtime();
+        scheduleMemberIdleTimeout();
+    }
+
+    private void scheduleMemberIdleTimeout() {
+        mainHandler.removeCallbacks(memberIdleTimeoutRunnable);
+        if (!memberPageVisible || memberLogoutRunning || lastMemberInteractionAt <= 0L) {
+            return;
+        }
+        long elapsed = SystemClock.elapsedRealtime() - lastMemberInteractionAt;
+        long delay = Math.max(1L, MEMBER_IDLE_TIMEOUT_MS - elapsed);
+        mainHandler.postDelayed(memberIdleTimeoutRunnable, delay);
+    }
+
+    private void cancelMemberIdleTimeout() {
+        mainHandler.removeCallbacks(memberIdleTimeoutRunnable);
+    }
+
+    private void handleMemberIdleTimeout() {
+        if (!isUiAlive() || memberLogoutRunning || memberStore == null) {
+            return;
+        }
+        MemberDepositStore.Snapshot snapshot = memberStore.loadWithoutScheduling();
+        if (!snapshot.isBound()) {
+            return;
+        }
+        if (DeviceStateRepository.get(this).getRunningStatus() == AppConfig.STATUS_COLLECTING) {
+            cancelMemberIdleTimeout();
+            return;
+        }
+        long idle = SystemClock.elapsedRealtime() - lastMemberInteractionAt;
+        if (idle < MEMBER_IDLE_TIMEOUT_MS) {
+            scheduleMemberIdleTimeout();
+            return;
+        }
+        cancelCurrentSession(true);
     }
 
     private void updateQr(boolean internet, MemberDepositStore.Snapshot member, boolean collecting) {
@@ -829,10 +962,10 @@ public class MainActivity extends AppCompatActivity {
             qrPlaceholderText.setText("正在收珠\n请等待完成");
             return;
         }
-        if (member.isBound()) {
+        if (isMemberLoggedIn(member)) {
             qrImage.setVisibility(View.GONE);
             qrPlaceholderText.setVisibility(View.VISIBLE);
-            qrPlaceholderText.setText("会员已绑定\n请点击开始存珠");
+            qrPlaceholderText.setText("会员已登录\n请在会员页面操作");
             return;
         }
         if (!member.hasQrContent()) {
@@ -869,7 +1002,7 @@ public class MainActivity extends AppCompatActivity {
                 postToMainIfAlive(() -> {
                     MemberDepositStore.Snapshot current = memberStore.load();
                     qrGeneratingContent = "";
-                    if (!qrContent.equals(current.qrContent) || current.isBound()) {
+                    if (!qrContent.equals(current.qrContent) || isMemberLoggedIn(current)) {
                         return;
                     }
                     qrImage.setImageBitmap(bitmap);
@@ -911,8 +1044,8 @@ public class MainActivity extends AppCompatActivity {
         if (collecting) {
             return "收珠中";
         }
-        if (member.isBound()) {
-            return "已绑定";
+        if (isMemberLoggedIn(member)) {
+            return "会员已登录";
         }
         if (member.hasQrContent()) {
             return "待扫码";
@@ -933,17 +1066,17 @@ public class MainActivity extends AppCompatActivity {
         if (collecting) {
             return "请投入弹珠，系统正在计数";
         }
-        if (member.isBound()) {
-            return "会员已绑定，确认后点击开始存珠";
+        if (isMemberLoggedIn(member)) {
+            return "会员已登录，请在会员页面操作";
         }
         if (member.hasQrContent()) {
-            return "请使用微信扫描二维码";
+            return "请使用微信扫描二维码登录会员";
         }
-        return "正在准备会员存珠二维码";
+        return "正在准备会员登录二维码";
     }
 
     private String memberName(MemberDepositStore.Snapshot member) {
-        if (!member.isBound()) {
+        if (!isMemberLoggedIn(member)) {
             return "等待扫码";
         }
         if (!member.memberNickname.isEmpty() && !member.memberNo.isEmpty()) {
@@ -953,6 +1086,15 @@ public class MainActivity extends AppCompatActivity {
             return member.memberNickname;
         }
         return emptyAsDash(member.memberNo);
+    }
+
+    private static boolean isMemberLoggedIn(MemberDepositStore.Snapshot member) {
+        if (member == null || !member.hasSession()) {
+            return false;
+        }
+        return member.isBound()
+                || !empty(member.memberNo)
+                || !empty(member.memberNickname);
     }
 
     private void showError(String message) {
