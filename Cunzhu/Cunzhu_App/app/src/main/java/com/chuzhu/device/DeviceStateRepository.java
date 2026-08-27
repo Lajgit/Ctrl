@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 
 import com.chuzhu.AppConfig;
+import com.chuzhu.DepositConfirmActivity;
 import com.chuzhu.data.DepositSession;
 import com.chuzhu.data.HardwareSessionStore;
 
@@ -55,6 +56,17 @@ public final class DeviceStateRepository {
             runningStatus = AppConfig.STATUS_COLLECTING;
             lastError = "";
             broadcast();
+            return;
+        }
+        if (DepositSession.STATE_WAITING_CONFIRM.equals(session.state)) {
+            /*
+             * 0x21 已明确说明控制板电机停止，因此物理状态是 IDLE；业务 terminal 尚未发送。
+             * APP 重启后重新打开确认页，继续保留“确认/继续/返回”的业务选择。
+             */
+            runningStatus = AppConfig.STATUS_IDLE;
+            lastError = "";
+            broadcast();
+            launchPendingConfirmUi();
             return;
         }
         if (DepositSession.STATE_FAILED.equals(session.state)
@@ -118,5 +130,14 @@ public final class DeviceStateRepository {
         intent.putExtra("runningStatus", getRunningStatus());
         intent.putExtra("lastError", lastError);
         context.sendBroadcast(intent);
+    }
+
+    private void launchPendingConfirmUi() {
+        try {
+            Intent intent = new Intent(context, DepositConfirmActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            context.startActivity(intent);
+        } catch (Throwable ignored) {
+        }
     }
 }
