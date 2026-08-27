@@ -195,7 +195,7 @@ public final class BoardFrameCodec {
 
     public byte[] buildClearFaultFrame(int resetType) {
         return buildFrame(nextFrameId(), CODE2_CLEAR_FAULT,
-                resetType & 0xFF, 0, 0, 0, 0, ACK_NONE, RESULT_OK);
+                resetType & 0xFF, 0, 0, 0, ACK_NONE, RESULT_OK);
     }
 
     public byte[] buildHeartbeatFrame() {
