@@ -118,6 +118,19 @@ public final class MemberDepositStore {
         if (sessionId.isEmpty()) {
             sessionId = old.sessionId;
         }
+
+        /*
+         * 新会员扫码绑定代表新的存珠展示周期已经开始。上一笔已经 FINISHED 的硬件快照
+         * 只用于上一位会员确认页展示，不能继续给新会员显示“本次已确认 XX 颗”。
+         * WAITING_CONFIRM/FAILED/FAULT 等未可靠收口状态不能在这里静默删除。
+         */
+        HardwareSessionStore hardwareStore = new HardwareSessionStore(context);
+        DepositSession previousHardware = hardwareStore.load();
+        if (previousHardware != null
+                && DepositSession.STATE_FINISHED.equals(previousHardware.state)) {
+            hardwareStore.clear();
+        }
+
         Snapshot bound = new Snapshot(
                 sessionId,
                 "",
