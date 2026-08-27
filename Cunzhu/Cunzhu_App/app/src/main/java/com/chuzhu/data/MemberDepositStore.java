@@ -32,6 +32,7 @@ public final class MemberDepositStore {
     private static final String KEY_STATUS = "status";
     private static final String KEY_MEMBER_NO = "memberNo";
     private static final String KEY_MEMBER_NICKNAME = "memberNickname";
+    private static final String KEY_MEMBER_DISPLAY_NO = "memberDisplayNo";
     private static final String KEY_AVAILABLE_QUANTITY = "availableQuantity";
     private static final String KEY_ITEM_ID = "itemId";
     private static final String KEY_ITEM_NAME = "itemName";
@@ -69,6 +70,7 @@ public final class MemberDepositStore {
                 pref.getString(KEY_STATUS, STATUS_EMPTY),
                 pref.getString(KEY_MEMBER_NO, ""),
                 pref.getString(KEY_MEMBER_NICKNAME, ""),
+                pref.getString(KEY_MEMBER_DISPLAY_NO, ""),
                 pref.getString(KEY_AVAILABLE_QUANTITY, ""),
                 pref.getString(KEY_ITEM_ID, ""),
                 pref.getString(KEY_ITEM_NAME, ""),
@@ -94,6 +96,7 @@ public final class MemberDepositStore {
         editor.putString(KEY_STATUS, safe(session.status, STATUS_WAITING_SCAN));
         editor.putString(KEY_MEMBER_NO, safe(session.memberNo));
         editor.putString(KEY_MEMBER_NICKNAME, safe(session.memberNickname));
+        editor.putString(KEY_MEMBER_DISPLAY_NO, safe(session.memberDisplayNo));
         editor.putString(KEY_AVAILABLE_QUANTITY, safe(session.availableQuantity));
         editor.putString(KEY_ITEM_ID, safe(session.itemId));
         editor.putString(KEY_ITEM_NAME, safe(session.itemName));
@@ -137,6 +140,7 @@ public final class MemberDepositStore {
                 STATUS_BOUND,
                 firstString(data, "memberNo", "memberCode", "memberNumber", "memberId"),
                 firstString(data, "memberNickname", "nickname", "memberName"),
+                firstString(data, "memberDisplayNo"),
                 firstString(data, "availableQuantity", "availableMarbleQuantity", "balanceQuantity"),
                 firstString(data, "itemId", "materialId"),
                 firstString(data, "itemName", "materialName"),
@@ -273,6 +277,7 @@ public final class MemberDepositStore {
         public final String status;
         public final String memberNo;
         public final String memberNickname;
+        public final String memberDisplayNo;
         public final String availableQuantity;
         public final String itemId;
         public final String itemName;
@@ -292,6 +297,7 @@ public final class MemberDepositStore {
                 String status,
                 String memberNo,
                 String memberNickname,
+                String memberDisplayNo,
                 String availableQuantity,
                 String itemId,
                 String itemName,
@@ -310,6 +316,7 @@ public final class MemberDepositStore {
             this.status = safe(status, STATUS_EMPTY);
             this.memberNo = safe(memberNo);
             this.memberNickname = safe(memberNickname);
+            this.memberDisplayNo = safe(memberDisplayNo);
             this.availableQuantity = safe(availableQuantity);
             this.itemId = safe(itemId);
             this.itemName = safe(itemName);
@@ -322,6 +329,48 @@ public final class MemberDepositStore {
             this.referenceNo = safe(referenceNo);
             this.message = safe(message);
             this.updatedAt = updatedAt;
+        }
+
+        /** 兼容旧调用点；没有 memberDisplayNo 时保持为空，不改变既有业务字段。 */
+        public Snapshot(
+                String sessionId,
+                String qrContent,
+                String status,
+                String memberNo,
+                String memberNickname,
+                String availableQuantity,
+                String itemId,
+                String itemName,
+                String unitName,
+                String maximumDepositQuantity,
+                String expireTime,
+                int refreshAfterSeconds,
+                String clientRequestNo,
+                String operationNo,
+                String referenceNo,
+                String message,
+                long updatedAt
+        ) {
+            this(
+                    sessionId,
+                    qrContent,
+                    status,
+                    memberNo,
+                    memberNickname,
+                    "",
+                    availableQuantity,
+                    itemId,
+                    itemName,
+                    unitName,
+                    maximumDepositQuantity,
+                    expireTime,
+                    refreshAfterSeconds,
+                    clientRequestNo,
+                    operationNo,
+                    referenceNo,
+                    message,
+                    updatedAt
+            );
         }
 
         public boolean hasSession() {
