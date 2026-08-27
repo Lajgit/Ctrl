@@ -2,7 +2,11 @@ package com.chuzhu;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -23,9 +27,12 @@ import com.google.android.material.card.MaterialCardView;
  *
  * <p>确认：按当前累计数量一次性提交 terminal 并刷新账户余额；继续存珠：复用同一会员、
  * 同一 Operation，控制板重新启动后数量继续累计；返回：先按当前事实收口业务再退出会员。
- * 当累计数量为 0 时不允许提交成功存珠，只提供“继续存珠 / 返回”。</p>
+ * 当累计数量为 0 时不允许提交成功存珠，只提供“继续存珠 / 返回”。确认页 60 秒无操作时，
+ * 有珠子自动按当前数量确认并返回，0 颗只结束 Operation 后返回。</p>
  */
 public final class DepositConfirmActivity extends AppCompatActivity {
+
+    private static final long CONFIRM_IDLE_TIMEOUT_MS = 60_000L;
 
     private TextView memberText;
     private TextView balanceText;
@@ -36,6 +43,10 @@ public final class DepositConfirmActivity extends AppCompatActivity {
     private MaterialButton returnButton;
     private boolean busy;
     private boolean confirmed;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable confirmIdleTimeoutRunnable = this::handleConfirmIdleTimeout;
+    private long lastInteractionAt;
 
     private MemberDepositStore memberStore;
     private HardwareSessionStore sessionStore;
@@ -48,6 +59,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         sessionStore = new HardwareSessionStore(this);
         controller = PendingDepositController.get(this);
         setContentView(buildContentView());
+        lastInteractionAt = SystemClock.elapsedRealtime();
         refreshUi();
     }
 
@@ -55,6 +67,21 @@ public final class DepositConfirmActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         refreshUi();
+        scheduleConfirmIdleTimeout();
+    }
+
+    @Override
+    protected void onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event != null && event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            resetConfirmIdleTimeoutFromUser();
+        }
+        return super.dispatchTouchEvent(event);
     }
 
     @Override
@@ -170,9 +197,11 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         DepositSession session = sessionStore.load();
         if (confirmed) {
             showConfirmedState();
+            cancelConfirmIdleTimeout();
             return;
         }
         if (session == null || !DepositSession.STATE_WAITING_CONFIRM.equals(session.state)) {
+            cancelConfirmIdleTimeout();
             if (!busy) {
                 finish();
             }
@@ -191,11 +220,12 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         boolean maximumReached = session.actualQuantity >= session.maximumQuantity
                 || session.finishReason == BoardFrameCodec.FINISH_REASON_MAXIMUM_REACHED;
         if (emptyDeposit) {
-            hintText.setText("未检测到珠子，本次不会提交存珠；可继续存珠或返回");
+            hintText.setText("未检测到珠子，本次不会提交存珠；60 秒无操作将自动返回");
         } else if (maximumReached) {
-            hintText.setText("已达到本次可存上限，请确认入账或返回");
+            hintText.setText("已达到本次可存上限；60 秒无操作将自动确认并返回");
         } else {
-            hintText.setText("确认后一次性入账；继续存珠会从 " + session.actualQuantity + " 颗继续累计");
+            hintText.setText("确认后一次性入账；60 秒无操作将自动按 "
+                    + session.actualQuantity + " 颗确认并返回");
         }
         continueButton.setVisibility(View.VISIBLE);
         /* 0 颗没有可结算数量，隐藏“确认”，避免产生 0 颗成功提交。 */
@@ -203,6 +233,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         continueButton.setEnabled(!busy && !maximumReached);
         confirmButton.setEnabled(!busy && !emptyDeposit);
         returnButton.setEnabled(!busy);
+        scheduleConfirmIdleTimeout();
     }
 
     private void showConfirmedState() {
@@ -225,6 +256,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         if (busy) {
             return;
         }
+        cancelConfirmIdleTimeout();
         DepositSession session = sessionStore.load();
         boolean emptyDeposit = session != null && session.actualQuantity <= 0;
         busy = true;
@@ -242,6 +274,8 @@ public final class DepositConfirmActivity extends AppCompatActivity {
             busy = false;
             hintText.setText(message);
             if (!success) {
+                /* 收口失败时不能立刻反复重试，重新给现场 60 秒处理窗口。 */
+                lastInteractionAt = SystemClock.elapsedRealtime();
                 refreshUi();
                 return;
             }
@@ -261,6 +295,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         if (busy) {
             return;
         }
+        cancelConfirmIdleTimeout();
         busy = true;
         setButtonsEnabled(false);
         hintText.setText("正在重新启动收珠机构...");
@@ -270,16 +305,76 @@ public final class DepositConfirmActivity extends AppCompatActivity {
             if (success) {
                 finish();
             } else {
+                lastInteractionAt = SystemClock.elapsedRealtime();
                 refreshUi();
             }
         }));
     }
 
     private void exitConfirmedMember() {
+        cancelConfirmIdleTimeout();
         /* 余额展示结束后同时清理会员快照与已完成硬件快照，下一位会员从 0 颗开始。 */
         sessionStore.clear();
         memberStore.clearSession();
         restartMainScreen();
+    }
+
+    /**
+     * 确认页任意触摸都视为有效操作，从该次触摸重新计算 60 秒无操作时间。
+     * 仅 WAITING_CONFIRM 参与自动收口，已经确认或正在请求平台时不重复触发。
+     */
+    private void resetConfirmIdleTimeoutFromUser() {
+        if (busy || confirmed || sessionStore == null) {
+            return;
+        }
+        DepositSession session = sessionStore.load();
+        if (session == null || !DepositSession.STATE_WAITING_CONFIRM.equals(session.state)) {
+            return;
+        }
+        lastInteractionAt = SystemClock.elapsedRealtime();
+        scheduleConfirmIdleTimeout();
+    }
+
+    private void scheduleConfirmIdleTimeout() {
+        mainHandler.removeCallbacks(confirmIdleTimeoutRunnable);
+        if (busy || confirmed || sessionStore == null || lastInteractionAt <= 0L) {
+            return;
+        }
+        DepositSession session = sessionStore.load();
+        if (session == null || !DepositSession.STATE_WAITING_CONFIRM.equals(session.state)) {
+            return;
+        }
+        long elapsed = SystemClock.elapsedRealtime() - lastInteractionAt;
+        long delay = Math.max(1L, CONFIRM_IDLE_TIMEOUT_MS - elapsed);
+        mainHandler.postDelayed(confirmIdleTimeoutRunnable, delay);
+    }
+
+    private void cancelConfirmIdleTimeout() {
+        mainHandler.removeCallbacks(confirmIdleTimeoutRunnable);
+    }
+
+    private void handleConfirmIdleTimeout() {
+        if (busy || confirmed || sessionStore == null) {
+            return;
+        }
+        DepositSession session = sessionStore.load();
+        if (session == null || !DepositSession.STATE_WAITING_CONFIRM.equals(session.state)) {
+            cancelConfirmIdleTimeout();
+            return;
+        }
+        long idle = SystemClock.elapsedRealtime() - lastInteractionAt;
+        if (idle < CONFIRM_IDLE_TIMEOUT_MS) {
+            scheduleConfirmIdleTimeout();
+            return;
+        }
+        /*
+         * 有珠子按当前累计数量自动确认并返回；0 颗复用现有空存珠收口，绝不提交 success+0。
+         * 两种情况都释放当前会员和页面，避免无人操作时长期占用设备。
+         */
+        hintText.setText(session.actualQuantity > 0
+                ? "60 秒无操作，正在自动确认当前数量并返回..."
+                : "60 秒无操作，本次 0 颗，正在结束操作并返回...");
+        confirmAndFinish(true);
     }
 
     /**
