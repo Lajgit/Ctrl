@@ -418,30 +418,51 @@ public final class DepositCommandHandler {
         boolean recorded = data.optBoolean("recorded", false);
         boolean retryable = data.optBoolean("retryable", true);
 
-        if (!recorded || retryable) {
-            new MemberDepositStore(context).setMessage(
-                    retryable ? "平台要求重试业务回执" : "平台尚未确认业务回执"
-            );
-            Log.w(TAG, "command_result_ack 未确认清理：recorded=" + recorded
-                    + "，retryable=" + retryable
-                    + "，sourceMessageId=" + sourceMessageId
-                    + "，eventNo=" + eventNo);
-            return;
-        }
-        if (sourceMessageId.isEmpty() || eventNo.isEmpty() || resultStatus.isEmpty()) {
-            Log.w(TAG, "command_result_ack 缺少 receiptKey 字段，保留 outbox");
+        if (sourceMessageId.isEmpty() || eventNo.isEmpty()) {
+            Log.w(TAG, "command_result_ack 缺少 sourceMessageId/eventNo，保留 outbox");
             return;
         }
 
-        int removed = new PendingOutboxStore(context).removeConfirmed(
-                sourceMessageId,
-                eventNo,
-                resultStatus
-        );
+        PendingOutboxStore outbox = new PendingOutboxStore(context);
+        if (recorded) {
+            /* SDK 语义以 recorded=true 作为平台已落库事实；即使 retryable 字段异常也不再重复上报。 */
+            int removed = outbox.removeConfirmed(sourceMessageId, eventNo, resultStatus);
+            new MemberDepositStore(context).setMessage(
+                    removed > 0 ? "平台已确认业务回执" : "平台已确认回执，本地未找到对应待发送记录"
+            );
+            if (retryable) {
+                Log.w(TAG, "command_result_ack recorded=true 但 retryable=true，按已落库停止重发：sourceMessageId="
+                        + sourceMessageId + "，eventNo=" + eventNo + "，removed=" + removed);
+            } else {
+                Log.i(TAG, "command_result_ack 已确认：sourceMessageId=" + sourceMessageId
+                        + "，eventNo=" + eventNo
+                        + "，resultStatus=" + resultStatus
+                        + "，removed=" + removed);
+            }
+            return;
+        }
+
+        if (retryable) {
+            new MemberDepositStore(context).setMessage("平台要求重试业务回执");
+            Log.w(TAG, "command_result_ack 要求继续重试：sourceMessageId=" + sourceMessageId
+                    + "，eventNo=" + eventNo
+                    + "，resultStatus=" + resultStatus);
+            return;
+        }
+
+        /*
+         * recorded=false + retryable=false 表示平台未落库但明确要求不要再重试。
+         * 继续保留 outbox 只会让每次心跳永久重放同一 ACK/terminal；因此精确移除该事件，
+         * 但日志和页面明确标记“未记录”，绝不能把它伪装成平台确认成功。
+         */
+        int removed = outbox.removeConfirmed(sourceMessageId, eventNo, resultStatus);
         new MemberDepositStore(context).setMessage(
-                removed > 0 ? "平台已确认业务回执" : "平台已确认回执，本地未找到对应待发送记录"
+                removed > 0
+                        ? "平台未记录业务回执且明确不可重试，已停止重发"
+                        : "平台明确业务回执不可重试，本地未找到对应待发送记录"
         );
-        Log.i(TAG, "command_result_ack 已处理：sourceMessageId=" + sourceMessageId
+        Log.e(TAG, "command_result_ack 未记录且不可重试，停止重发：sourceMessageId="
+                + sourceMessageId
                 + "，eventNo=" + eventNo
                 + "，resultStatus=" + resultStatus
                 + "，removed=" + removed);
