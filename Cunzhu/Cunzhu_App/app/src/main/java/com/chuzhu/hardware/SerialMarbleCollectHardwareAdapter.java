@@ -3,6 +3,10 @@ package com.chuzhu.hardware;
 import android.content.Context;
 
 import com.chuzhu.AppConfig;
+import com.chuzhu.data.DepositSession;
+import com.chuzhu.data.HardwareSessionStore;
+import com.chuzhu.device.DeviceStateRepository;
+import com.chuzhu.mqtt.PendingDepositController;
 import com.chuzhu.serial.BoardEvent;
 import com.chuzhu.serial.BoardEventListener;
 import com.chuzhu.serial.BoardFrameCodec;
@@ -27,6 +31,11 @@ public final class SerialMarbleCollectHardwareAdapter
     private final Object lock = new Object();
     private volatile boolean collecting;
     private volatile Listener listener;
+    /** 当前控制板这一段开始前已经确认的累计数量。 */
+    private volatile int quantityOffset;
+    /** 当前控制板这一段自身的原始计数；继续 START 后会重新从 0 开始。 */
+    private volatile int segmentRawQuantity;
+    /** Android 对外展示/上报的同一 Operation 累计数量。 */
     private volatile int actualQuantity;
     private volatile CountDownLatch blockingLatch;
     private volatile HardwareExecutionResult blockingResult;
@@ -93,23 +102,58 @@ public final class SerialMarbleCollectHardwareAdapter
     }
 
     public boolean startCollect(int maximumQuantity, int sessionTimeoutSeconds, Listener listener) {
+        return startSegment(maximumQuantity, sessionTimeoutSeconds, 0, listener, false);
+    }
+
+    /**
+     * 同一会员同一 Operation 的继续存珠。
+     * 控制板 START 会清零板端计数，因此只把剩余允许数量发给控制板，并用 accumulatedQuantity
+     * 作为 Android 累计偏移；后续 0x20/0x21 都转换成累计数量再交给业务层。
+     */
+    public boolean startContinuation(
+            int remainingQuantity,
+            int remainingTimeoutSeconds,
+            int accumulatedQuantity,
+            Listener listener
+    ) {
+        return startSegment(
+                remainingQuantity,
+                remainingTimeoutSeconds,
+                accumulatedQuantity,
+                listener,
+                false
+        );
+    }
+
+    private boolean startSegment(
+            int boardMaximumQuantity,
+            int sessionTimeoutSeconds,
+            int accumulatedQuantity,
+            Listener listener,
+            boolean localDebug
+    ) {
         synchronized (lock) {
             if (collecting) {
                 return false;
             }
-            if (maximumQuantity <= 0 || sessionTimeoutSeconds <= 0) {
+            if (boardMaximumQuantity <= 0 || sessionTimeoutSeconds <= 0 || accumulatedQuantity < 0) {
                 return false;
             }
-            if (!serialPort.isOpen()) {
+            if (!localDebug && !serialPort.isOpen()) {
                 return false;
             }
             collecting = true;
-            localDebugSession = false;
-            actualQuantity = 0;
+            localDebugSession = localDebug;
+            quantityOffset = accumulatedQuantity;
+            segmentRawQuantity = 0;
+            actualQuantity = accumulatedQuantity;
             blockingResult = null;
             this.listener = listener;
+            if (localDebug) {
+                return true;
+            }
             byte[] frame = serialPort.getCodec().buildStartCollectFrame(
-                    maximumQuantity,
+                    boardMaximumQuantity,
                     sessionTimeoutSeconds
             );
             boolean written = serialPort.write(frame);
@@ -123,20 +167,34 @@ public final class SerialMarbleCollectHardwareAdapter
 
     /**
      * APP 进程重启但控制板未重启时，控制板可能仍在执行上一笔收珠。
-     * 该方法只恢复 Android 侧事件监听，不重新发送 START_COLLECT，避免重复启动机构或清零计数。
+     * 继续存珠场景下 STATUS 返回的是“当前分段”计数；从持久化 Session 读取 segmentBaseQuantity
+     * 后恢复为业务累计数量，避免 APP 重启把 21+3 错恢复成 3。
      */
-    public boolean resumeCollect(int recoveredActualQuantity, Listener listener) {
+    public boolean resumeCollect(int recoveredSegmentQuantity, Listener listener) {
+        int total;
         synchronized (lock) {
-            if (collecting || !serialPort.isOpen() || recoveredActualQuantity < 0) {
+            if (collecting || !serialPort.isOpen() || recoveredSegmentQuantity < 0) {
+                return false;
+            }
+            DepositSession stored = new HardwareSessionStore(context).load();
+            int base = stored == null ? 0 : Math.max(0, stored.segmentBaseQuantity);
+            total = base + recoveredSegmentQuantity;
+            if (stored != null && stored.maximumQuantity > 0 && total > stored.maximumQuantity) {
                 return false;
             }
             collecting = true;
             localDebugSession = false;
-            actualQuantity = recoveredActualQuantity;
+            quantityOffset = base;
+            segmentRawQuantity = recoveredSegmentQuantity;
+            actualQuantity = total;
             blockingResult = null;
             this.listener = listener;
-            return true;
         }
+        /* 立即把恢复后的累计总数回灌业务层，修正其刚读取的板端分段数量。 */
+        if (listener != null) {
+            listener.onCountChanged(total);
+        }
+        return true;
     }
 
     /**
@@ -197,17 +255,13 @@ public final class SerialMarbleCollectHardwareAdapter
 
     /** 仅本地调试使用：模拟启动收珠，不代表正式 MQTT 指令已经执行硬件。 */
     public boolean startLocalDebugCollect(int maximumQuantity, Listener listener) {
-        synchronized (lock) {
-            if (collecting || maximumQuantity <= 0) {
-                return false;
-            }
-            collecting = true;
-            localDebugSession = true;
-            actualQuantity = 0;
-            blockingResult = null;
-            this.listener = listener;
-            return true;
-        }
+        return startSegment(
+                maximumQuantity,
+                AppConfig.DEFAULT_COLLECT_TIMEOUT_SECONDS,
+                0,
+                listener,
+                true
+        );
     }
 
     /** 仅本地调试使用：模拟控制板计数 +1。 */
@@ -215,43 +269,77 @@ public final class SerialMarbleCollectHardwareAdapter
         if (!localDebugSession || !collecting) {
             return;
         }
-        onBoardCountChanged(actualQuantity + 1);
+        onBoardCountChanged(segmentRawQuantity + 1);
     }
 
-    /** 仅本地调试使用：模拟控制板返回收珠结束。 */
+    /** 仅本地调试使用：模拟控制板返回自然结束。 */
     public void simulateFinish() {
         if (!localDebugSession || !collecting) {
             return;
         }
-        onBoardFinished(actualQuantity);
+        onBoardFinished(segmentRawQuantity, BoardFrameCodec.FINISH_REASON_NATURAL);
     }
 
-    public void onBoardCountChanged(int actualQuantity) {
-        if (!collecting || actualQuantity < this.actualQuantity) {
-            return;
+    public void onBoardCountChanged(int boardActualQuantity) {
+        Listener current;
+        int total;
+        synchronized (lock) {
+            if (!collecting || boardActualQuantity < segmentRawQuantity) {
+                return;
+            }
+            segmentRawQuantity = boardActualQuantity;
+            total = quantityOffset + boardActualQuantity;
+            actualQuantity = total;
+            current = listener;
         }
-        this.actualQuantity = actualQuantity;
-        Listener current = listener;
         if (current != null) {
-            current.onCountChanged(actualQuantity);
+            current.onCountChanged(total);
         }
+        /* 每颗珠子的可信计数都刷新运行状态广播，MainActivity 因此实时读取 HardwareSessionStore。 */
+        DeviceStateRepository.get(context).markCollecting();
     }
 
-    public void onBoardFinished(int actualQuantity) {
-        if (!collecting) {
-            return;
+    public void onBoardFinished(int boardActualQuantity) {
+        onBoardFinished(boardActualQuantity, BoardFrameCodec.FINISH_REASON_ANDROID_STOP);
+    }
+
+    private void onBoardFinished(int boardActualQuantity, int finishReason) {
+        Listener current;
+        int total;
+        boolean waitForUser;
+        synchronized (lock) {
+            if (!collecting) {
+                return;
+            }
+            segmentRawQuantity = Math.max(segmentRawQuantity, boardActualQuantity);
+            total = quantityOffset + segmentRawQuantity;
+            actualQuantity = Math.max(actualQuantity, total);
+            collecting = false;
+            localDebugSession = false;
+            current = listener;
+            waitForUser = current != null
+                    && (finishReason == BoardFrameCodec.FINISH_REASON_NATURAL
+                    || finishReason == BoardFrameCodec.FINISH_REASON_MAXIMUM_REACHED);
+            if (!waitForUser) {
+                blockingResult = HardwareExecutionResult.success(actualQuantity);
+            }
         }
-        this.actualQuantity = Math.max(this.actualQuantity, actualQuantity);
-        collecting = false;
-        localDebugSession = false;
-        blockingResult = HardwareExecutionResult.success(this.actualQuantity);
+
+        if (waitForUser) {
+            /* 自然结束/达到上限只暂停业务，不生成 terminal；确认页面决定确认、继续或返回。 */
+            if (PendingDepositController.get(context)
+                    .pauseForConfirmation(actualQuantity, finishReason)) {
+                return;
+            }
+            /* 极端情况下本地会话丢失，退回原有成功终态，避免硬件已经停止却永久卡死。 */
+        }
+
         CountDownLatch latch = blockingLatch;
         if (latch != null) {
             latch.countDown();
         }
-        Listener current = listener;
         if (current != null) {
-            current.onFinished(this.actualQuantity);
+            current.onFinished(actualQuantity);
         }
     }
 
@@ -284,7 +372,7 @@ public final class SerialMarbleCollectHardwareAdapter
         } else if (BoardEvent.TYPE_COUNT_CHANGED.equals(event.type)) {
             onBoardCountChanged(event.actualQuantity);
         } else if (BoardEvent.TYPE_FINISHED.equals(event.type)) {
-            onBoardFinished(event.actualQuantity);
+            onBoardFinished(event.actualQuantity, event.data3);
         } else if (BoardEvent.TYPE_FAULT.equals(event.type)) {
             onBoardFault(event.errorCode, event.errorMessage);
         }
@@ -306,23 +394,28 @@ public final class SerialMarbleCollectHardwareAdapter
     }
 
     private void fail(String errorCode, String errorMessage) {
-        collecting = false;
-        localDebugSession = false;
-        blockingResult = HardwareExecutionResult.failed(
-                actualQuantity,
-                errorCode == null ? "COLLECT_FAILED" : errorCode,
-                errorMessage == null ? "" : errorMessage
-        );
+        Listener current;
+        int total;
+        synchronized (lock) {
+            collecting = false;
+            localDebugSession = false;
+            total = actualQuantity;
+            blockingResult = HardwareExecutionResult.failed(
+                    total,
+                    errorCode == null ? "COLLECT_FAILED" : errorCode,
+                    errorMessage == null ? "" : errorMessage
+            );
+            current = listener;
+        }
         CountDownLatch latch = blockingLatch;
         if (latch != null) {
             latch.countDown();
         }
-        Listener current = listener;
         if (current != null) {
             current.onFault(
                     errorCode == null ? "COLLECT_FAILED" : errorCode,
                     errorMessage == null ? "" : errorMessage,
-                    actualQuantity
+                    total
             );
         }
     }
