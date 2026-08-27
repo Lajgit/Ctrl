@@ -12,8 +12,8 @@ import java.util.List;
 /**
  * 存珠机可靠回执最小 outbox。
  *
- * <p>ACK/terminal 先落盘再发布；只有平台 command_result_ack 明确
- * recorded=true 且 retryable=false 时才删除对应回执。</p>
+ * <p>ACK/terminal 先落盘再发布；平台返回 command_result_ack 后由上层根据
+ * recorded/retryable 语义决定继续重试还是停止重发，本类只负责按 receipt 精确删除。</p>
  */
 public final class PendingOutboxStore {
 
@@ -72,15 +72,16 @@ public final class PendingOutboxStore {
     }
 
     /**
-     * 按平台确认的 sourceMessageId + eventNo + resultStatus 精确删除回执。
-     * 同时兼容升级前使用 messageId|kind 作为 receiptKey 的旧记录：匹配以 payload 为准。
+     * 按 sourceMessageId + eventNo 精确删除回执；resultStatus 有值时再附加状态匹配。
+     * eventNo 在同一业务消息内唯一，因此兼容平台 ACK 未返回 resultStatus 的情况。
+     * 同时兼容升级前使用 messageId|kind 作为 receiptKey 的旧记录：匹配仍以 payload 为准。
      */
     public synchronized int removeConfirmed(
             String sourceMessageId,
             String eventNo,
             String resultStatus
     ) {
-        if (blank(sourceMessageId) || blank(eventNo) || blank(resultStatus)) {
+        if (blank(sourceMessageId) || blank(eventNo)) {
             return 0;
         }
         JSONArray source = readArray();
@@ -111,9 +112,12 @@ public final class PendingOutboxStore {
     ) {
         try {
             JSONObject payload = new JSONObject(item.optString("payload", "{}"));
-            return sourceMessageId.equals(payload.optString("messageId", "").trim())
-                    && eventNo.equals(payload.optString("eventNo", "").trim())
-                    && resultStatus.equalsIgnoreCase(payload.optString("status", "").trim());
+            if (!sourceMessageId.equals(payload.optString("messageId", "").trim())
+                    || !eventNo.equals(payload.optString("eventNo", "").trim())) {
+                return false;
+            }
+            return blank(resultStatus)
+                    || resultStatus.equalsIgnoreCase(payload.optString("status", "").trim());
         } catch (Throwable ignored) {
             return false;
         }
