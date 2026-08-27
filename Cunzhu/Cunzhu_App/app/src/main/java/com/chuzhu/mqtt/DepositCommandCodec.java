@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
  */
 public final class DepositCommandCodec {
 
+    private static final String CMD_COMMAND_RESULT_ACK = "command_result_ack";
     private final DeviceMqttCommandCodec sdkCodec = new DeviceMqttCommandCodec();
 
     public Decoded decode(String topic, byte[] payload, String deviceNo, long now) {
@@ -28,12 +29,42 @@ public final class DepositCommandCodec {
 
     private static JSONObject parse(byte[] payload) {
         try {
-            return new JSONObject(new String(
+            JSONObject envelope = new JSONObject(new String(
                     payload == null ? new byte[0] : payload,
                     StandardCharsets.UTF_8
             ));
+            normalizeCommandResultAck(envelope);
+            return envelope;
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    /**
+     * 正式 SDK 的 command_result_ack 用 receiptStatus=recorded/rejected 表示平台是否已记录，
+     * 旧业务处理代码读取的是 recorded 布尔字段。这里仅在服务端未直接下发 recorded 时做兼容映射，
+     * 避免 receiptStatus=recorded + retryable=false 被误判成 recorded=false 的协议异常。
+     */
+    private static void normalizeCommandResultAck(JSONObject envelope) {
+        if (envelope == null
+                || !CMD_COMMAND_RESULT_ACK.equals(envelope.optString("commandType", ""))) {
+            return;
+        }
+        JSONObject data = envelope.optJSONObject("data");
+        if (data == null || data.has("recorded")) {
+            return;
+        }
+        String receiptStatus = data.optString("receiptStatus", "").trim();
+        if (receiptStatus.isEmpty()) {
+            return;
+        }
+        try {
+            if ("recorded".equalsIgnoreCase(receiptStatus)) {
+                data.put("recorded", true);
+            } else if ("rejected".equalsIgnoreCase(receiptStatus)) {
+                data.put("recorded", false);
+            }
+        } catch (Throwable ignored) {
         }
     }
 
