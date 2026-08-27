@@ -22,7 +22,8 @@ import com.google.android.material.card.MaterialCardView;
  * 控制板自然停止后的确认页。
  *
  * <p>确认：按当前累计数量一次性提交 terminal 并刷新账户余额；继续存珠：复用同一会员、
- * 同一 Operation，控制板重新启动后数量继续累计；返回：先确认并结算当前数量，再退出会员。</p>
+ * 同一 Operation，控制板重新启动后数量继续累计；返回：先按当前事实收口业务再退出会员。
+ * 当累计数量为 0 时不允许提交成功存珠，只提供“继续存珠 / 返回”。</p>
  */
 public final class DepositConfirmActivity extends AppCompatActivity {
 
@@ -65,7 +66,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
             exitConfirmedMember();
             return;
         }
-        /* 已经真实收到珠子时不能直接丢弃业务；系统返回键与“返回”按钮语义一致：先确认结算。 */
+        /* 返回由控制器按当前数量收口；0 颗只结束 Operation，不会提交成功存珠。 */
         confirmAndFinish(true);
     }
 
@@ -186,17 +187,21 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         balanceText.setText("当前账户余额：" + dash(member.availableQuantity) + " " + member.unitName);
         quantityText.setText("本次累计：" + session.actualQuantity + " 颗");
 
+        boolean emptyDeposit = session.actualQuantity <= 0;
         boolean maximumReached = session.actualQuantity >= session.maximumQuantity
                 || session.finishReason == BoardFrameCodec.FINISH_REASON_MAXIMUM_REACHED;
-        if (maximumReached) {
+        if (emptyDeposit) {
+            hintText.setText("未检测到珠子，本次不会提交存珠；可继续存珠或返回");
+        } else if (maximumReached) {
             hintText.setText("已达到本次可存上限，请确认入账或返回");
         } else {
             hintText.setText("确认后一次性入账；继续存珠会从 " + session.actualQuantity + " 颗继续累计");
         }
         continueButton.setVisibility(View.VISIBLE);
-        confirmButton.setVisibility(View.VISIBLE);
+        /* 0 颗没有可结算数量，隐藏“确认”，避免产生 0 颗成功提交。 */
+        confirmButton.setVisibility(emptyDeposit ? View.GONE : View.VISIBLE);
         continueButton.setEnabled(!busy && !maximumReached);
-        confirmButton.setEnabled(!busy);
+        confirmButton.setEnabled(!busy && !emptyDeposit);
         returnButton.setEnabled(!busy);
     }
 
@@ -220,11 +225,19 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         if (busy) {
             return;
         }
+        DepositSession session = sessionStore.load();
+        boolean emptyDeposit = session != null && session.actualQuantity <= 0;
         busy = true;
         setButtonsEnabled(false);
-        hintText.setText(returnAfter
-                ? "正在确认当前数量并返回..."
-                : "正在确认并刷新账户余额...");
+        if (emptyDeposit) {
+            hintText.setText(returnAfter
+                    ? "本次 0 颗，正在结束本次操作并返回..."
+                    : "当前为 0 颗，本次不提交");
+        } else {
+            hintText.setText(returnAfter
+                    ? "正在确认当前数量并返回..."
+                    : "正在确认并刷新账户余额...");
+        }
         controller.confirm(returnAfter, (success, message) -> runOnUiThread(() -> {
             busy = false;
             hintText.setText(message);
@@ -233,7 +246,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
                 return;
             }
             if (returnAfter) {
-                /* 本次已经完成结算，退出会员前同步清掉 FINISHED 硬件快照，避免下一位会员看到上一笔数量。 */
+                /* 本次已经完成结算/空存珠收口，退出会员前同步清掉 FINISHED 硬件快照。 */
                 sessionStore.clear();
                 restartMainScreen();
                 return;
