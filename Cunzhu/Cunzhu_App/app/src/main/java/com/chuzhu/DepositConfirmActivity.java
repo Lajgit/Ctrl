@@ -1,5 +1,6 @@
 package com.chuzhu;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
@@ -232,7 +233,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
                 return;
             }
             if (returnAfter) {
-                finish();
+                restartMainScreen();
                 return;
             }
             /* 确认后不立刻退回首页，先把 Server 最新余额明确展示给会员。 */
@@ -261,6 +262,17 @@ public final class DepositConfirmActivity extends AppCompatActivity {
 
     private void exitConfirmedMember() {
         memberStore.clearSession();
+        restartMainScreen();
+    }
+
+    /**
+     * MainActivity 在上一位会员登录期间会保留自动 Session 门禁状态。
+     * 返回二维码页时用 CLEAR_TOP 重建首页，让下一位会员立即得到新的二维码，而不是停在“正在获取”。
+     */
+    private void restartMainScreen() {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(intent);
         finish();
     }
 
