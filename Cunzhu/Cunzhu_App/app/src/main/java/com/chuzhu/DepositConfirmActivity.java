@@ -233,6 +233,8 @@ public final class DepositConfirmActivity extends AppCompatActivity {
                 return;
             }
             if (returnAfter) {
+                /* 本次已经完成结算，退出会员前同步清掉 FINISHED 硬件快照，避免下一位会员看到上一笔数量。 */
+                sessionStore.clear();
                 restartMainScreen();
                 return;
             }
@@ -261,6 +263,8 @@ public final class DepositConfirmActivity extends AppCompatActivity {
     }
 
     private void exitConfirmedMember() {
+        /* 余额展示结束后同时清理会员快照与已完成硬件快照，下一位会员从 0 颗开始。 */
+        sessionStore.clear();
         memberStore.clearSession();
         restartMainScreen();
     }
