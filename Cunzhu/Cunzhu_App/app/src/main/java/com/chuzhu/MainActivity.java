@@ -56,6 +56,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "CunzhuMain";
     private static final int REQUEST_NEARBY_WIFI_PERMISSION = 0x41;
     private static final int SAVED_WIFI_WAIT_SECONDS = 15;
+    private static final int START_QUERY_MAX_ATTEMPTS = 3;
+    private static final long START_QUERY_RETRY_DELAY_MS = 1500L;
 
     private TextView headerStatusText;
     private TextView mainHintText;
@@ -619,15 +621,90 @@ public class MainActivity extends AppCompatActivity {
         }
         String requestNo = memberStore.loadOrCreateClientRequestNo(snapshot.sessionId);
         executeWorker("开始会员存珠", () -> {
+            MemberDepositRepository repository;
             try {
+                repository = new MemberDepositRepository(this);
                 MemberDepositRepository.OperationSnapshot operation =
-                        new MemberDepositRepository(this).startMemberDeposit(requestNo, snapshot.sessionId);
+                        repository.startMemberDeposit(requestNo, snapshot.sessionId);
+                if (!hasOperationResult(operation)) {
+                    throw new IllegalStateException("平台开始存珠响应缺少 Operation 信息");
+                }
                 memberStore.markWaitingCommand(operation.operationNo, operation.referenceNo);
             } catch (Throwable error) {
+                if (isAmbiguousStartResult(error)) {
+                    recoverAmbiguousStartResult(requestNo, error);
+                    return;
+                }
                 Log.e(TAG, "开始会员存珠失败", error);
                 showError("开始存珠失败：" + messageOf(error));
             }
         });
+    }
+
+    private void recoverAmbiguousStartResult(String requestNo, Throwable originalError) {
+        Log.w(TAG, "开始存珠返回结果不明确，改为按 clientRequestNo 查询恢复：" + requestNo, originalError);
+        showError("开始存珠结果不明确，正在查询平台处理结果，请勿重复操作");
+        try {
+            MemberDepositRepository repository = new MemberDepositRepository(this);
+            MemberDepositRepository.OperationSnapshot operation = queryMemberDepositWithRetry(repository, requestNo);
+            memberStore.markWaitingCommand(operation.operationNo, operation.referenceNo);
+            Log.i(TAG, "开始存珠结果已通过查询恢复：clientRequestNo=" + requestNo
+                    + "，operationNo=" + operation.operationNo
+                    + "，referenceNo=" + operation.referenceNo
+                    + "，status=" + operation.status);
+        } catch (Throwable queryError) {
+            Log.e(TAG, "开始存珠结果不明确，按 clientRequestNo 查询仍失败", queryError);
+            showError("开始存珠结果不明确，已保留请求号，请勿重复操作；查询失败：" + messageOf(queryError));
+        }
+    }
+
+    private MemberDepositRepository.OperationSnapshot queryMemberDepositWithRetry(
+            MemberDepositRepository repository,
+            String requestNo
+    ) throws Exception {
+        Throwable lastError = null;
+        for (int attempt = 1; attempt <= START_QUERY_MAX_ATTEMPTS; attempt++) {
+            if (attempt > 1) {
+                try {
+                    Thread.sleep(START_QUERY_RETRY_DELAY_MS * attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw interrupted;
+                }
+            }
+            try {
+                MemberDepositRepository.OperationSnapshot operation =
+                        repository.queryMemberDeposit(requestNo);
+                if (hasOperationResult(operation)) {
+                    return operation;
+                }
+                lastError = new IllegalStateException("queryMemberDeposit 未返回有效 Operation 信息");
+                Log.w(TAG, "queryMemberDeposit 第 " + attempt + " 次未返回有效 Operation，继续重试");
+            } catch (Throwable error) {
+                lastError = error;
+                Log.w(TAG, "queryMemberDeposit 第 " + attempt + " 次失败", error);
+            }
+        }
+        if (lastError instanceof Exception) {
+            throw (Exception) lastError;
+        }
+        throw new IllegalStateException(lastError == null ? "queryMemberDeposit 未返回结果" : lastError.getMessage(), lastError);
+    }
+
+    private boolean hasOperationResult(MemberDepositRepository.OperationSnapshot operation) {
+        return operation != null
+                && (!empty(operation.operationNo)
+                || !empty(operation.referenceNo)
+                || !empty(operation.operationId)
+                || !empty(operation.status));
+    }
+
+    private boolean isAmbiguousStartResult(Throwable error) {
+        String message = messageOf(error);
+        return message.contains("结果不明确")
+                || message.contains("请勿重复操作")
+                || message.contains("不要重复操作")
+                || message.contains("不明确");
     }
 
     private void updateRuntimeMessage(String key, String value) {
