@@ -825,7 +825,8 @@ public class MainActivity extends AppCompatActivity {
         mainHintText.setText(mainHint(internet, member, collecting));
         updateQr(internet, member, collecting);
 
-        memberNoText.setText("会员：" + memberName(member));
+        /* 会员页面只展示平台 memberDisplayNo，不再使用 memberNickname。 */
+        memberNoText.setText("会员ID：" + memberDisplayNo(member));
         memberBalanceText.setText("余额：" + emptyAsDash(member.availableQuantity) + " " + member.unitName);
         memberLimitText.setText("可存上限：" + emptyAsDash(member.maximumDepositQuantity) + " " + member.unitName);
         int actual = hardwareSession == null ? 0 : hardwareSession.actualQuantity;
@@ -1088,17 +1089,11 @@ public class MainActivity extends AppCompatActivity {
         return "正在准备会员登录二维码";
     }
 
-    private String memberName(MemberDepositStore.Snapshot member) {
+    private String memberDisplayNo(MemberDepositStore.Snapshot member) {
         if (!isMemberLoggedIn(member)) {
             return "等待扫码";
         }
-        if (!member.memberNickname.isEmpty() && !member.memberNo.isEmpty()) {
-            return member.memberNickname + "（" + member.memberNo + "）";
-        }
-        if (!member.memberNickname.isEmpty()) {
-            return member.memberNickname;
-        }
-        return emptyAsDash(member.memberNo);
+        return emptyAsDash(member.memberDisplayNo);
     }
 
     private static boolean isMemberLoggedIn(MemberDepositStore.Snapshot member) {
@@ -1107,7 +1102,8 @@ public class MainActivity extends AppCompatActivity {
         }
         return member.isBound()
                 || !empty(member.memberNo)
-                || !empty(member.memberNickname);
+                || !empty(member.memberNickname)
+                || !empty(member.memberDisplayNo);
     }
 
     private void showError(String message) {
