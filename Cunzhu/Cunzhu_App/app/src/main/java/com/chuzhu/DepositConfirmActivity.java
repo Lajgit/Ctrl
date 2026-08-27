@@ -133,7 +133,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         panel.setPadding(dp(26), dp(24), dp(26), dp(24));
         card.addView(panel);
 
-        memberText = text("会员：-", 21, true);
+        memberText = text("会员ID：-", 21, true);
         memberText.setTextColor(ContextCompat.getColor(this, android.R.color.white));
         memberText.setGravity(Gravity.CENTER);
         panel.addView(memberText, matchWrap());
@@ -209,10 +209,8 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         }
 
         MemberDepositStore.Snapshot member = memberStore.loadWithoutScheduling();
-        String name = !member.memberNickname.isEmpty()
-                ? member.memberNickname
-                : (!member.memberNo.isEmpty() ? member.memberNo : "当前会员");
-        memberText.setText("会员：" + name);
+        /* 会员页面只展示平台 memberDisplayNo，不再展示 memberNickname。 */
+        memberText.setText("会员ID：" + dash(member.memberDisplayNo));
         balanceText.setText("当前账户余额：" + dash(member.availableQuantity) + " " + member.unitName);
         quantityText.setText("本次累计：" + session.actualQuantity + " 颗");
 
@@ -239,10 +237,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
     private void showConfirmedState() {
         MemberDepositStore.Snapshot member = memberStore.loadWithoutScheduling();
         DepositSession session = sessionStore.load();
-        String name = !member.memberNickname.isEmpty()
-                ? member.memberNickname
-                : (!member.memberNo.isEmpty() ? member.memberNo : "当前会员");
-        memberText.setText("会员：" + name);
+        memberText.setText("会员ID：" + dash(member.memberDisplayNo));
         balanceText.setText("最新账户余额：" + dash(member.availableQuantity) + " " + member.unitName);
         quantityText.setText("本次已确认：" + (session == null ? 0 : session.actualQuantity) + " 颗");
         hintText.setText(member.message.isEmpty() ? "存珠已确认" : member.message);
