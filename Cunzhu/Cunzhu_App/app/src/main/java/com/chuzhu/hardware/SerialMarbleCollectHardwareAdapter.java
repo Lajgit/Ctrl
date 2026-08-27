@@ -167,30 +167,33 @@ public final class SerialMarbleCollectHardwareAdapter
 
     /**
      * APP 进程重启但控制板未重启时，控制板可能仍在执行上一笔收珠。
-     * 继续存珠场景下 STATUS 返回的是“当前分段”计数；从持久化 Session 读取 segmentBaseQuantity
-     * 后恢复为业务累计数量，避免 APP 重启把 21+3 错恢复成 3。
+     * queryStatus 已将“继续存珠”的板端分段计数换算成累计数量，因此这里再按持久化
+     * segmentBaseQuantity 还原分段原始值，避免二次叠加。
      */
-    public boolean resumeCollect(int recoveredSegmentQuantity, Listener listener) {
+    public boolean resumeCollect(int recoveredActualQuantity, Listener listener) {
         int total;
+        int raw;
         synchronized (lock) {
-            if (collecting || !serialPort.isOpen() || recoveredSegmentQuantity < 0) {
+            if (collecting || !serialPort.isOpen() || recoveredActualQuantity < 0) {
                 return false;
             }
             DepositSession stored = new HardwareSessionStore(context).load();
             int base = stored == null ? 0 : Math.max(0, stored.segmentBaseQuantity);
-            total = base + recoveredSegmentQuantity;
-            if (stored != null && stored.maximumQuantity > 0 && total > stored.maximumQuantity) {
+            total = recoveredActualQuantity;
+            raw = total - base;
+            if (raw < 0
+                    || (stored != null && stored.maximumQuantity > 0 && total > stored.maximumQuantity)) {
                 return false;
             }
             collecting = true;
             localDebugSession = false;
             quantityOffset = base;
-            segmentRawQuantity = recoveredSegmentQuantity;
+            segmentRawQuantity = raw;
             actualQuantity = total;
             blockingResult = null;
             this.listener = listener;
         }
-        /* 立即把恢复后的累计总数回灌业务层，修正其刚读取的板端分段数量。 */
+        /* 立即把恢复后的累计总数回灌业务层，保证 UI/本地会话保持总累计数量。 */
         if (listener != null) {
             listener.onCountChanged(total);
         }
@@ -200,6 +203,11 @@ public final class SerialMarbleCollectHardwareAdapter
     /**
      * 主动查询控制板 0x12 STATUS。只接受本次查询对应的 STATUS 帧，
      * HEARTBEAT/BOARD_BOOT 虽然同属状态类事件，但不能作为重启恢复依据。
+     *
+     * <p>继续存珠时 MCU 每次 START 都把本段计数从 0 开始。APP 重启恢复路径的上层代码
+     * 不知道“分段计数”概念，因此这里把 STATUS 的原始数量加上 segmentBaseQuantity，统一
+     * 对上层返回同一 Operation 的累计数量。这样控制板若在 APP 重启期间已经自然停止，
+     * 上层拿到 IDLE 状态时也不会把 21+3 错结算成 3。</p>
      */
     public BoardEvent queryStatus(long timeoutMillis) {
         if (!serialPort.isOpen()) {
@@ -222,7 +230,7 @@ public final class SerialMarbleCollectHardwareAdapter
             if (!latch.await(Math.max(100L, timeoutMillis), TimeUnit.MILLISECONDS)) {
                 return null;
             }
-            return statusQueryResult;
+            return cumulativeStatus(statusQueryResult);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             return null;
@@ -233,6 +241,40 @@ public final class SerialMarbleCollectHardwareAdapter
                 }
             }
         }
+    }
+
+    private BoardEvent cumulativeStatus(BoardEvent event) {
+        if (event == null) {
+            return null;
+        }
+        DepositSession stored = new HardwareSessionStore(context).load();
+        if (stored == null
+                || !DepositSession.STATE_COLLECTING.equals(stored.state)
+                || stored.segmentBaseQuantity <= 0) {
+            return event;
+        }
+        int total = stored.segmentBaseQuantity + event.actualQuantity;
+        if (stored.maximumQuantity > 0 && total > stored.maximumQuantity) {
+            return event;
+        }
+        return new BoardEvent(
+                event.type,
+                total,
+                event.errorCode,
+                event.errorMessage,
+                event.raw,
+                event.resendId,
+                event.frameId,
+                event.code1,
+                event.code2,
+                event.data1,
+                event.data2,
+                event.data3,
+                event.data4,
+                event.ackByte,
+                event.expandCode,
+                event.requiresAck
+        );
     }
 
     public void stopCollect() {
