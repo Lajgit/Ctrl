@@ -33,13 +33,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>自然停止只代表机构已停和当前数量可信，不立即生成 terminal。用户确认后才一次性
  * 上报累计数量；继续存珠仍复用原 messageId/operationNo/operationToken，不重新扫码、不创建
  * 第二个 Operation。控制板每次 START 会把本段计数清零，因此 Android 用 segmentBaseQuantity
- * 把每段板端计数换算成同一业务的累计数量。</p>
+ * 把每段板端计数换算成同一业务的累计数量。累计数量为 0 时禁止提交 success 结算，返回时仅
+ * 用失败终态收口平台 Operation，避免产生 0 颗入账，也避免留下“未解决操作”。</p>
  */
 public final class PendingDepositController {
 
     private static final String TAG = "CunzhuConfirm";
     private static final int BALANCE_QUERY_ATTEMPTS = 6;
     private static final long BALANCE_QUERY_DELAY_MS = 800L;
+    private static final String RESULT_NO_MARBLES = "NO_MARBLES_COLLECTED";
     private static volatile PendingDepositController instance;
 
     private final Context context;
@@ -122,6 +124,23 @@ public final class PendingDepositController {
                     notifyCallback(callback, false, "无法恢复本次 collect_marbles 指令，暂不能确认");
                     return;
                 }
+
+                if (session.actualQuantity <= 0) {
+                    /*
+                     * 0 颗不能作为成功存珠上报，否则平台可能生成无意义的 0 颗结算记录。
+                     * 用户点“确认”时保持待确认态，让他选择继续存珠；只有点“返回”才发送
+                     * failed terminal 收口 Operation，既不入账，也不会遗留未解决业务。
+                     */
+                    if (!returnAfterConfirm) {
+                        notifyCallback(callback, false, "当前为 0 颗，本次不提交；请继续存珠或返回");
+                        return;
+                    }
+                    finalizeEmptyWithoutDeposit(command, session);
+                    memberStore.clearSession();
+                    notifyCallback(callback, true, "未检测到珠子，本次未提交并返回");
+                    return;
+                }
+
                 finalizeSuccess(command, session);
                 refreshBalanceAfterSettlement(session.actualQuantity);
                 if (returnAfterConfirm) {
@@ -232,6 +251,10 @@ public final class PendingDepositController {
 
     private void finalizeSuccess(DeviceMqttCommand<?> command, DepositSession session) {
         int actual = session.actualQuantity;
+        if (actual <= 0) {
+            finalizeEmptyWithoutDeposit(command, session);
+            return;
+        }
         session.state = DepositSession.STATE_FINISHED;
         session.updatedAt = System.currentTimeMillis();
         session.finishedAt = session.updatedAt;
@@ -255,6 +278,37 @@ public final class PendingDepositController {
         new DeviceStatusReporter(context).report();
         Log.i(TAG, "用户确认存珠 terminal success：actual=" + actual
                 + "，messageId=" + command.getMessageId());
+    }
+
+    /**
+     * 0 颗只做业务收口，不提交成功存珠，也不触发余额刷新。
+     * failed terminal 的唯一作用是告诉平台本次 Operation 已结束，避免下一次扫码被旧 Operation 阻塞。
+     */
+    private void finalizeEmptyWithoutDeposit(DeviceMqttCommand<?> command, DepositSession session) {
+        long now = System.currentTimeMillis();
+        String message = "本次未检测到珠子，未执行存珠结算";
+        session.actualQuantity = 0;
+        session.state = DepositSession.STATE_FINISHED;
+        session.errorCode = RESULT_NO_MARBLES;
+        session.errorMessage = message;
+        session.updatedAt = now;
+        session.finishedAt = now;
+        sessionStore.save(session);
+
+        DeviceCommandResult terminal = DeviceCommandResult.physicalTerminal(
+                command,
+                command.getMessageId() + "-terminal",
+                false,
+                0,
+                RESULT_NO_MARBLES,
+                message,
+                now
+        );
+        resultReporter.reportTerminal(terminal, command.getMessageId());
+        memberStore.setMessage("未检测到珠子，本次未提交存珠");
+        DeviceStateRepository.get(context).markIdle();
+        new DeviceStatusReporter(context).report();
+        Log.i(TAG, "0 颗存珠未提交 success，已按空存珠收口：messageId=" + command.getMessageId());
     }
 
     private void finalizeFailed(String messageId, String errorCode, String errorMessage, int actual) {
@@ -371,6 +425,9 @@ public final class PendingDepositController {
     }
 
     private String waitingMessage(DepositSession session) {
+        if (session.actualQuantity <= 0) {
+            return "未检测到珠子，本次不会提交存珠，可继续存珠或返回";
+        }
         if (session.finishReason == BoardFrameCodec.FINISH_REASON_MAXIMUM_REACHED
                 || session.actualQuantity >= session.maximumQuantity) {
             return "已达到本次可存上限，共 " + session.actualQuantity + " 颗，请确认或返回";
