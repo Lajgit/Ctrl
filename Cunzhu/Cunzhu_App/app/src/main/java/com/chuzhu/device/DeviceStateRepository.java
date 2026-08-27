@@ -12,6 +12,8 @@ import com.chuzhu.data.HardwareSessionStore;
  */
 public final class DeviceStateRepository {
 
+    private static final String ERROR_APP_RESTART_RESULT_UNCONFIRMED =
+            "APP_RESTART_RESULT_UNCONFIRMED";
     private static volatile DeviceStateRepository instance;
 
     private final Context context;
@@ -51,6 +53,17 @@ public final class DeviceStateRepository {
         if (DepositSession.STATE_ACCEPTED.equals(session.state)
                 || DepositSession.STATE_COLLECTING.equals(session.state)) {
             runningStatus = AppConfig.STATUS_COLLECTING;
+            lastError = "";
+            broadcast();
+            return;
+        }
+        if (DepositSession.STATE_FAILED.equals(session.state)
+                && ERROR_APP_RESTART_RESULT_UNCONFIRMED.equals(session.errorCode)) {
+            /*
+             * 该异常终态是在 0x12 STATUS 已明确确认控制板 IDLE 后产生，
+             * 业务结果仍需平台核对，但物理设备不能在下次 APP 重启时再次锁成故障。
+             */
+            runningStatus = AppConfig.STATUS_IDLE;
             lastError = "";
             broadcast();
             return;
