@@ -56,6 +56,17 @@ public final class BoardFrameCodec {
     public static final int STATE_MAINTENANCE = 0x04;
     public static final int STATE_SELF_TEST = 0x05;
 
+    /** 0x21 Data3：Android 主动停止。 */
+    public static final int FINISH_REASON_ANDROID_STOP = 0x00;
+    /** 0x21 Data3：达到本次最大允许数量。 */
+    public static final int FINISH_REASON_MAXIMUM_REACHED = 0x01;
+    /** 0x21 Data3：控制板会话超时。 */
+    public static final int FINISH_REASON_SESSION_TIMEOUT = 0x02;
+    /** 0x21 Data3：用户停止投珠后的自然结束。 */
+    public static final int FINISH_REASON_NATURAL = 0x03;
+    /** 0x21 Data3：维护结束。 */
+    public static final int FINISH_REASON_MAINTENANCE = 0x04;
+
     private static final int DEFAULT_COLLECT_TIMEOUT_SECONDS = 300;
     private static final int STOP_REASON_ANDROID = 0x00;
     private static final int RESET_CLEAR_FAULT_ONLY = 0x00;
@@ -184,7 +195,7 @@ public final class BoardFrameCodec {
 
     public byte[] buildClearFaultFrame(int resetType) {
         return buildFrame(nextFrameId(), CODE2_CLEAR_FAULT,
-                resetType & 0xFF, 0, 0, 0, ACK_NONE, RESULT_OK);
+                resetType & 0xFF, 0, 0, 0, 0, ACK_NONE, RESULT_OK);
     }
 
     public byte[] buildHeartbeatFrame() {
@@ -352,15 +363,15 @@ public final class BoardFrameCodec {
 
     private static String finishReasonName(int reason) {
         switch (reason & 0xFF) {
-            case 0x00:
+            case FINISH_REASON_ANDROID_STOP:
                 return "ANDROID_STOP";
-            case 0x01:
+            case FINISH_REASON_MAXIMUM_REACHED:
                 return "MAXIMUM_REACHED";
-            case 0x02:
+            case FINISH_REASON_SESSION_TIMEOUT:
                 return "SESSION_TIMEOUT";
-            case 0x03:
+            case FINISH_REASON_NATURAL:
                 return "NATURAL_FINISH";
-            case 0x04:
+            case FINISH_REASON_MAINTENANCE:
                 return "MAINTENANCE_FINISH";
             default:
                 return "FINISH_0x" + hex(reason);
