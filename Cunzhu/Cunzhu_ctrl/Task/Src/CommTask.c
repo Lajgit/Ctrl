@@ -477,7 +477,15 @@ static void Collect_Task(void)
             }
             else
             {
-                Collect_Fault(CZ_RESULT_JAM);
+                /*
+                 * 单纯“长时间没有脉冲”无法区分用户已经投完与机构堵珠。
+                 * 排障重试耗尽后，只有光眼仍持续被遮挡才判定 JAM；光眼已经释放时
+                 * 按自然结束上报当前真实计数，避免正常停止投珠被误判成故障。
+                 */
+                if (HAL_GPIO_ReadPin(HoolleOutput2_GPIO_Port, HoolleOutput2_Pin) == GPIO_PIN_RESET)
+                    Collect_Fault(CZ_RESULT_JAM);
+                else
+                    Collect_Finish(CZ_FINISH_NATURAL_END);
             }
         }
     }
