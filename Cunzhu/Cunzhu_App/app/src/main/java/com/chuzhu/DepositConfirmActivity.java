@@ -33,6 +33,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
     private MaterialButton continueButton;
     private MaterialButton returnButton;
     private boolean busy;
+    private boolean confirmed;
 
     private MemberDepositStore memberStore;
     private HardwareSessionStore sessionStore;
@@ -56,10 +57,15 @@ public final class DepositConfirmActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        /* 已经真实收到珠子时不能直接丢弃业务；系统返回键与“返回”按钮语义一致：先确认结算。 */
-        if (!busy) {
-            confirmAndFinish(true);
+        if (busy) {
+            return;
         }
+        if (confirmed) {
+            exitConfirmedMember();
+            return;
+        }
+        /* 已经真实收到珠子时不能直接丢弃业务；系统返回键与“返回”按钮语义一致：先确认结算。 */
+        confirmAndFinish(true);
     }
 
     private View buildContentView() {
@@ -143,7 +149,13 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         actions.addView(continueButton, weightedButtonParams(1f, dp(12)));
 
         returnButton = button("返回");
-        returnButton.setOnClickListener(v -> confirmAndFinish(true));
+        returnButton.setOnClickListener(v -> {
+            if (confirmed) {
+                exitConfirmedMember();
+            } else {
+                confirmAndFinish(true);
+            }
+        });
         actions.addView(returnButton, weightedButtonParams(1f, dp(12)));
 
         return root;
@@ -153,8 +165,11 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         if (memberStore == null || sessionStore == null) {
             return;
         }
-        MemberDepositStore.Snapshot member = memberStore.loadWithoutScheduling();
         DepositSession session = sessionStore.load();
+        if (confirmed) {
+            showConfirmedState();
+            return;
+        }
         if (session == null || !DepositSession.STATE_WAITING_CONFIRM.equals(session.state)) {
             if (!busy) {
                 finish();
@@ -162,6 +177,7 @@ public final class DepositConfirmActivity extends AppCompatActivity {
             return;
         }
 
+        MemberDepositStore.Snapshot member = memberStore.loadWithoutScheduling();
         String name = !member.memberNickname.isEmpty()
                 ? member.memberNickname
                 : (!member.memberNo.isEmpty() ? member.memberNo : "当前会员");
@@ -176,9 +192,27 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         } else {
             hintText.setText("确认后一次性入账；继续存珠会从 " + session.actualQuantity + " 颗继续累计");
         }
+        continueButton.setVisibility(View.VISIBLE);
+        confirmButton.setVisibility(View.VISIBLE);
         continueButton.setEnabled(!busy && !maximumReached);
         confirmButton.setEnabled(!busy);
         returnButton.setEnabled(!busy);
+    }
+
+    private void showConfirmedState() {
+        MemberDepositStore.Snapshot member = memberStore.loadWithoutScheduling();
+        DepositSession session = sessionStore.load();
+        String name = !member.memberNickname.isEmpty()
+                ? member.memberNickname
+                : (!member.memberNo.isEmpty() ? member.memberNo : "当前会员");
+        memberText.setText("会员：" + name);
+        balanceText.setText("最新账户余额：" + dash(member.availableQuantity) + " " + member.unitName);
+        quantityText.setText("本次已确认：" + (session == null ? 0 : session.actualQuantity) + " 颗");
+        hintText.setText(member.message.isEmpty() ? "存珠已确认" : member.message);
+        confirmButton.setVisibility(View.GONE);
+        continueButton.setVisibility(View.GONE);
+        returnButton.setEnabled(true);
+        returnButton.setText("返回");
     }
 
     private void confirmAndFinish(boolean returnAfter) {
@@ -193,11 +227,17 @@ public final class DepositConfirmActivity extends AppCompatActivity {
         controller.confirm(returnAfter, (success, message) -> runOnUiThread(() -> {
             busy = false;
             hintText.setText(message);
-            if (success) {
-                finish();
-            } else {
+            if (!success) {
                 refreshUi();
+                return;
             }
+            if (returnAfter) {
+                finish();
+                return;
+            }
+            /* 确认后不立刻退回首页，先把 Server 最新余额明确展示给会员。 */
+            confirmed = true;
+            showConfirmedState();
         }));
     }
 
@@ -217,6 +257,11 @@ public final class DepositConfirmActivity extends AppCompatActivity {
                 refreshUi();
             }
         }));
+    }
+
+    private void exitConfirmedMember() {
+        memberStore.clearSession();
+        finish();
     }
 
     private void setButtonsEnabled(boolean enabled) {
