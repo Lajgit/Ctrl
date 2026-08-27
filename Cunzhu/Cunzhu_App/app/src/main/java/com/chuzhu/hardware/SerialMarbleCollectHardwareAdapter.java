@@ -359,8 +359,13 @@ public final class SerialMarbleCollectHardwareAdapter
             collecting = false;
             localDebugSession = false;
             current = listener;
+            /*
+             * 0 颗无论控制板给出哪种“结束原因”，都不能直接走 success terminal。
+             * 统一交给确认控制器：可以继续存珠；返回时只做空 Operation 收口，不产生 0 颗入账。
+             */
             waitForUser = current != null
-                    && (finishReason == BoardFrameCodec.FINISH_REASON_NATURAL
+                    && (actualQuantity <= 0
+                    || finishReason == BoardFrameCodec.FINISH_REASON_NATURAL
                     || finishReason == BoardFrameCodec.FINISH_REASON_MAXIMUM_REACHED);
             if (!waitForUser) {
                 blockingResult = HardwareExecutionResult.success(actualQuantity);
@@ -368,7 +373,7 @@ public final class SerialMarbleCollectHardwareAdapter
         }
 
         if (waitForUser) {
-            /* 自然结束/达到上限只暂停业务，不生成 terminal；确认页面决定确认、继续或返回。 */
+            /* 自然结束/达到上限/0颗结束只暂停业务，不生成 success terminal；确认页面决定后续动作。 */
             if (PendingDepositController.get(context)
                     .pauseForConfirmation(actualQuantity, finishReason)) {
                 return;
