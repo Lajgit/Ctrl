@@ -17,15 +17,19 @@ import java.io.IOException;
 public final class BoardSerialPort {
 
     private static final String TAG = "CunzhuSerial";
+    private static final int READ_BUFFER_SIZE = 512;
+    private static final int RX_ACCUMULATOR_SIZE = 4096;
     private static volatile BoardSerialPort instance;
 
     private final Context context;
     private final Object writeLock = new Object();
     private final BoardFrameCodec codec = new BoardFrameCodec();
+    private final byte[] receiveBuffer = new byte[RX_ACCUMULATOR_SIZE];
     private BoardSerialConfig config = BoardSerialConfig.defaultConfig();
     private FileInputStream inputStream;
     private FileOutputStream outputStream;
     private Thread readThread;
+    private int receiveLength;
     private volatile boolean running;
     private volatile String lastError = "";
     private volatile BoardEventListener listener;
@@ -58,6 +62,7 @@ public final class BoardSerialPort {
             File device = new File(config.devicePath);
             inputStream = new FileInputStream(device);
             outputStream = new FileOutputStream(device);
+            receiveLength = 0;
             running = true;
             lastError = "";
             readThread = new Thread(this::readLoop, "存珠机ttyS5读线程");
@@ -93,6 +98,7 @@ public final class BoardSerialPort {
         }
         inputStream = null;
         outputStream = null;
+        receiveLength = 0;
         if (readThread != null) {
             readThread.interrupt();
             readThread = null;
@@ -138,21 +144,14 @@ public final class BoardSerialPort {
     }
 
     private void readLoop() {
-        byte[] buffer = new byte[512];
+        byte[] buffer = new byte[READ_BUFFER_SIZE];
         while (running) {
             try {
                 int count = inputStream.read(buffer);
                 if (count < 0) {
                     throw new IOException("串口输入流已关闭");
                 }
-                BoardEvent event = codec.decode(buffer, count);
-                if (event != null) {
-                    BoardEventListener current = listener;
-                    if (current != null) {
-                        current.onBoardEvent(event);
-                    }
-                    broadcastBoardEvent(event);
-                }
+                appendAndDispatch(buffer, count);
             } catch (Throwable error) {
                 if (running) {
                     lastError = "串口读取异常：" + messageOf(error);
@@ -166,6 +165,77 @@ public final class BoardSerialPort {
                 break;
             }
         }
+    }
+
+    private void appendAndDispatch(byte[] data, int count) {
+        if (data == null || count <= 0) {
+            return;
+        }
+        if (count > receiveBuffer.length) {
+            /* 极端异常时只保留本次读取尾部，避免越界；正常 ttyS5 每次读取远小于该缓存。 */
+            int start = count - receiveBuffer.length;
+            System.arraycopy(data, start, receiveBuffer, 0, receiveBuffer.length);
+            receiveLength = receiveBuffer.length;
+        } else {
+            if (receiveLength + count > receiveBuffer.length) {
+                /*
+                 * Linux 串口 read() 不保证按 14 字节帧返回。缓存溢出说明前面长期没有合法帧头，
+                 * 丢弃旧噪声后继续接收，不能让一次异常数据永久堵死后续协议解析。
+                 */
+                receiveLength = 0;
+            }
+            System.arraycopy(data, 0, receiveBuffer, receiveLength, count);
+            receiveLength += count;
+        }
+        processReceiveBuffer();
+    }
+
+    private void processReceiveBuffer() {
+        int offset = 0;
+        while (receiveLength - offset >= BoardFrameCodec.FRAME_LENGTH) {
+            while (offset < receiveLength
+                    && (receiveBuffer[offset] & 0xFF) != BoardFrameCodec.HEAD) {
+                offset++;
+            }
+            if (receiveLength - offset < BoardFrameCodec.FRAME_LENGTH) {
+                break;
+            }
+            int tailIndex = offset + BoardFrameCodec.FRAME_LENGTH - 1;
+            if ((receiveBuffer[tailIndex] & 0xFF) != BoardFrameCodec.TAIL) {
+                offset++;
+                continue;
+            }
+
+            byte[] frame = new byte[BoardFrameCodec.FRAME_LENGTH];
+            System.arraycopy(
+                    receiveBuffer,
+                    offset,
+                    frame,
+                    0,
+                    BoardFrameCodec.FRAME_LENGTH
+            );
+            dispatchBoardEvent(codec.decode(frame, frame.length));
+            offset += BoardFrameCodec.FRAME_LENGTH;
+        }
+
+        if (offset > 0) {
+            int remaining = receiveLength - offset;
+            if (remaining > 0) {
+                System.arraycopy(receiveBuffer, offset, receiveBuffer, 0, remaining);
+            }
+            receiveLength = remaining;
+        }
+    }
+
+    private void dispatchBoardEvent(BoardEvent event) {
+        if (event == null) {
+            return;
+        }
+        BoardEventListener current = listener;
+        if (current != null) {
+            current.onBoardEvent(event);
+        }
+        broadcastBoardEvent(event);
     }
 
     private void configureSerialDevice() throws Exception {
