@@ -491,11 +491,22 @@ public class MainActivity extends AppCompatActivity {
             verifyBootstrapIfNeeded();
             return;
         }
+        int runningStatus = DeviceStateRepository.get(this).getRunningStatus();
+        if (runningStatus != AppConfig.STATUS_IDLE) {
+            /*
+             * 收珠、故障、维护等非空闲状态只刷新界面，不自动恢复/创建二维码 Session。
+             * 等设备真正回到 IDLE 后由 ACTION_DEPOSIT_STATE 再触发，避免故障广播形成请求风暴。
+             */
+            autoSessionRequested = false;
+            return;
+        }
         if (autoSessionRequested) {
             return;
         }
         MemberDepositStore.Snapshot snapshot = memberStore.load();
-        if (snapshot.hasSession() && (snapshot.isBound() || snapshot.hasQrContent())) {
+        if (isMemberLoggedIn(snapshot)
+                || (snapshot.hasSession() && snapshot.hasQrContent())) {
+            /* 已登录会员的状态可能已经从 BOUND 进入 WAITING_COMMAND，仍不能后台创建新二维码。 */
             autoSessionRequested = true;
             return;
         }
@@ -805,6 +816,7 @@ public class MainActivity extends AppCompatActivity {
         boolean mqttConnected = MqttManager.get(this).isConnected();
         boolean mqttSubscribed = MqttManager.get(this).isSubscribed();
         boolean serialOpen = BoardSerialPort.get(this).isOpen();
+        boolean deviceIdle = runningStatus == AppConfig.STATUS_IDLE;
         boolean collecting = runningStatus == AppConfig.STATUS_COLLECTING
                 || (hardwareSession != null && DepositSession.STATE_COLLECTING.equals(hardwareSession.state));
 
@@ -855,6 +867,7 @@ public class MainActivity extends AppCompatActivity {
                 && mqttSubscribed
                 && bootstrapVerified
                 && serialOpen
+                && deviceIdle
                 && member.isBound()
                 && !collecting
                 && !memberLogoutRunning
@@ -863,7 +876,7 @@ public class MainActivity extends AppCompatActivity {
         startButton.setEnabled(canStart);
         startButton.setText(collecting ? "正在收珠" : "开始存珠");
         refreshButton.setEnabled(internet && activated && mqttConnected
-                && mqttSubscribed && bootstrapVerified && !collecting && !memberLogoutRunning);
+                && mqttSubscribed && bootstrapVerified && deviceIdle && !collecting && !memberLogoutRunning);
         cancelButton.setEnabled(internet && bootstrapVerified && !collecting
                 && !memberLogoutRunning && member.hasSession());
     }
