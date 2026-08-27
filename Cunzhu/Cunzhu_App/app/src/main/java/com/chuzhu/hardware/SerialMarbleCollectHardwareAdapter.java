@@ -31,6 +31,8 @@ public final class SerialMarbleCollectHardwareAdapter
     private volatile CountDownLatch blockingLatch;
     private volatile HardwareExecutionResult blockingResult;
     private volatile boolean localDebugSession;
+    private volatile CountDownLatch statusQueryLatch;
+    private volatile BoardEvent statusQueryResult;
 
     private SerialMarbleCollectHardwareAdapter(Context context) {
         this.context = context.getApplicationContext();
@@ -116,6 +118,62 @@ public final class SerialMarbleCollectHardwareAdapter
                 this.listener = null;
             }
             return written;
+        }
+    }
+
+    /**
+     * APP 进程重启但控制板未重启时，控制板可能仍在执行上一笔收珠。
+     * 该方法只恢复 Android 侧事件监听，不重新发送 START_COLLECT，避免重复启动机构或清零计数。
+     */
+    public boolean resumeCollect(int recoveredActualQuantity, Listener listener) {
+        synchronized (lock) {
+            if (collecting || !serialPort.isOpen() || recoveredActualQuantity < 0) {
+                return false;
+            }
+            collecting = true;
+            localDebugSession = false;
+            actualQuantity = recoveredActualQuantity;
+            blockingResult = null;
+            this.listener = listener;
+            return true;
+        }
+    }
+
+    /**
+     * 主动查询控制板 0x12 STATUS。只接受本次查询对应的 STATUS 帧，
+     * HEARTBEAT/BOARD_BOOT 虽然同属状态类事件，但不能作为重启恢复依据。
+     */
+    public BoardEvent queryStatus(long timeoutMillis) {
+        if (!serialPort.isOpen()) {
+            return null;
+        }
+        CountDownLatch latch = new CountDownLatch(1);
+        synchronized (lock) {
+            statusQueryResult = null;
+            statusQueryLatch = latch;
+        }
+        if (!serialPort.write(serialPort.getCodec().buildStatusQueryFrame())) {
+            synchronized (lock) {
+                if (statusQueryLatch == latch) {
+                    statusQueryLatch = null;
+                }
+            }
+            return null;
+        }
+        try {
+            if (!latch.await(Math.max(100L, timeoutMillis), TimeUnit.MILLISECONDS)) {
+                return null;
+            }
+            return statusQueryResult;
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            return null;
+        } finally {
+            synchronized (lock) {
+                if (statusQueryLatch == latch) {
+                    statusQueryLatch = null;
+                }
+            }
         }
     }
 
@@ -212,6 +270,14 @@ public final class SerialMarbleCollectHardwareAdapter
              * 控制板未收到 ACK 时可用相同 ID、递增 ResendID 重发，Android 侧按终态幂等处理。
              */
             serialPort.write(serialPort.getCodec().buildAckFrame(event, BoardFrameCodec.RESULT_OK));
+        }
+        if (BoardEvent.TYPE_STATUS.equals(event.type)
+                && event.code2 == BoardFrameCodec.CODE2_STATUS) {
+            CountDownLatch latch = statusQueryLatch;
+            if (latch != null) {
+                statusQueryResult = event;
+                latch.countDown();
+            }
         }
         if (BoardEvent.TYPE_ACK.equals(event.type)) {
             handleCommandAck(event);

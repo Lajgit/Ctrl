@@ -120,7 +120,7 @@ public final class MemberDepositStore {
         }
         Snapshot bound = new Snapshot(
                 sessionId,
-                old.qrContent,
+                "",
                 STATUS_BOUND,
                 firstString(data, "memberNo", "memberCode", "memberNumber", "memberId"),
                 firstString(data, "memberNickname", "nickname", "memberName"),
@@ -130,13 +130,14 @@ public final class MemberDepositStore {
                 firstString(data, "unitName", "unit"),
                 firstString(data, "maximumDepositQuantity", "maximumQuantity"),
                 firstString(data, "expireTime", "expiredAt"),
-                old.refreshAfterSeconds,
+                0,
                 old.clientRequestNo,
                 old.operationNo,
                 old.referenceNo,
                 "会员已扫码绑定，可点击开始存珠",
                 System.currentTimeMillis()
         );
+        /* 会员绑定后二维码已失效，立即清掉二维码与刷新周期，避免进入存珠阶段后重新安排刷新任务。 */
         saveSession(bound);
     }
 
@@ -149,6 +150,8 @@ public final class MemberDepositStore {
         preferences().edit()
                 .putString(KEY_CLIENT_REQUEST_NO, requestNo)
                 .putString(KEY_SESSION_ID, safe(sessionId))
+                .putString(KEY_QR_CONTENT, "")
+                .putInt(KEY_REFRESH_AFTER_SECONDS, 0)
                 .putString(KEY_STATUS, STATUS_STARTING)
                 .putString(KEY_MESSAGE, "正在提交开始存珠请求")
                 .putLong(KEY_UPDATED_AT, System.currentTimeMillis())
@@ -160,6 +163,8 @@ public final class MemberDepositStore {
 
     public synchronized void markWaitingCommand(String operationNo, String referenceNo) {
         preferences().edit()
+                .putString(KEY_QR_CONTENT, "")
+                .putInt(KEY_REFRESH_AFTER_SECONDS, 0)
                 .putString(KEY_STATUS, STATUS_WAITING_COMMAND)
                 .putString(KEY_OPERATION_NO, safe(operationNo))
                 .putString(KEY_REFERENCE_NO, safe(referenceNo))
@@ -304,7 +309,8 @@ public final class MemberDepositStore {
         }
 
         public boolean isWaitingScan() {
-            return STATUS_WAITING_SCAN.equals(status) || (hasQrContent() && !isBound());
+            /* 只有平台明确处于 WAITING_SCAN 才允许刷新二维码，不能再用“有二维码且未绑定”推断。 */
+            return STATUS_WAITING_SCAN.equals(status);
         }
     }
 }

@@ -6,6 +6,7 @@ import android.util.Log;
 import com.chuzhu.AppConfig;
 import com.chuzhu.activation.SdkCredentialStore;
 import com.chuzhu.data.MemberDepositStore;
+import com.chuzhu.device.DeviceStateRepository;
 import com.chuzhu.device.DeviceUtil;
 import com.pinball.xiaoda.device.sdk.client.DeviceAppClient;
 import com.pinball.xiaoda.device.sdk.client.DeviceSdkConfig;
@@ -117,8 +118,14 @@ public final class MemberDepositRepository {
     }
 
     private Object createSessionRaw() throws Exception {
+        /*
+         * 本地还有上一笔收珠或故障时，不再向平台反复创建新的二维码 Session。
+         * 先等待控制板恢复流程把物理状态确认成 IDLE，避免日志中每 30 秒请求一次并被平台拒绝。
+         */
+        requireLocalDeviceIdle();
         synchronized (CREATE_SESSION_LOCK) {
             waitForCreateSessionRetryWindow();
+            requireLocalDeviceIdle();
             Log.i(TAG, "请求创建会员存珠 Session：deviceNo=" + deviceNo
                     + "，baseUrl=" + AppConfig.ACTIVATION_BASE_URL
                     + "，appVersion=" + DeviceUtil.getAppVersion(context)
@@ -135,6 +142,16 @@ public final class MemberDepositRepository {
                         + "，error=" + lastCreateSessionError, error);
                 throw error;
             }
+        }
+    }
+
+    private void requireLocalDeviceIdle() {
+        int runningStatus = DeviceStateRepository.get(context).getRunningStatus();
+        if (runningStatus != AppConfig.STATUS_IDLE) {
+            throw new IllegalStateException(
+                    "存珠机当前正在处理上一笔收珠或故障，暂不创建会员二维码，runningStatus="
+                            + runningStatus
+            );
         }
     }
 

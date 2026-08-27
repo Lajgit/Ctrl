@@ -36,35 +36,46 @@ public final class DeviceStateRepository {
         return instance;
     }
 
-    /** 重启发现未完成硬件会话时，不自动假成功，转为故障等待人工处理。 */
+    /**
+     * 进程启动时只根据本地快照恢复“忙/故障”门禁，不再直接把未完成会话改写成故障。
+     * 真正的机械状态由 MQTT 建连后的恢复流程通过 0x12 STATUS 向未重启的控制板确认。
+     */
     public synchronized void reconcileFromStoredSession() {
         DepositSession session = sessionStore.load();
         if (session == null) {
             runningStatus = AppConfig.STATUS_IDLE;
+            lastError = "";
+            broadcast();
             return;
         }
         if (DepositSession.STATE_ACCEPTED.equals(session.state)
                 || DepositSession.STATE_COLLECTING.equals(session.state)) {
-            long now = System.currentTimeMillis();
-            session.state = DepositSession.STATE_FAULT;
-            session.updatedAt = now;
-            session.finishedAt = now;
-            session.errorCode = "RECOVERED_UNCONFIRMED_SESSION";
-            session.errorMessage = "APP 重启后无法确认控制板收珠状态，等待人工处理";
-            sessionStore.save(session);
-            runningStatus = AppConfig.STATUS_FAULT;
-            lastError = session.errorMessage;
+            runningStatus = AppConfig.STATUS_COLLECTING;
+            lastError = "";
             broadcast();
+            return;
         }
+        if (DepositSession.STATE_FAULT.equals(session.state)
+                || DepositSession.STATE_FAILED.equals(session.state)) {
+            runningStatus = AppConfig.STATUS_FAULT;
+            lastError = session.errorMessage == null ? "" : session.errorMessage;
+            broadcast();
+            return;
+        }
+        runningStatus = AppConfig.STATUS_IDLE;
+        lastError = "";
+        broadcast();
     }
 
     public synchronized void markIdle() {
         runningStatus = AppConfig.STATUS_IDLE;
+        lastError = "";
         broadcast();
     }
 
     public synchronized void markCollecting() {
         runningStatus = AppConfig.STATUS_COLLECTING;
+        lastError = "";
         broadcast();
     }
 

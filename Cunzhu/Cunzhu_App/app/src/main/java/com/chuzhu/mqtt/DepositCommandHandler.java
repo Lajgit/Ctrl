@@ -15,6 +15,8 @@ import com.chuzhu.data.PendingOutboxStore;
 import com.chuzhu.device.DeviceStateRepository;
 import com.chuzhu.device.DeviceUtil;
 import com.chuzhu.hardware.SerialMarbleCollectHardwareAdapter;
+import com.chuzhu.serial.BoardEvent;
+import com.chuzhu.serial.BoardFrameCodec;
 import com.chuzhu.serial.BoardSerialPort;
 import com.pinball.xiaoda.device.sdk.hardware.HardwareExecutionResult;
 import com.pinball.xiaoda.device.sdk.protocol.CollectMarblesCommandData;
@@ -24,9 +26,11 @@ import com.pinball.xiaoda.device.sdk.protocol.DeviceMqttCommandTypes;
 
 import org.json.JSONObject;
 
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 纯存珠机 MQTT 指令处理器。
@@ -36,6 +40,8 @@ public final class DepositCommandHandler {
     private static final String TAG = "CunzhuDeposit";
     private static final String CMD_MEMBER_DEPOSIT_SESSION_BOUND = "member_deposit_session_bound";
     private static final String CMD_COMMAND_RESULT_ACK = "command_result_ack";
+    private static final String ERROR_RECOVERED_UNCONFIRMED_SESSION = "RECOVERED_UNCONFIRMED_SESSION";
+    private static final long RECOVERY_STATUS_TIMEOUT_MS = 1_500L;
     private static volatile DepositCommandHandler instance;
 
     private final Context context;
@@ -46,6 +52,7 @@ public final class DepositCommandHandler {
     private final SerialMarbleCollectHardwareAdapter hardware;
     private final ScheduledExecutorService executor =
             Executors.newSingleThreadScheduledExecutor();
+    private final AtomicBoolean recoveringSession = new AtomicBoolean(false);
 
     private DepositCommandHandler(Context context) {
         this.context = context.getApplicationContext();
@@ -71,7 +78,278 @@ public final class DepositCommandHandler {
     }
 
     public void recoverUnfinishedSession() {
-        DeviceStateRepository.get(context).reconcileFromStoredSession();
+        executor.execute(() -> {
+            if (!recoveringSession.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                recoverUnfinishedSessionInternal();
+            } finally {
+                recoveringSession.set(false);
+            }
+        });
+    }
+
+    /**
+     * APP 进程重启时控制板没有断电，因此未完成收珠不能直接判故障。
+     * 先通过 0x12 STATUS 获取控制板真实状态和计数，再决定继续监听、补发终态或保留人工处理。
+     */
+    private void recoverUnfinishedSessionInternal() {
+        DepositSession session = sessionStore.load();
+        if (!isRecoverableSession(session)) {
+            DeviceStateRepository.get(context).reconcileFromStoredSession();
+            return;
+        }
+        if (!BoardSerialPort.get(context).isOpen()) {
+            DeviceStateRepository.get(context).markFault("APP 重启恢复失败：控制板串口未打开");
+            return;
+        }
+        if (hardware.isCollecting() && DepositSession.STATE_COLLECTING.equals(session.state)) {
+            DeviceStateRepository.get(context).markCollecting();
+            return;
+        }
+
+        BoardEvent status = hardware.queryStatus(RECOVERY_STATUS_TIMEOUT_MS);
+        if (status == null) {
+            DeviceStateRepository.get(context).markFault("APP 重启恢复失败：控制板未响应 STATUS 查询");
+            new MemberDepositStore(context).setMessage("上一笔收珠状态恢复失败：控制板无响应");
+            new DeviceStatusReporter(context).report();
+            return;
+        }
+
+        int actual = status.actualQuantity;
+        if (actual < 0 || actual > session.maximumQuantity) {
+            holdForManualReview(
+                    session,
+                    "RECOVERY_QUANTITY_INVALID",
+                    "APP 重启后控制板返回的收珠数量超出本次授权范围",
+                    actual
+            );
+            return;
+        }
+
+        Log.i(TAG, "APP 重启恢复控制板状态：localState=" + session.state
+                + "，boardState=" + status.data1
+                + "，actualQuantity=" + actual
+                + "，errorCode=" + status.errorCode);
+
+        switch (status.data1) {
+            case BoardFrameCodec.STATE_COLLECTING:
+            case BoardFrameCodec.STATE_STOPPING:
+                resumeRecoveredCollect(session, actual);
+                return;
+            case BoardFrameCodec.STATE_IDLE:
+                recoverBoardIdle(session, actual);
+                return;
+            case BoardFrameCodec.STATE_FAULT:
+                recoverBoardFault(session, status, actual);
+                return;
+            case BoardFrameCodec.STATE_MAINTENANCE:
+            case BoardFrameCodec.STATE_SELF_TEST:
+                holdForManualReview(
+                        session,
+                        "RECOVERY_BOARD_NOT_AVAILABLE",
+                        "APP 重启后控制板处于维护或自检状态",
+                        actual
+                );
+                return;
+            default:
+                holdForManualReview(
+                        session,
+                        "RECOVERY_BOARD_STATE_UNKNOWN",
+                        "APP 重启后控制板返回未知状态：" + status.data1,
+                        actual
+                );
+        }
+    }
+
+    private boolean isRecoverableSession(DepositSession session) {
+        if (session == null) {
+            return false;
+        }
+        if (DepositSession.STATE_ACCEPTED.equals(session.state)
+                || DepositSession.STATE_COLLECTING.equals(session.state)) {
+            return true;
+        }
+        /* 兼容上一版已把 ACCEPTED/COLLECTING 改写成该故障码的现场数据。 */
+        return DepositSession.STATE_FAULT.equals(session.state)
+                && ERROR_RECOVERED_UNCONFIRMED_SESSION.equals(session.errorCode);
+    }
+
+    private void resumeRecoveredCollect(DepositSession session, int actual) {
+        DeviceMqttCommand<?> command = restoreStoredCollectCommand(session);
+        if (command == null) {
+            holdForManualReview(
+                    session,
+                    "RECOVERY_COMMAND_MISSING",
+                    "APP 重启后无法恢复原 collect_marbles 指令",
+                    actual
+            );
+            return;
+        }
+        session.actualQuantity = actual;
+        session.state = DepositSession.STATE_COLLECTING;
+        session.errorCode = "";
+        session.errorMessage = "";
+        session.updatedAt = System.currentTimeMillis();
+        session.finishedAt = 0L;
+        sessionStore.save(session);
+
+        boolean resumed = hardware.resumeCollect(actual, new HardwareListener(command, session));
+        if (!resumed && !hardware.isCollecting()) {
+            holdForManualReview(
+                    session,
+                    "RECOVERY_LISTENER_FAILED",
+                    "APP 重启后无法恢复控制板收珠事件监听",
+                    actual
+            );
+            return;
+        }
+
+        DeviceStateRepository.get(context).markCollecting();
+        new MemberDepositStore(context).setMessage("APP 已恢复上一笔收珠，请继续投入弹珠");
+        new DeviceStatusReporter(context).report();
+        scheduleRecoveredTimeout(command, session);
+    }
+
+    private void recoverBoardIdle(DepositSession session, int actual) {
+        DeviceMqttCommand<?> command = restoreStoredCollectCommand(session);
+        if (command == null) {
+            holdForManualReview(
+                    session,
+                    "RECOVERY_COMMAND_MISSING",
+                    "控制板已空闲，但 APP 无法恢复原 collect_marbles 指令",
+                    actual
+            );
+            return;
+        }
+
+        if (DepositSession.STATE_COLLECTING.equals(session.state)) {
+            /*
+             * 本地已明确进入 COLLECTING，且 MCU 没有重启；此时 STATUS=IDLE 的计数就是
+             * 控制板完成上一笔收珠后保留的最终计数，可补发成功终态。
+             */
+            finishSuccess(command, session, actual);
+            Log.i(TAG, "APP 重启后确认控制板已完成上一笔收珠，补发成功终态 actual=" + actual);
+            return;
+        }
+
+        /*
+         * ACCEPTED 或旧版 RECOVERED_UNCONFIRMED_SESSION 已丢失“是否真正进入 COLLECTING”的
+         * 关键信息。控制板当前已明确空闲，因此释放设备营业状态；业务结果按异常终态上报，
+         * 携带控制板当前计数交由平台核对，禁止直接伪造成功。
+         */
+        finishRecoveredIdleUnconfirmed(command, session, actual);
+    }
+
+    private void recoverBoardFault(DepositSession session, BoardEvent status, int actual) {
+        DeviceMqttCommand<?> command = restoreStoredCollectCommand(session);
+        if (command == null) {
+            holdForManualReview(
+                    session,
+                    "RECOVERY_COMMAND_MISSING",
+                    "控制板处于故障状态，且 APP 无法恢复原 collect_marbles 指令",
+                    actual
+            );
+            return;
+        }
+        String errorCode = status.errorCode == null || status.errorCode.trim().isEmpty()
+                ? "BOARD_FAULT"
+                : status.errorCode;
+        String errorMessage = "APP 重启后控制板确认故障：" + errorCode;
+        finishFailed(command, session, errorCode, errorMessage, actual);
+    }
+
+    private DeviceMqttCommand<?> restoreStoredCollectCommand(DepositSession session) {
+        if (session == null || session.messageId == null || session.messageId.trim().isEmpty()) {
+            return null;
+        }
+        JSONObject envelope = commandStore.loadCommand(session.messageId);
+        if (envelope == null) {
+            Log.e(TAG, "恢复 collect_marbles 失败：本地缺少原始命令 messageId=" + session.messageId);
+            return null;
+        }
+        String deviceNo = DeviceUtil.requireDeviceNo(context);
+        String topic = "pxd/v1/device/" + deviceNo + "/command/control";
+        long originalTimestamp = envelope.optLong("timestamp", 0L);
+        long validationNow = originalTimestamp > 0L
+                ? originalTimestamp
+                : System.currentTimeMillis();
+        DepositCommandCodec.Decoded decoded = codec.decode(
+                topic,
+                envelope.toString().getBytes(StandardCharsets.UTF_8),
+                deviceNo,
+                validationNow
+        );
+        if (decoded.command == null
+                || !DeviceMqttCommandTypes.COLLECT_MARBLES.equals(decoded.commandType())) {
+            Log.e(TAG, "恢复 collect_marbles 失败：" + messageOf(decoded.error));
+            return null;
+        }
+        return decoded.command;
+    }
+
+    private void scheduleRecoveredTimeout(DeviceMqttCommand<?> command, DepositSession session) {
+        int timeoutSeconds = AppConfig.DEFAULT_COLLECT_TIMEOUT_SECONDS;
+        try {
+            CollectMarblesCommandData data = command.requireData(CollectMarblesCommandData.class);
+            if (data.getSessionTimeoutSeconds() != null && data.getSessionTimeoutSeconds() > 0) {
+                timeoutSeconds = data.getSessionTimeoutSeconds();
+            }
+        } catch (Throwable ignored) {
+        }
+        long elapsedSeconds = session.startedAt <= 0L
+                ? 0L
+                : Math.max(0L, (System.currentTimeMillis() - session.startedAt) / 1000L);
+        long remainingSeconds = Math.max(5L, (long) timeoutSeconds - elapsedSeconds);
+        final int timeoutForMessage = timeoutSeconds;
+        executor.schedule(
+                () -> onCollectTimeout(command.getMessageId(), timeoutForMessage),
+                remainingSeconds,
+                TimeUnit.SECONDS
+        );
+    }
+
+    private void finishRecoveredIdleUnconfirmed(
+            DeviceMqttCommand<?> command,
+            DepositSession session,
+            int actual
+    ) {
+        if (actual < 0 || actual > session.maximumQuantity) {
+            holdForManualReview(
+                    session,
+                    "RECOVERY_QUANTITY_INVALID",
+                    "控制板当前空闲，但恢复数量超出本次授权范围",
+                    actual
+            );
+            return;
+        }
+        long now = System.currentTimeMillis();
+        session.actualQuantity = actual;
+        session.state = DepositSession.STATE_FAILED;
+        session.errorCode = "APP_RESTART_RESULT_UNCONFIRMED";
+        session.errorMessage = "APP 重启时控制板已空闲，旧版未保留是否已进入收珠态，结果需平台核对";
+        session.updatedAt = now;
+        session.finishedAt = now;
+        sessionStore.save(session);
+
+        DeviceCommandResult terminal = DeviceCommandResult.physicalTerminal(
+                command,
+                command.getMessageId() + "-terminal",
+                false,
+                actual,
+                session.errorCode,
+                session.errorMessage,
+                now
+        );
+        resultReporter.reportTerminal(terminal, command.getMessageId());
+        new MemberDepositStore(context).setMessage(
+                "上一笔收珠结果已按异常上报，控制板当前空闲，可重新扫码"
+        );
+        /* 物理状态已经由 0x12 STATUS 明确确认为空闲，不能继续把整机永久锁在 FAULT。 */
+        DeviceStateRepository.get(context).markIdle();
+        new DeviceStatusReporter(context).report();
+        Log.w(TAG, "旧版重启现场已释放为空闲，上一笔按异常终态上报 actual=" + actual);
     }
 
     private void handleInternal(String topic, byte[] payload) {
