@@ -241,6 +241,8 @@ public final class MemberDepositRepository {
                 normalizeStatus(stringValue(source, "getStatus", "status")),
                 stringValue(source, "getMemberNo", "getMemberCode", "getMemberNumber", "memberNo"),
                 stringValue(source, "getMemberNickname", "getNickname", "getMemberName", "memberNickname"),
+                /* 设备屏显示使用平台专用的会员展示编号，不再用昵称代替会员 ID。 */
+                stringValue(source, "getMemberDisplayNo", "memberDisplayNo"),
                 stringValue(source, "getAvailableQuantity", "getAvailableMarbleQuantity", "availableQuantity"),
                 stringValue(source, "getItemId", "itemId"),
                 stringValue(source, "getItemName", "itemName"),
