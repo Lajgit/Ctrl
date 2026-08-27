@@ -175,6 +175,21 @@ public final class MemberDepositStore {
         MemberQrRefreshScheduler.cancel();
     }
 
+    /**
+     * terminal 结算后由 queryMemberDeposit 返回 Server 最新可用数量时，只更新余额展示字段。
+     * Start 后 Redis Session 已不是业务事实，因此不能为了刷新余额而重新创建或覆盖会员 Session。
+     */
+    public synchronized void updateAvailableQuantity(String availableQuantity, String message) {
+        SharedPreferences.Editor editor = preferences().edit()
+                .putString(KEY_AVAILABLE_QUANTITY, safe(availableQuantity))
+                .putLong(KEY_UPDATED_AT, System.currentTimeMillis());
+        if (message != null) {
+            editor.putString(KEY_MESSAGE, safe(message));
+        }
+        editor.apply();
+        broadcast();
+    }
+
     public synchronized void setMessage(String message) {
         String next = safe(message);
         /*
